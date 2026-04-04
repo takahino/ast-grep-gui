@@ -1,0 +1,292 @@
+use std::collections::HashMap;
+
+use egui::text::LayoutJob;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Style, ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
+
+use crate::lang::SupportedLanguage;
+use crate::search::MatchItem;
+
+pub struct Highlighter {
+    syntax_set: SyntaxSet,
+    theme_set: ThemeSet,
+    /// ファイルパスをキーにしたハイライトキャッシュ
+    cache: HashMap<String, Vec<Vec<(Style, String)>>>,
+}
+
+impl Highlighter {
+    pub fn new() -> Self {
+        Self {
+            syntax_set: SyntaxSet::load_defaults_newlines(),
+            theme_set: ThemeSet::load_defaults(),
+            cache: HashMap::new(),
+        }
+    }
+
+    /// ソースコードをハイライト処理し、行ごとの(Style, text)リストを返す
+    pub fn highlight_source(
+        &mut self,
+        cache_key: &str,
+        source: &str,
+        lang: SupportedLanguage,
+    ) -> &Vec<Vec<(Style, String)>> {
+        if !self.cache.contains_key(cache_key) {
+            let syntax = self
+                .syntax_set
+                .find_syntax_by_name(lang.syntect_name())
+                .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+
+            let theme = &self.theme_set.themes["base16-ocean.dark"];
+            let mut h = HighlightLines::new(syntax, theme);
+
+            let highlighted: Vec<Vec<(Style, String)>> = LinesWithEndings::from(source)
+                .map(|line| {
+                    h.highlight_line(line, &self.syntax_set)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(style, text)| (style, text.to_string()))
+                        .collect()
+                })
+                .collect();
+
+            self.cache.insert(cache_key.to_string(), highlighted);
+        }
+
+        &self.cache[cache_key]
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+}
+
+/// syntect の Color を egui の Color32 に変換
+fn syntect_to_egui_color(color: syntect::highlighting::Color) -> egui::Color32 {
+    egui::Color32::from_rgba_premultiplied(color.r, color.g, color.b, color.a)
+}
+
+/// 行全体の薄い背景色（マッチ行の背景）
+const LINE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 80, 0, 40);
+/// マッチテキスト部分の強い背景色
+const MATCH_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(200, 160, 0, 180);
+
+/// 1行分のハイライトデータを egui LayoutJob のセクションとして追加する
+///
+/// - `col_highlight`: この行内でテキスト強調する byteオフセット範囲
+///   - `None`  → 通常行
+///   - `Some(0..usize::MAX)` → 行全体を薄くハイライト（マッチ行だが列不明）
+///   - `Some(start..end)` → 列レベルで強調
+fn append_highlighted_line(
+    job: &mut LayoutJob,
+    line_tokens: &[(Style, String)],
+    col_highlight: Option<std::ops::Range<usize>>,
+    line_number: usize,
+    font_size: f32,
+) {
+    let font_id = egui::FontId::monospace(font_size);
+    let is_match_line = col_highlight.is_some();
+
+    // 行番号
+    {
+        let line_num_text = format!("{:4}│ ", line_number);
+        let bg = if is_match_line { LINE_BG } else { egui::Color32::TRANSPARENT };
+        job.append(
+            &line_num_text,
+            0.0,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color: egui::Color32::from_gray(110),
+                background: bg,
+                ..Default::default()
+            },
+        );
+    }
+
+    let mut byte_pos = 0usize;
+
+    for (style, text) in line_tokens {
+        // 改行文字を除去
+        let text = text.trim_end_matches('\n').trim_end_matches('\r');
+        if text.is_empty() {
+            continue;
+        }
+
+        let token_start = byte_pos;
+        let token_end = byte_pos + text.len();
+        let fg = syntect_to_egui_color(style.foreground);
+
+        match &col_highlight {
+            None => {
+                // 通常行
+                job.append(
+                    text,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font_id.clone(),
+                        color: fg,
+                        ..Default::default()
+                    },
+                );
+            }
+            Some(range) => {
+                // マッチ行：トークン内で範囲が重なる部分だけ強調
+                append_token_with_highlight(
+                    job,
+                    text,
+                    token_start,
+                    token_end,
+                    range.clone(),
+                    fg,
+                    &font_id,
+                );
+            }
+        }
+
+        byte_pos = token_end;
+    }
+
+    // 改行
+    job.append(
+        "\n",
+        0.0,
+        egui::TextFormat {
+            font_id: font_id.clone(),
+            color: egui::Color32::TRANSPARENT,
+            ..Default::default()
+        },
+    );
+}
+
+/// トークン文字列を [before] [highlighted] [after] に分割して追記する
+fn append_token_with_highlight(
+    job: &mut LayoutJob,
+    text: &str,
+    token_start: usize,
+    token_end: usize,
+    range: std::ops::Range<usize>,
+    fg: egui::Color32,
+    font_id: &egui::FontId,
+) {
+    // トークンと強調範囲の交差
+    let hl_start = range.start.max(token_start);
+    let hl_end = range.end.min(token_end);
+
+    if hl_start >= hl_end {
+        // 強調なし（ただしマッチ行なので薄い背景）
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color: fg,
+                background: LINE_BG,
+                ..Default::default()
+            },
+        );
+        return;
+    }
+
+    // 強調前
+    let before_len = hl_start - token_start;
+    if before_len > 0 {
+        let before = &text[..before_len];
+        job.append(
+            before,
+            0.0,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color: fg,
+                background: LINE_BG,
+                ..Default::default()
+            },
+        );
+    }
+
+    // 強調部分
+    let hl_local_start = hl_start - token_start;
+    let hl_local_end = hl_end - token_start;
+    if let Some(hl_text) = text.get(hl_local_start..hl_local_end) {
+        job.append(
+            hl_text,
+            0.0,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color: egui::Color32::BLACK,
+                background: MATCH_BG,
+                ..Default::default()
+            },
+        );
+    }
+
+    // 強調後
+    if let Some(after) = text.get(hl_local_end..) {
+        if !after.is_empty() {
+            job.append(
+                after,
+                0.0,
+                egui::TextFormat {
+                    font_id: font_id.clone(),
+                    color: fg,
+                    background: LINE_BG,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+}
+
+/// ソース全体の LayoutJob を生成する
+///
+/// `matches` の行・列情報をもとに、マッチ行を薄くハイライトし
+/// マッチテキストの該当列部分を強調表示する。
+pub fn build_layout_job(
+    highlighted: &[Vec<(Style, String)>],
+    matches: &[MatchItem],
+    font_size: f32,
+) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = f32::INFINITY;
+
+    for (idx, line_tokens) in highlighted.iter().enumerate() {
+        let line_number = idx + 1; // 1-based
+
+        // この行に対するハイライト範囲を決定
+        let col_highlight = col_highlight_for_line(line_number, matches);
+
+        append_highlighted_line(&mut job, line_tokens, col_highlight, line_number, font_size);
+    }
+
+    job
+}
+
+/// 指定行（1-based）に対してハイライトする列範囲を返す
+///
+/// - 該当するマッチがなければ `None`
+/// - 単一行マッチ: `Some(col_start..col_end)`
+/// - 複数行マッチの先頭行: `Some(col_start..MAX)` （行末まで）
+/// - 複数行マッチの中間行: `Some(0..MAX)` （全体）
+/// - 複数行マッチの末尾行: `Some(0..col_end)`
+fn col_highlight_for_line(line_number: usize, matches: &[MatchItem]) -> Option<std::ops::Range<usize>> {
+    for m in matches {
+        if line_number < m.line_start || line_number > m.line_end {
+            continue;
+        }
+        let range = if m.line_start == m.line_end {
+            // 単一行マッチ
+            m.col_start..m.col_end
+        } else if line_number == m.line_start {
+            // 先頭行：マッチ開始から行末
+            m.col_start..usize::MAX
+        } else if line_number == m.line_end {
+            // 末尾行：行頭からマッチ終端
+            0..m.col_end
+        } else {
+            // 中間行：全体
+            0..usize::MAX
+        };
+        return Some(range);
+    }
+    None
+}

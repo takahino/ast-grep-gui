@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ast-grep GUI — パターン記法（詳細）</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, "Segoe UI", "Noto Sans JP", sans-serif; line-height: 1.55; max-width: 52rem; margin: 0 auto; padding: 1.25rem 1.5rem 3rem; color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #121212; color: #e8e8e8; }
+      a { color: #8ec5ff; }
+      code, pre { background: #2a2a2a !important; color: #e0e0e0; }
+      th, td { border-color: #444 !important; }
+    }
+    h1 { font-size: 1.5rem; border-bottom: 1px solid #ccc; padding-bottom: 0.35rem; }
+    h2 { font-size: 1.2rem; margin-top: 1.75rem; }
+    h3 { font-size: 1.05rem; margin-top: 1.25rem; }
+    code { font-family: ui-monospace, "Cascadia Code", monospace; background: #f0f0f0; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.92em; }
+    pre { background: #f5f5f5; padding: 0.85rem 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.88rem; }
+    table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.95rem; }
+    th, td { border: 1px solid #ccc; padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+    th { background: #f8f8f8; }
+    ul { padding-left: 1.35rem; }
+    .note { background: #f6f8ff; border-left: 4px solid #4a6cf7; padding: 0.65rem 1rem; margin: 1rem 0; font-size: 0.95rem; }
+    @media (prefers-color-scheme: dark) {
+      .note { background: #1e2435; border-color: #5a7dff; }
+    }
+    .muted { color: #666; font-size: 0.92rem; }
+    a { color: #0b57d0; }
+  </style>
+</head>
+<body>
+
+<h1>ast-grep GUI — パターン記法（詳細）</h1>
+<p class="muted">このドキュメントはアプリに埋め込まれています。公式ドキュメントと併せて参照してください。</p>
+
+<h2>1. AST パターンとは</h2>
+<p>「AST 検索 / AST そのまま」モードでは、ソースコードを構文木（AST）として解析し、<strong>パターン文字列</strong>で木の形を指定してマッチ箇所を探します。テキストの部分一致（プレーンテキスト）や正規表現モードとは別の仕組みです。</p>
+<ul>
+  <li>パターンは ast-grep が解釈する<strong>コードの断片</strong>として書きます（コメントや空白の扱いは言語・ノード依存）。</li>
+  <li>メタ変数（<code>$NAME</code> など）で「ここに任意の式や文が入る」といった穴を開けられます。</li>
+</ul>
+
+<h2>2. メタ変数一覧</h2>
+<table>
+  <thead>
+    <tr><th>書き方</th><th>意味</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>$VAR</code></td><td>単一のノードにマッチ（式・識別子・型など、位置による）</td></tr>
+    <tr><td><code>$$$NAME</code></td><td>0 個以上の連続するノードにマッチ（引数リスト、複数文など）</td></tr>
+    <tr><td><code>$_</code></td><td>マッチはするがキャプチャしない「ワイルドカード」</td></tr>
+    <tr><td>同じ名前の <code>$A</code></td><td>出現箇所同士が<strong>同一のコード</strong>に対応する必要がある（同一性制約）</td></tr>
+  </tbody>
+</table>
+<p>変数名は英字で始まる識別子として扱われます。詳細な構文は公式の Pattern Syntax を参照してください。</p>
+
+<h2>3. 記述のコツ</h2>
+<ul>
+  <li><strong>言語の選択</strong>：ツールバーで Rust / Python などを選ぶと、その言語のパーサで AST が構築されます。Auto は拡張子から推定します。違う言語でパースすると期待したノードにならずマッチしません。</li>
+  <li><strong>マッチ範囲</strong>：この GUI の AST モードでは、ast-grep CLI と同様にノードのバイト範囲が使われます。</li>
+  <li><strong><code>$$$</code> の使い所</strong>：可変長の引数、<code>match</code> のアーム列、ブロック内の複数文など、文法上「複数子ノード」が並ぶ場所向けです。単一式だけを拾いたいときは <code>$EXPR</code> のように単一メタ変数にします。</li>
+  <li><strong>うまくいかないとき</strong>：まずパターンを小さくし、一段階ずつ広げて試してください（例：まず <code>fn $NAME</code> だけ、次に引数まで）。</li>
+</ul>
+
+<div class="note">
+  <strong>プレーン / 正規表現モード</strong>では AST は使いません。文字列検索・正規表現のルールが適用されます。
+</div>
+
+<h2>4. 言語別プリセット（GUI と対応）</h2>
+<p>ヘルプウィンドウの「プリセット」は言語モードに応じて切り替わります。参考までに代表的なものを列挙します。</p>
+
+<h3>Rust</h3>
+<ul>
+  <li><code>fn $NAME($$$ARGS)</code> — 関数定義</li>
+  <li><code>impl $TRAIT for $TYPE</code> — トレイト実装</li>
+  <li><code>$VAR.unwrap()</code> — unwrap 呼び出し</li>
+  <li><code>$VAR.clone()</code> — clone 呼び出し</li>
+  <li><code>panic!($$$ARGS)</code> — panic マクロ</li>
+</ul>
+
+<h3>Java</h3>
+<ul>
+  <li><code>$VAR == null</code></li>
+  <li><code>System.out.println($$$ARGS)</code></li>
+</ul>
+
+<h3>Python</h3>
+<ul>
+  <li><code>print($$$ARGS)</code></li>
+  <li><code>import $MODULE</code></li>
+</ul>
+
+<h3>JavaScript / TypeScript</h3>
+<ul>
+  <li><code>console.log($$$ARGS)</code></li>
+</ul>
+
+<h3>Go</h3>
+<ul>
+  <li><code>if err != nil { $$$BODY }</code></li>
+</ul>
+
+<h3>Auto / その他</h3>
+<p><code>$EXPR</code> のように汎用の単一ノードで広く試すこともできます。</p>
+
+<h2>5. 追加の記述例</h2>
+<p>環境や ast-grep のバージョンにより、細部の解釈は変わる場合があります。次は出発点として試せます。</p>
+
+<h3>Rust</h3>
+<pre><code>struct $NAME { $$$FIELDS }
+impl $TYPE { $$$ITEMS }
+Some($INNER)
+if let $PAT = $EXPR { $$$THEN }</code></pre>
+
+<h3>Python</h3>
+<pre><code>def $NAME($$$ARGS):
+    $$$BODY
+class $NAME($$$BASES):
+    $$$BODY</code></pre>
+
+<h3>TypeScript / JavaScript</h3>
+<pre><code>function $NAME($$$ARGS) { $$$BODY }
+const $NAME = ($$$ARGS) =&gt; $BODY
+export default $EXPR</code></pre>
+
+<h2>6. トラブルシューティング</h2>
+<ul>
+  <li><strong>ヒットゼロ</strong>：パターンがその言語の構文として成立しているか、言語・拡張子が合っているかを確認してください。</li>
+  <li><strong>ファイルフィルタ</strong>：空なら（AST モードでは）言語既定の拡張子のみが対象です。Plain/Regex では別ルールです。</li>
+  <li><strong>コンテキスト行数</strong>：表示・エクスポートの前後行の広さだけを変えます。マッチの有無自体は変えません。</li>
+</ul>
+
+<h2>7. 公式ドキュメント（外部リンク）</h2>
+<ul>
+  <li><a href="https://ast-grep.github.io/guide/pattern-syntax.html" target="_blank" rel="noopener">Pattern Syntax</a></li>
+  <li><a href="https://ast-grep.github.io/guide/rule-config.html" target="_blank" rel="noopener">Rule と設定</a>（CLI / ルールファイル利用時）</li>
+  <li><a href="https://ast-grep.github.io/" target="_blank" rel="noopener">ast-grep トップ</a></li>
+</ul>
+
+<p class="muted" style="margin-top:2rem;">ast-grep GUI は ast-grep コアを利用しています。挙動の詳細は ast-grep 本体のドキュメントが最終情報源です。</p>
+
+</body>
+</html>
