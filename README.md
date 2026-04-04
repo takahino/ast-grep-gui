@@ -16,7 +16,7 @@ It is designed to make structural code search easier for users who prefer a visu
 - Pattern help, presets, and snippet-based pattern assist
 - Export results to `TXT`, `JSON`, `Markdown`, `HTML`, and `Excel (.xlsx)`
 - UI language switching between Japanese and English
-- Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16`, `Shift_JIS`, `EUC-JP`, `JIS`, and similar overrides
+- Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16 LE`, `UTF-16 BE`, `Shift_JIS`, `EUC-JP`, `JIS`, `GBK`, `Big5`, `EUC-KR`, and `Latin1` family overrides
 - Built-in terminal panel for PowerShell commands and `sg`-style searches
 
 ## Supported Languages

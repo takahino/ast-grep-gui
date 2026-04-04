@@ -609,12 +609,14 @@ impl Tr {
             UiLanguage::Japanese => {
                 "テキストファイルをどの文字コードで読むかを指定します\n\
                  自動判定: UTF-8 / UTF-16 / Shift_JIS / EUC-JP / JIS / GBK / Big5 / EUC-KR / Latin1 系を推定します\n\
-                 手動指定: 候補の文字コードで固定し、選択ファイルの判定結果も横に反映します"
+                 手動指定の既定候補: UTF-8 / UTF-16 LE / UTF-16 BE / Shift_JIS / EUC-JP / JIS / GBK / Big5 / EUC-KR / Latin1 系\n\
+                 選択ファイルの判定結果も横に反映します"
             }
             UiLanguage::English => {
                 "Choose how text files are decoded\n\
                  Auto detects UTF-8 / UTF-16 / Shift_JIS / EUC-JP / JIS / GBK / Big5 / EUC-KR / Latin1 families\n\
-                 Manual mode locks decoding to one of the listed encodings and reflects detected results beside it"
+                 Default manual choices: UTF-8 / UTF-16 LE / UTF-16 BE / Shift_JIS / EUC-JP / JIS / GBK / Big5 / EUC-KR / Latin1 families\n\
+                 Detected results are also reflected beside the selected file"
             }
         }
     }

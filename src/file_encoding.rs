@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::io;
 use std::path::Path;
 
-use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use chardetng::EncodingDetector;
 use encoding_rs::{
     BIG5, EUC_JP, EUC_KR, Encoding, GBK, ISO_2022_JP, SHIFT_JIS, UTF_16BE, UTF_16LE,
     WINDOWS_1252,
@@ -161,10 +161,10 @@ fn decode_auto(bytes: &[u8]) -> io::Result<DecodedText> {
         });
     }
 
-    let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+    let mut detector = EncodingDetector::new();
     detector.feed(bytes, true);
 
-    let encoding = detector.guess(None, Utf8Detection::Allow);
+    let encoding = detector.guess(None, true);
     let text = decode_with_encoding(bytes, encoding)?;
 
     Ok(DecodedText {
