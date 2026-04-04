@@ -26,7 +26,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let relative_path = file_result.relative_path.clone();
     let matches = file_result.matches.clone();
     let lang = file_result.source_language;
-    let text_encoding = file_result.text_encoding;
+    let text_encoding = file_result.text_encoding.clone();
 
     // ファイル内容を読み込む
     let source = match read_text_file_as(&path, text_encoding) {
@@ -48,6 +48,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             );
         });
     });
+    ui.label(
+        egui::RichText::new(file_result.text_encoding.detail_text(app.ui_lang()))
+            .small()
+            .color(egui::Color32::GRAY),
+    );
 
     if app.search_mode == SearchMode::AstGrepRaw {
         ui.separator();

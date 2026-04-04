@@ -26,7 +26,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 );
                 let is_selected = app.selected_file_idx == Some(idx);
 
-                let response = ui.selectable_label(is_selected, &label);
+                let response = ui
+                    .selectable_label(is_selected, &label)
+                    .on_hover_text(file.text_encoding.detail_text(app.ui_lang()));
                 if response.clicked() {
                     let changed = app.selected_file_idx != Some(idx);
                     app.selected_file_idx = Some(idx);

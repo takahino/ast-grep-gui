@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use egui::Ui;
 
 use crate::app::{AstGrepApp, SearchState, ViewMode};
@@ -365,14 +367,25 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             ui.label(t.file_encoding_label())
                 .on_hover_text(t.file_encoding_tooltip());
             let ui_lang = app.ui_lang();
+            let selected_encoding = app
+                .selected_file_idx
+                .and_then(|idx| app.results.get(idx))
+                .map(|file| &file.text_encoding);
+            let combo_text = match (app.file_encoding_preference, selected_encoding) {
+                (FileEncodingPreference::Auto, Some(encoding)) => match ui_lang {
+                    crate::i18n::UiLanguage::Japanese => {
+                        format!("自動判定 -> {}", encoding.display_label())
+                    }
+                    crate::i18n::UiLanguage::English => {
+                        format!("Auto detect -> {}", encoding.display_label())
+                    }
+                },
+                _ => app.file_encoding_preference.display_label(ui_lang).to_string(),
+            };
             egui::ComboBox::from_id_salt("file_encoding_preference")
-                .selected_text(app.file_encoding_preference.display_label(ui_lang))
+                .selected_text(combo_text)
                 .show_ui(ui, |ui| {
-                    for pref in [
-                        FileEncodingPreference::Auto,
-                        FileEncodingPreference::Utf8,
-                        FileEncodingPreference::ShiftJis,
-                    ] {
+                    for pref in FileEncodingPreference::ALL {
                         ui.selectable_value(
                             &mut app.file_encoding_preference,
                             pref,
@@ -381,6 +394,13 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     }
                 });
         });
+        if let Some(message) = auto_encoding_feedback(app) {
+            ui.label(
+                egui::RichText::new(message)
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
+        }
 
         ui.horizontal(|ui| {
             ui.label(t.max_file_size_label())
@@ -428,4 +448,35 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 .color(egui::Color32::GRAY),
         );
     });
+}
+
+fn auto_encoding_feedback(app: &AstGrepApp) -> Option<String> {
+    if app.file_encoding_preference != FileEncodingPreference::Auto {
+        return None;
+    }
+
+    if let Some(file) = app.selected_file_idx.and_then(|idx| app.results.get(idx)) {
+        return Some(file.text_encoding.auto_feedback_text(app.ui_lang()));
+    }
+
+    if app.results.is_empty() {
+        return None;
+    }
+
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for file in &app.results {
+        *counts
+            .entry(file.text_encoding.display_label().into_owned())
+            .or_default() += 1;
+    }
+    let summary = counts
+        .into_iter()
+        .map(|(label, count)| format!("{label} x{count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Some(match app.ui_lang() {
+        crate::i18n::UiLanguage::Japanese => format!("自動判定内訳: {summary}"),
+        crate::i18n::UiLanguage::English => format!("Detected encodings: {summary}"),
+    })
 }

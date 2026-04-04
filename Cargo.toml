@@ -25,6 +25,7 @@ regex = "1"
 rust_xlsxwriter = "0.94.0"
 sys-locale = "0.3"
 encoding_rs = "0.8"
+chardetng = "0.1"
 open = "5"
 
 [build-dependencies]

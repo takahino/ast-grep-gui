@@ -147,7 +147,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     col: m.col_start,
                                     matches: file.matches.clone(),
                                     source_language: file.source_language,
-                                    text_encoding: file.text_encoding,
+                                    text_encoding: file.text_encoding.clone(),
                                     pending_scroll_line: Some(m.line_start),
                                 });
                             }

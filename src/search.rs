@@ -484,7 +484,7 @@ fn build_match_item(
 /// UI の「コンテキスト行数」変更に合わせ、既存の検索結果の前後コンテキストだけを再計算する（再検索はしない）
 pub fn refresh_match_contexts(results: &mut [FileResult], context_lines: usize) {
     for file in results.iter_mut() {
-        let Ok(source) = read_text_file_as(&file.path, file.text_encoding) else {
+        let Ok(source) = read_text_file_as(&file.path, file.text_encoding.clone()) else {
             continue;
         };
         let lines: Vec<&str> = source.lines().collect();

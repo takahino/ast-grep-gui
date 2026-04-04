@@ -608,13 +608,13 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => {
                 "テキストファイルをどの文字コードで読むかを指定します\n\
-                 自動判定: UTF-8 を優先し、失敗時は Shift_JIS (CP932) を試します\n\
-                 手動指定: UTF-8 または Shift_JIS (CP932) で固定します"
+                 自動判定: UTF-8 / UTF-16 / Shift_JIS / EUC-JP / JIS / GBK / Big5 / EUC-KR / Latin1 系を推定します\n\
+                 手動指定: 候補の文字コードで固定し、選択ファイルの判定結果も横に反映します"
             }
             UiLanguage::English => {
                 "Choose how text files are decoded\n\
-                 Auto tries UTF-8 first, then Shift_JIS (CP932)\n\
-                 You can also force UTF-8 or Shift_JIS (CP932)"
+                 Auto detects UTF-8 / UTF-16 / Shift_JIS / EUC-JP / JIS / GBK / Big5 / EUC-KR / Latin1 families\n\
+                 Manual mode locks decoding to one of the listed encodings and reflects detected results beside it"
             }
         }
     }

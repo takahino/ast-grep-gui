@@ -5,6 +5,8 @@
 A desktop GUI frontend for [ast-grep](https://ast-grep.github.io/) built with Rust and `egui`.
 It is designed to make structural code search easier for users who prefer a visual workflow over the CLI.
 
+![ast-grep GUI main window](./assets/screenshots/main-window.png)
+
 ## Highlights
 
 - AST-based code search powered by `ast-grep-core`
@@ -14,7 +16,7 @@ It is designed to make structural code search easier for users who prefer a visu
 - Pattern help, presets, and snippet-based pattern assist
 - Export results to `TXT`, `JSON`, `Markdown`, `HTML`, and `Excel (.xlsx)`
 - UI language switching between Japanese and English
-- Text encoding support for `UTF-8` and `Shift_JIS (CP932)`
+- Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16`, `Shift_JIS`, `EUC-JP`, `JIS`, and similar overrides
 - Built-in terminal panel for PowerShell commands and `sg`-style searches
 
 ## Supported Languages

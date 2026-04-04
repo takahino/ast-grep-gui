@@ -20,7 +20,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
             s.relative_path.clone(),
             s.matches.clone(),
             s.source_language,
-            s.text_encoding,
+            s.text_encoding.clone(),
             s.line,
             s.col,
         )
@@ -37,13 +37,18 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
             ui.label(
                 egui::RichText::new(t.table_preview_subtitle(&relative_path, line, col)).strong(),
             );
+            ui.label(
+                egui::RichText::new(text_encoding.detail_text(app.ui_lang()))
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
             ui.add_space(4.0);
 
             let file_result = FileResult {
                 path: path.clone(),
                 relative_path: relative_path.clone(),
                 source_language: lang,
-                text_encoding,
+                text_encoding: text_encoding.clone(),
                 matches: matches.clone(),
             };
 
