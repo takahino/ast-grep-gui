@@ -699,14 +699,25 @@ impl Tr {
 
     pub fn footer_hint_ast(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "$VAR=任意の式  $$$ARGS=複数ノード  $_=マッチを無視",
-            UiLanguage::English => "$VAR=expr  $$$ARGS=nodes  $_=ignore",
+            UiLanguage::Japanese => {
+                "$VAR=単一ノード  $$$ARGS=複数ノード  $_=無視  例: fn $NAME($$$ARGS)  $X.unwrap()  if ($COND) { $$$BODY }"
+            }
+            UiLanguage::English => {
+                "$VAR=single node  $$$ARGS=multiple nodes  $_=ignore  e.g. fn $NAME($$$ARGS)  $X.unwrap()  if ($COND) { $$$BODY }"
+            }
         }
     }
     pub fn footer_hint_non_ast(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "ファイルフィルタと詳細設定で対象を絞り込めます",
             UiLanguage::English => "Use file filter and advanced settings to narrow targets",
+        }
+    }
+
+    pub fn terminal_input_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "コマンドを入力… (Enter: 実行 / Shift+Enter: 改行)",
+            UiLanguage::English => "Enter a command... (Enter: run / Shift+Enter: newline)",
         }
     }
 
@@ -869,26 +880,38 @@ impl Tr {
     }
     pub fn help_meta_var_single(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "任意の単一ノード（式・識別子など）にマッチ",
-            UiLanguage::English => "Matches a single node (expression, identifier, …)",
+            UiLanguage::Japanese => {
+                "任意の単一ノード（式・識別子・型など）にマッチ  例: $NAME  $EXPR  $TYPE"
+            }
+            UiLanguage::English => {
+                "Matches a single node (expression, identifier, type, ...)  e.g. $NAME  $EXPR  $TYPE"
+            }
         }
     }
     pub fn help_meta_multi(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "0個以上の複数ノードにマッチ",
-            UiLanguage::English => "Matches zero or more nodes",
+            UiLanguage::Japanese => {
+                "0個以上の複数ノードにマッチ  例: $$$ARGS  $$$BODY  $$$ITEMS"
+            }
+            UiLanguage::English => {
+                "Matches zero or more nodes  e.g. $$$ARGS  $$$BODY  $$$ITEMS"
+            }
         }
     }
     pub fn help_meta_ignore(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "何にでもマッチするが、キャプチャしない",
-            UiLanguage::English => "Matches anything without capturing",
+            UiLanguage::Japanese => {
+                "何にでもマッチするが、キャプチャしない  例: foo($_)  if ($_) { $$$BODY }"
+            }
+            UiLanguage::English => {
+                "Matches anything without capturing  e.g. foo($_)  if ($_) { $$$BODY }"
+            }
         }
     }
     pub fn help_meta_same(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "同じ変数名は同じノードにマッチ",
-            UiLanguage::English => "Same name → same node",
+            UiLanguage::Japanese => "同じ変数名は同じノードにマッチ  例: $A == $A",
+            UiLanguage::English => "Same name -> same node  e.g. $A == $A",
         }
     }
     pub fn help_meta_same_var_key(self) -> &'static str {

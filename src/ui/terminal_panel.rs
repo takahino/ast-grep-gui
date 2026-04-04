@@ -5,6 +5,7 @@ use crate::terminal::{LineKind, TerminalState};
 
 /// ターミナルパネルを描画する
 pub fn show(app: &mut AstGrepApp, ui: &mut egui::Ui) {
+    let t = app.tr();
     let terminal = match app.terminal.as_mut() {
         Some(t) => t,
         None => return,
@@ -109,7 +110,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut egui::Ui) {
                 .desired_rows(1)
                 .desired_width(input_width)
                 .font(egui::TextStyle::Monospace)
-                .hint_text("コマンドを入力… (Enter: 実行 / Shift+Enter: 改行)"),
+                .hint_text(t.terminal_input_hint()),
         );
 
         // 履歴ナビゲーション
