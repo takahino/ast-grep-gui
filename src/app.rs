@@ -129,6 +129,9 @@ struct PersistedAppState {
     /// AST 置換テンプレート（`--rewrite` 相当）
     #[serde(default)]
     rewrite_template: String,
+    /// インクリメンタルサーチ有効フラグ
+    #[serde(default)]
+    incremental_search: bool,
     /// バッチ検索ジョブ一覧
     #[serde(default)]
     batch_jobs: Vec<PatternJob>,
@@ -160,6 +163,7 @@ impl Default for PersistedAppState {
             pattern_history: Vec::new(),
             regex_visualizer_test_text: String::new(),
             rewrite_template: String::new(),
+            incremental_search: false,
             batch_jobs: Vec::new(),
             next_pattern_job_id: 1,
         }
@@ -235,6 +239,10 @@ pub struct AstGrepApp {
     pub regex_visualizer_test_text: String,
     /// パターンサジェストポップアップで現在選択中の候補インデックス
     pub pattern_suggest_idx: Option<usize>,
+    /// インクリメンタルサーチ有効フラグ
+    pub incremental_search: bool,
+    /// パターンが最後に変更された時刻（デバウンス用）
+    pub pattern_last_changed: Option<std::time::Instant>,
     /// ターミナルパネルの表示フラグ
     pub show_terminal: bool,
     /// ターミナルパネルの状態（初回表示時に初期化）
@@ -326,6 +334,8 @@ impl AstGrepApp {
             pattern_history: persisted.pattern_history,
             regex_visualizer_test_text: persisted.regex_visualizer_test_text,
             pattern_suggest_idx: None,
+            incremental_search: persisted.incremental_search,
+            pattern_last_changed: None,
             show_terminal: false,
             terminal: None,
             terminal_height: 0.0,
@@ -412,13 +422,23 @@ impl AstGrepApp {
             pattern_history: self.pattern_history.clone(),
             regex_visualizer_test_text: self.regex_visualizer_test_text.clone(),
             rewrite_template: self.rewrite_template.clone(),
+            incremental_search: self.incremental_search,
             batch_jobs: self.batch_jobs.clone(),
             next_pattern_job_id: self.next_pattern_job_id,
         }
     }
 
-    /// 検索を開始する
+    /// 検索を開始する（履歴に追加する）
     pub fn start_search(&mut self) {
+        self.start_search_impl(true);
+    }
+
+    /// インクリメンタルサーチ用（履歴に追加しない）
+    fn start_search_no_history(&mut self) {
+        self.start_search_impl(false);
+    }
+
+    fn start_search_impl(&mut self, add_history: bool) {
         if self.search_dir.is_empty() || self.pattern.is_empty() {
             return;
         }
@@ -426,11 +446,13 @@ impl AstGrepApp {
         self.batch_runner = None;
 
         // 検索履歴に追加（最新を先頭に、重複排除、最大30件）
-        let pat = self.pattern.trim().to_string();
-        if !pat.is_empty() {
-            self.pattern_history.retain(|h| h != &pat);
-            self.pattern_history.insert(0, pat);
-            self.pattern_history.truncate(30);
+        if add_history {
+            let pat = self.pattern.trim().to_string();
+            if !pat.is_empty() {
+                self.pattern_history.retain(|h| h != &pat);
+                self.pattern_history.insert(0, pat);
+                self.pattern_history.truncate(30);
+            }
         }
 
         self.results.clear();
@@ -951,6 +973,20 @@ impl eframe::App for AstGrepApp {
         self.drain_messages();
         self.drain_rewrite_messages();
         self.drain_rewrite_apply_messages();
+
+        // インクリメンタルサーチ: 入力後 500ms でサーチを起動
+        if self.incremental_search {
+            if let Some(changed_at) = self.pattern_last_changed {
+                if changed_at.elapsed() >= std::time::Duration::from_millis(500)
+                    && !matches!(self.search_state, SearchState::Running)
+                    && !self.search_dir.is_empty()
+                    && !self.pattern.is_empty()
+                {
+                    self.pattern_last_changed = None;
+                    self.start_search_no_history();
+                }
+            }
+        }
 
         // コンテキスト行数: Shift + Page Up / Page Down（修飾キー付きのためテキスト入力中も利用可）
         ctx.input_mut(|i| {

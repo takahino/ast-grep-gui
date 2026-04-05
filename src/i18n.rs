@@ -243,6 +243,18 @@ impl Tr {
             }
         }
     }
+    pub fn incremental_search_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "入力で即時検索",
+            UiLanguage::English => "Auto-search",
+        }
+    }
+    pub fn incremental_search_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "パターン入力後 0.5 秒で自動的に検索を開始します",
+            UiLanguage::English => "Automatically start search 0.5 s after typing stops",
+        }
+    }
     pub fn mode_regex(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "正規表現",

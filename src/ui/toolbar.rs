@@ -205,6 +205,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         // テキスト変更時に候補選択インデックスをリセット
         if response.changed() {
             app.pattern_suggest_idx = None;
+            if app.incremental_search {
+                app.pattern_last_changed = Some(std::time::Instant::now());
+            }
         }
 
         // パターン欄にフォーカスがあるときは「コードビュー左ペイン」扱いをやめ、→ でペイン切替しない
@@ -328,6 +331,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 app.start_search();
             }
         }
+
+        ui.checkbox(&mut app.incremental_search, t.incremental_search_label())
+            .on_hover_text(t.incremental_search_tooltip());
 
         if ui.button(t.clear_results())
             .on_hover_text(t.clear_results_tooltip())
