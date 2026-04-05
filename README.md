@@ -10,18 +10,20 @@ It is designed to make structural code search easier for users who prefer a visu
 ## Highlights
 
 - AST-based code search powered by `ast-grep-core`
-- Batch rewrite (like `--rewrite`): preview, diff, then write back files (AST / ast-grep raw modes)
-- Search modes for `AST`, `ast-grep (raw)`, plain text, and regex
+- Batch rewrite (like `--rewrite`): preview, diff, then write back files in `AST` mode
+- Search modes for `AST`, `Token`, plain text, and regex
 - Auto language detection by file extension for mixed-language repositories
 - Code view, table view (with double-click preview popup), and **batch report** view (run multiple patterns with per-job settings, then review an aggregated report)
 - Best-effort `$RECV` receiver type hints in search results for supported languages
 - Pattern help, presets, snippet-based pattern assist, and **pattern input history** (up to 30 entries)
+- Optional **incremental search** that automatically reruns after you stop typing for a short delay
 - Built-in **regex visualizer** to inspect and test regular expressions interactively
+- Plain-text search options for **case-insensitive** and **whole-word** matching
 - Export results to `TXT`, `JSON`, `Markdown`, `HTML`, and `Excel (.xlsx)` (including multi-job batch reports after a batch run)
 - UI language switching between Japanese and English (auto-detected from OS locale)
 - Configurable **max hit count** to cap large result sets (default: 100,000)
 - Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16 LE`, `UTF-16 BE`, `Shift_JIS`, `EUC-JP`, `JIS`, `GBK`, `Big5`, `EUC-KR`, and `Latin1` family overrides
-- Built-in terminal panel for PowerShell commands and `sg`-style searches
+- Built-in terminal panel for PowerShell commands and `sg run`-style searches
 
 ## Supported Languages
 
@@ -66,9 +68,9 @@ cargo build --release --target x86_64-pc-windows-msvc
 
 1. Select a directory to search.
 2. Choose a search mode.
-3. In AST mode, choose a language or use `Auto`.
-4. Enter a pattern, text, or regex.
-5. Adjust context lines, file filter, encoding, and skip directories as needed.
+3. In `AST` mode, choose a language or use `Auto`.
+4. Enter an AST pattern, token sequence, plain text, or regex.
+5. Adjust context lines, file filter, encoding, skip directories, and mode-specific options as needed.
 6. Run the search and inspect the results in code view or table view.
 7. Export or copy the results if needed.
 
@@ -90,8 +92,8 @@ console.log($$$ARGS)
 ## Search Modes
 
 - `AST`: structural search using ast-grep patterns
-- `ast-grep (raw)`: same AST search, but the code panel shows CLI-style output
-- `Text`: case-sensitive plain substring search
+- `Token`: searches space-separated tokens in order, allowing flexible whitespace between them
+- `Text`: plain substring search with optional case-insensitive and whole-word matching
 - `Regex`: regular-expression search
 
 ## Export Formats
@@ -127,6 +129,7 @@ src/i18n.rs              UI language (Japanese / English)
 src/regex_visualizer.rs  Regex tokenizer for the visualizer feature
 src/help_html.rs         Opens embedded HTML help in the OS browser
 src/terminal.rs          Built-in terminal state
+src/sg_command.rs        Parses `sg run`-style terminal commands
 src/ui/                  GUI panels and popups
 assets/help/             Embedded pattern help HTML pages
 ```
