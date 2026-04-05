@@ -13,6 +13,7 @@ It is designed to make structural code search easier for users who prefer a visu
 - Search modes for `AST`, `ast-grep (raw)`, plain text, and regex
 - Auto language detection by file extension for mixed-language repositories
 - Code view and table view for browsing results
+- Best-effort `$RECV` receiver type hints in search results for supported languages
 - Pattern help, presets, and snippet-based pattern assist
 - Export results to `TXT`, `JSON`, `Markdown`, `HTML`, and `Excel (.xlsx)`
 - UI language switching between Japanese and English
@@ -69,6 +70,7 @@ cargo build --release --target x86_64-pc-windows-msvc
 ### AST Pattern Tips
 
 - Use meta variables such as `$VAR`, `$$$ARGS`, and `$_`
+- When a pattern includes `$RECV`, the app tries to infer the receiver type and shows it in the result views and exports
 - Open the built-in help popup for examples and presets
 - Use the pattern assist dialog to generate candidate patterns from a code snippet
 
@@ -96,6 +98,8 @@ console.log($$$ARGS)
 - `Excel (.xlsx)`
 - Copy to clipboard
 
+When the pattern contains `$RECV`, `JSON`, `Markdown`, `HTML`, and `Excel` exports also include the inferred receiver type for each match.
+
 ## Packaging and Release
 
 - `build.rs` embeds `assets/icon.ico` into Windows builds when available
@@ -108,6 +112,7 @@ console.log($$$ARGS)
 src/main.rs              Application entry point
 src/app.rs               App state and main UI flow
 src/search.rs            Background search engine
+src/receiver_hint.rs     Best-effort receiver type inference
 src/lang.rs              Language definitions and presets
 src/pattern_assist.rs    Snippet-to-pattern suggestions
 src/export.rs            Exporters
