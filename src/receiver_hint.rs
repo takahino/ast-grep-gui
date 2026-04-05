@@ -180,6 +180,17 @@ fn java_local_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_start:
     last
 }
 
+/// 内側の `block` から順に、レシーバ位置より前のローカル宣言を照合する。
+fn java_local_in_enclosing_blocks<D: Doc>(recv: &Node<'_, D>, recv_name: &str) -> Option<String> {
+    let recv_start = recv.range().start;
+    for block in recv.ancestors().filter(|n| n.kind().as_ref() == "block") {
+        if let Some(ty) = java_local_in_block(&block, recv_name, recv_start) {
+            return Some(ty);
+        }
+    }
+    None
+}
+
 /// `_variable_declarator_id` が束ねる名前が `name` と一致するか（`field("name")` が取れない場合のフォールバック付き）。
 fn java_declarator_id_matches<D: Doc>(decl_id: &Node<'_, D>, name: &str) -> bool {
     if decl_id.kind().as_ref() != "_variable_declarator_id" {
@@ -323,6 +334,37 @@ fn java_parameter_type_for_scope<D: Doc>(recv: &Node<'_, D>, name: &str) -> Opti
     None
 }
 
+/// 拡張 `for (Type name : expr)` の反復変数を、内側のスコープから順に照合する。
+fn java_enhanced_for_type_for_scope<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
+    for a in recv.ancestors() {
+        let k = a.kind();
+        let kind = k.as_ref();
+        if kind == "enhanced_for_statement" {
+            let Some(body) = a.field("body") else {
+                continue;
+            };
+            if recv.range().start < body.range().start {
+                continue;
+            }
+            let Some(ty) = a.field("type") else {
+                continue;
+            };
+            let name_ok = a
+                .field("name")
+                .map(|n| n.text().trim() == name)
+                .unwrap_or(false);
+            if name_ok {
+                return Some(ty.text().trim().to_string());
+            }
+            continue;
+        }
+        if kind == "method_declaration" || kind == "constructor_declaration" {
+            break;
+        }
+    }
+    None
+}
+
 /// 同一 `class` / `interface` / `record` body 内の `field_declaration` と名前を照合する。
 fn java_field_in_class<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
     let class_like = recv.ancestors().find(|n| {
@@ -357,12 +399,13 @@ fn java_hint<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
     if t == "this" || t == "super" {
         return java_class_name(recv);
     }
-    if let Some(block) = recv.ancestors().find(|n| n.kind().as_ref() == "block") {
-        if let Some(ty) = java_local_in_block(&block, t, recv.range().start) {
-            return Some(ty);
-        }
+    if let Some(ty) = java_local_in_enclosing_blocks(recv, t) {
+        return Some(ty);
     }
     if let Some(ty) = java_parameter_type_for_scope(recv, t) {
+        return Some(ty);
+    }
+    if let Some(ty) = java_enhanced_for_type_for_scope(recv, t) {
         return Some(ty);
     }
     if java_lambda_inferred_shadows_name(recv, t) {
@@ -1224,6 +1267,82 @@ class Bar {
 "#;
         let hint = java_recv_hint(src, "$RECV.$METHOD($$$ARGS)");
         assert_eq!(hint.as_deref(), Some("String"));
+    }
+
+    #[test]
+    fn java_enhanced_for_variable_receiver_in_loop_body() {
+        let src = r#"
+class Foo {
+  List<String> toIfElseLines(List<String> thenLines) {
+    java.util.List<String> out = new java.util.ArrayList<>();
+    for (String line : thenLines) {
+      out.add(line.trim());
+    }
+    return out;
+  }
+}
+"#;
+        let hint = java_recv_hint(src, "$RECV.trim()");
+        assert_eq!(hint.as_deref(), Some("String"));
+    }
+
+    #[test]
+    fn java_method_pattern_resolves_line_trim_inside_add_argument() {
+        let src = r#"
+class Foo {
+  List<String> toIfElseLines(List<String> thenLines, List<String> elseLines) {
+    java.util.List<String> out = new java.util.ArrayList<>();
+    String blockIndent = "    ";
+    out.add("if");
+    for (String line : thenLines) {
+      out.add(blockIndent + line.trim());
+    }
+    out.add("else");
+    for (String line : elseLines) {
+      out.add(blockIndent + line.trim());
+    }
+    return out;
+  }
+}
+"#;
+        let grep = SupportLang::Java.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.$METHOD($$$ARGS)", SupportLang::Java).unwrap();
+        let root = grep.root();
+        let hints: Vec<(String, Option<String>)> = root
+            .find_all(&pat)
+            .map(|m| {
+                let recv = m.get_env().get_match("RECV").expect("RECV");
+                let recv_text = recv.text().trim().to_string();
+                let hint = infer_recv_type(SupportedLanguage::Java, recv, None);
+                (recv_text, hint)
+            })
+            .collect();
+
+        assert!(hints.iter().any(|(recv, hint)| recv == "out" && hint.as_deref() == Some("java.util.List<String>")));
+        assert!(hints.iter().any(|(recv, hint)| recv == "line" && hint.as_deref() == Some("String")));
+    }
+
+    #[test]
+    fn java_outer_local_receiver_resolves_inside_enhanced_for_block() {
+        let src = r#"
+class Foo {
+  List<String> toIfElseLines(List<String> thenLines) {
+    java.util.List<String> out = new java.util.ArrayList<>();
+    for (String line : thenLines) {
+      out.add(line.trim());
+    }
+    return out;
+  }
+}
+"#;
+        let grep = SupportLang::Java.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.add($$$ARGS)", SupportLang::Java).unwrap();
+        let root = grep.root();
+        let m = root.find_all(&pat).next().expect("one match");
+        let recv = m.get_env().get_match("RECV").expect("RECV");
+        let hint = infer_recv_type(SupportedLanguage::Java, recv, None);
+        assert_eq!(recv.text().trim(), "out");
+        assert_eq!(hint.as_deref(), Some("java.util.List<String>"));
     }
 
     #[test]
