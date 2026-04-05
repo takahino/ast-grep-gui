@@ -5,7 +5,7 @@ use egui::Ui;
 use crate::app::AstGrepApp;
 use crate::ui::scroll_keyboard;
 use crate::batch::BatchRunResult;
-use crate::export::file_filter_display;
+use crate::export::{file_filter_display, plain_text_options_export_value};
 use crate::search::SearchConditions;
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
@@ -102,6 +102,11 @@ fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
         "{}: {}",
         t.export_cond_search_mode(),
         crate::export::search_mode_label_for_export(t, c.search_mode)
+    ));
+    ui.label(format!(
+        "{}: {}",
+        t.export_cond_plain_text_options(),
+        plain_text_options_export_value(t, c)
     ));
 }
 

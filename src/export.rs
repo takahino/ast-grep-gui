@@ -40,6 +40,30 @@ fn search_mode_label(t: Tr, mode: SearchMode) -> &'static str {
     }
 }
 
+pub fn plain_text_options_export_value(t: Tr, cond: &SearchConditions) -> String {
+    if cond.search_mode != SearchMode::PlainText {
+        return t.export_plain_text_options_not_applicable().to_string();
+    }
+    let ic = cond.plain_text_options.case_insensitive;
+    let ww = cond.plain_text_options.whole_word;
+    match t.0 {
+        UiLanguage::Japanese => format!(
+            "{}: {}、{}: {}",
+            t.plain_text_ignore_case(),
+            if ic { "はい" } else { "いいえ" },
+            t.plain_text_whole_word(),
+            if ww { "はい" } else { "いいえ" },
+        ),
+        UiLanguage::English => format!(
+            "{}: {}、{}: {}",
+            t.plain_text_ignore_case(),
+            if ic { "yes" } else { "no" },
+            t.plain_text_whole_word(),
+            if ww { "yes" } else { "no" },
+        ),
+    }
+}
+
 pub fn file_filter_display<'a>(t: Tr, cond: &'a SearchConditions) -> std::borrow::Cow<'a, str> {
     if cond.file_filter.trim().is_empty() {
         std::borrow::Cow::Borrowed(t.export_cond_file_filter_default())
@@ -82,6 +106,11 @@ fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLangua
         "- {}: {}\n",
         t.export_cond_search_mode(),
         search_mode_label(t, cond.search_mode)
+    ));
+    s.push_str(&format!(
+        "- {}: {}\n",
+        t.export_cond_plain_text_options(),
+        plain_text_options_export_value(t, cond)
     ));
     s.push('\n');
     s
@@ -130,6 +159,11 @@ pub fn format_search_conditions_markdown(t: Tr, cond: &SearchConditions, lang: U
         "- **{}**: {}\n",
         t.export_cond_search_mode(),
         search_mode_label(t, cond.search_mode)
+    ));
+    s.push_str(&format!(
+        "- **{}**: {}\n",
+        t.export_cond_plain_text_options(),
+        plain_text_options_export_value(t, cond)
     ));
     s.push('\n');
     s
@@ -360,6 +394,11 @@ fn html_conditions_stats_table_fragment(
         escape(t.export_cond_search_mode()),
         escape(search_mode_label(t, cond.search_mode))
     ));
+    out.push_str(&format!(
+        "<dt>{}</dt><dd>{}</dd>\n",
+        escape(t.export_cond_plain_text_options()),
+        escape(&plain_text_options_export_value(t, cond))
+    ));
     out.push_str("</dl>\n");
     out.push_str(&t.export_html_stats(
         stats.total_matches,
@@ -544,6 +583,8 @@ pub fn export_xlsx_to_file(
     stats_sheet.write(13, 1, truncate_for_excel(&cond.skip_dirs))?;
     stats_sheet.write(14, 0, t.export_cond_search_mode())?;
     stats_sheet.write(14, 1, search_mode_label(t, cond.search_mode))?;
+    stats_sheet.write(15, 0, t.export_cond_plain_text_options())?;
+    stats_sheet.write(15, 1, truncate_for_excel(&plain_text_options_export_value(t, cond)))?;
     stats_sheet.set_column_width(0, 28)?;
     stats_sheet.set_column_width(1, 72)?;
 

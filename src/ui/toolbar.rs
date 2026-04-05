@@ -86,6 +86,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     .color(egui::Color32::GRAY),
             )
             .on_hover_text(t.all_files_tooltip());
+            if app.search_mode == SearchMode::PlainText {
+                ui.checkbox(
+                    &mut app.plain_text_options.case_insensitive,
+                    t.plain_text_ignore_case(),
+                )
+                .on_hover_text(t.plain_text_ignore_case_tooltip());
+                ui.checkbox(
+                    &mut app.plain_text_options.whole_word,
+                    t.plain_text_whole_word(),
+                )
+                .on_hover_text(t.plain_text_whole_word_tooltip());
+            }
         }
 
         ui.label(t.context_lines_label())

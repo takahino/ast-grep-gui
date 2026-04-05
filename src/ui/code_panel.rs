@@ -90,7 +90,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         return;
     }
 
-    // マッチ一覧（コンパクト表示）：各マッチに「→支援」ボタン
+    // マッチ一覧（コンパクト表示）：各マッチに「→パターン支援」ボタン
     if !matches.is_empty() {
         egui::CollapsingHeader::new(
             egui::RichText::new(t.code_match_list_header(matches.len()))

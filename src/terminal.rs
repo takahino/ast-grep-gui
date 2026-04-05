@@ -6,7 +6,7 @@ use eframe::egui;
 
 use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguage;
-use crate::search::{spawn_search, FileResult, SearchMessage, SearchMode};
+use crate::search::{spawn_search, FileResult, PlainTextSearchOptions, SearchMessage, SearchMode};
 use crate::sg_command::{is_sg_command, parse_sg_run};
 
 /// ターミナル行の種別（表示色の切り替えに使用）
@@ -147,6 +147,7 @@ impl TerminalState {
             args.pattern,
             args.lang,
             SearchMode::AstGrep,
+            PlainTextSearchOptions::default(),
             context_lines,
             String::new(),
             self.file_encoding_preference,

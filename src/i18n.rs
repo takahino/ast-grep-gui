@@ -186,12 +186,60 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => {
                 "入力した文字列を含む行を検索します\n\
-                 大文字/小文字を区別します\n\
+                 ツールバーで「大文字小文字を区別しない」「単語単位」を選べます（正規表現の知識は不要）\n\
                  ファイルフィルタ未指定時は全ファイルを対象にします"
             }
             UiLanguage::English => {
-                "Search for the substring (case-sensitive)\n\
+                "Search for the substring in each line\n\
+                 Use the checkboxes for ignore case and whole word (no regex knowledge needed)\n\
                  Without a file filter, all files are searched"
+            }
+        }
+    }
+
+    pub fn plain_text_ignore_case(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "大文字小文字を区別しない",
+            UiLanguage::English => "Ignore case",
+        }
+    }
+    pub fn plain_text_ignore_case_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "オンにすると、検索語と行内の表記が大文字・小文字違いでも一致します\n\
+                 （例: foo と Foo）"
+            }
+            UiLanguage::English => {
+                "When enabled, matches ignore ASCII/Unicode case\n\
+                 (e.g. foo matches Foo)"
+            }
+        }
+    }
+    pub fn plain_text_whole_word(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "単語単位で一致",
+            UiLanguage::English => "Whole word",
+        }
+    }
+    pub fn plain_text_whole_word_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "検索語の前後が、空白（スペース・タブ・改行など）か行頭／行末で区切られているときだけヒットします。\n\
+                 ─────────────────────────\n\
+                 例: cat を探すとき\n\
+                 • ヒットする … 「 cat 」のように前後が空白、または行の先頭／末尾の cat\n\
+                 • ヒットしない … catch の cat、int* の int（* の直前は空白ではない）\n\
+                 ─────────────────────────\n\
+                 foo(int) の int のように、記号のすぐ内側にある語はヒットしません。コード全体を探すときは単語単位をオフにしてください。"
+            }
+            UiLanguage::English => {
+                "Matches only when the search text is delimited by whitespace (spaces, tabs, line breaks) or line start/end.\n\
+                 ─────────────────────────\n\
+                 Example: searching for cat\n\
+                 • Matches … when surrounded by whitespace (e.g. “ cat ”)\n\
+                 • Does not match … cat inside catch, or int before * in int* (no space before *)\n\
+                 ─────────────────────────\n\
+                 Tokens glued to punctuation such as foo(int) won’t match int. Turn off whole word to search more broadly."
             }
         }
     }
@@ -423,11 +471,11 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => {
                 "検索したい文字列をそのまま入力します\n\
-                 大文字/小文字を区別します\n\
+                 大文字/小文字・単語単位はツールバーのチェックで指定できます\n\
                  例）TODO  println!  System.out.println"
             }
             UiLanguage::English => {
-                "Plain text to find (case-sensitive)\n\
+                "Plain text to find (use toolbar for ignore case / whole word)\n\
                  e.g. TODO  println!  unwrap()"
             }
         }
@@ -1694,8 +1742,8 @@ impl Tr {
     }
     pub fn to_assist(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "→支援",
-            UiLanguage::English => "→Assist",
+            UiLanguage::Japanese => "→パターン支援",
+            UiLanguage::English => "→Pattern assist",
         }
     }
     pub fn to_assist_tooltip(self) -> &'static str {
@@ -2137,6 +2185,18 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "検索モード",
             UiLanguage::English => "Search mode",
+        }
+    }
+    pub fn export_cond_plain_text_options(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "文字列検索のオプション",
+            UiLanguage::English => "Text search options",
+        }
+    }
+    pub fn export_plain_text_options_not_applicable(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "（文字列モード以外では該当なし）",
+            UiLanguage::English => "(n/a except in Text mode)",
         }
     }
 

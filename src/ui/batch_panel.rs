@@ -232,6 +232,21 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                         );
                     });
 
+                    if job.search_mode == SearchMode::PlainText {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(
+                                &mut job.plain_text_options.case_insensitive,
+                                t.plain_text_ignore_case(),
+                            )
+                            .on_hover_text(t.plain_text_ignore_case_tooltip());
+                            ui.checkbox(
+                                &mut job.plain_text_options.whole_word,
+                                t.plain_text_whole_word(),
+                            )
+                            .on_hover_text(t.plain_text_whole_word_tooltip());
+                        });
+                    }
+
                     ui.horizontal(|ui| {
                         ui.label(t.context_lines_label());
                         ui.add(egui::DragValue::new(&mut job.context_lines).range(0..=10));
@@ -291,6 +306,7 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                 app.pattern_assist_snippet = p;
                 app.show_pattern_assist = true;
                 app.pattern_assist_results = Vec::new();
+                app.pattern_assist_selected_row = None;
             }
             if !open {
                 app.batch_edit_list_index = None;

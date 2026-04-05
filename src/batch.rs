@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::file_encoding::FileEncodingPreference;
 use crate::lang::SupportedLanguage;
-use crate::search::{SearchConditions, SearchMode, SearchStats};
+use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
 
 /// 単一検索で使う予約 `job_id`（バッチジョブは 1 から採番）
 pub const SINGLE_SEARCH_JOB_ID: usize = 0;
@@ -25,6 +25,8 @@ pub struct PatternJob {
     pub max_search_hits: usize,
     pub skip_dirs: String,
     pub search_mode: SearchMode,
+    #[serde(default)]
+    pub plain_text_options: PlainTextSearchOptions,
 }
 
 impl PatternJob {
@@ -40,6 +42,7 @@ impl PatternJob {
             max_search_hits: self.max_search_hits,
             skip_dirs: self.skip_dirs.clone(),
             search_mode: self.search_mode,
+            plain_text_options: self.plain_text_options,
         }
     }
 
@@ -57,6 +60,7 @@ impl PatternJob {
         max_search_hits: usize,
         skip_dirs: String,
         search_mode: SearchMode,
+        plain_text_options: PlainTextSearchOptions,
     ) -> Self {
         Self {
             id,
@@ -72,6 +76,7 @@ impl PatternJob {
             max_search_hits,
             skip_dirs,
             search_mode,
+            plain_text_options,
         }
     }
 
@@ -192,7 +197,7 @@ mod tests {
     use super::*;
     use crate::file_encoding::FileEncodingPreference;
     use crate::lang::SupportedLanguage;
-    use crate::search::{SearchConditions, SearchMode, SearchStats};
+    use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
 
     fn make_job(id: usize, enabled: bool, pattern: &str, search_dir: &str) -> PatternJob {
         PatternJob {
@@ -209,6 +214,7 @@ mod tests {
             max_search_hits: 1000,
             skip_dirs: String::new(),
             search_mode: SearchMode::AstGrep,
+            plain_text_options: PlainTextSearchOptions::default(),
         }
     }
 
@@ -227,6 +233,7 @@ mod tests {
                 max_search_hits: 100,
                 skip_dirs: String::new(),
                 search_mode: SearchMode::AstGrep,
+                plain_text_options: PlainTextSearchOptions::default(),
             },
             results: vec![],
             stats: SearchStats {

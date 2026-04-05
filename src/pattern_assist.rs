@@ -27,6 +27,8 @@ pub struct PatternSuggestion {
     pub description: String,
     /// スニペット内でのマッチ数
     pub match_count: usize,
+    /// `generate_patterns` がパースに使った trim 後スニペット内でのマッチ範囲（バイトオフセット）
+    pub match_ranges: Vec<(usize, usize)>,
 }
 
 /// スニペットに実際にマッチするパターン候補を返す
@@ -58,16 +60,35 @@ pub fn generate_patterns(
             if compiled_patterns.is_empty() {
                 return None;
             }
-            let count = compiled_patterns
-                .into_iter()
-                .map(|compiled| root.root().find_all(&compiled).count())
-                .find(|count| *count > 0)
-                .unwrap_or(0);
+            let mut picked: Option<(usize, Vec<(usize, usize)>)> = None;
+            for compiled in compiled_patterns {
+                let matches: Vec<_> = root.root().find_all(&compiled).collect();
+                if matches.is_empty() {
+                    continue;
+                }
+                let ranges: Vec<(usize, usize)> = matches
+                    .iter()
+                    .map(|m| {
+                        let r = m.get_node().range();
+                        let end = r.end.min(snippet.len());
+                        (r.start.min(snippet.len()), end)
+                    })
+                    .filter(|(s, e)| s < e)
+                    .collect();
+                if ranges.is_empty() {
+                    continue;
+                }
+                let count = ranges.len();
+                picked = Some((count, ranges));
+                break;
+            }
+            let (count, match_ranges) = picked?;
             if count > 0 {
                 Some(PatternSuggestion {
                     pattern: pat,
                     description: desc,
                     match_count: count,
+                    match_ranges,
                 })
             } else {
                 None
@@ -146,6 +167,13 @@ fn rust_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "let mut $VAR = $EXPR", "let mut バインディング", "let mut binding"),
         probe_l(lang, "let $VAR: $TYPE = $EXPR", "型アノテーション付き let", "let with type annotation"),
         probe_l(lang, "$VAR = $EXPR", "再代入", "assignment"),
+        probe_l(lang, "$VAR += $EXPR", "複合代入（+=）", "compound assignment (+=)"),
+        probe_l(lang, "$VAR -= $EXPR", "複合代入（-=）", "compound assignment (-=)"),
+        probe_l(lang, "$VAR *= $EXPR", "複合代入（*=）", "compound assignment (*=)"),
+        probe_l(lang, "$VAR /= $EXPR", "複合代入（/=）", "compound assignment (/=)"),
+        probe_l(lang, "$VAR %= $EXPR", "複合代入（%=）", "compound assignment (%=)"),
+        probe_l(lang, "$OBJ.$FIELD = $EXPR", "フィールド代入", "field assignment"),
+        probe_l(lang, "self.$FIELD = $EXPR", "self フィールド代入", "self field assignment"),
         probe_l(lang, "if $COND { $$$BODY }", "if 式", "if expression"),
         probe_l(lang, "if $COND { $$$THEN } else { $$$ELSE }", "if-else 式", "if-else"),
         probe_l(lang, "match $EXPR { $$$ARMS }", "match 式", "match"),
@@ -177,13 +205,15 @@ fn rust_probes(lang: UiLanguage) -> Vec<(String, String)> {
 fn java_probes(lang: UiLanguage) -> Vec<(String, String)> {
     vec![
         probe_l(lang, "$RET $NAME($$$ARGS) { $$$BODY }", "メソッド定義", "method definition"),
-        probe_l(lang, "$MODS $RET $NAME($$$ARGS) { $$$BODY }", "修飾子付きメソッド定義", "method with modifiers"),
+        probe_l(lang, "public $RET $NAME($$$ARGS) { $$$BODY }", "public メソッド定義", "public method definition"),
         probe_l(lang, "class $NAME { $$$BODY }", "クラス定義", "class definition"),
         probe_l(lang, "class $NAME extends $PARENT { $$$BODY }", "継承クラス定義", "class extends"),
         probe_l(lang, "interface $NAME { $$$BODY }", "インターフェース定義", "interface"),
         probe_l(lang, "enum $NAME { $$$BODY }", "enum定義", "enum"),
         probe_l(lang, "@$ANNOTATION", "アノテーション", "annotation"),
         probe_l(lang, "$TYPE $VAR = $EXPR", "変数宣言", "variable declaration"),
+        probe_l(lang, "$VAR = $EXPR;", "代入文", "assignment statement"),
+        probe_l(lang, "$VAR += $EXPR;", "複合代入（+=）", "compound assignment (+=)"),
         probe_l(lang, "$TYPE $NAME($$$ARGS)", "メソッドシグネチャ", "method signature"),
         probe_l(lang, "$RECV.$METHOD($$$ARGS)", "メソッド呼び出し", "method call"),
         probe_l(lang, "new $TYPE($$$ARGS)", "コンストラクタ呼び出し", "constructor call"),
@@ -224,6 +254,9 @@ fn python_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "from $MODULE import $NAME", "from import 文", "from import"),
         probe_l(lang, "print($$$ARGS)", "print 呼び出し", "print()"),
         probe_l(lang, "$VAR = $EXPR", "代入", "assignment"),
+        probe_l(lang, "$VAR += $EXPR", "複合代入（+=）", "compound assignment (+=)"),
+        probe_l(lang, "$VAR -= $EXPR", "複合代入（-=）", "compound assignment (-=)"),
+        probe_l(lang, "$VAR *= $EXPR", "複合代入（*=）", "compound assignment (*=)"),
         probe_l(lang, "return $EXPR", "return文", "return"),
         probe_l(lang, "raise $EXPR", "例外送出", "raise"),
         probe_l(lang, "try: ...\nexcept $EX: ...", "try-except", "try-except"),
@@ -259,6 +292,8 @@ fn js_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "const $VAR = $EXPR", "const 宣言", "const"),
         probe_l(lang, "let $VAR = $EXPR", "let 宣言", "let"),
         probe_l(lang, "var $VAR = $EXPR", "var 宣言", "var"),
+        probe_l(lang, "$VAR = $EXPR", "代入", "assignment"),
+        probe_l(lang, "$VAR += $EXPR", "複合代入（+=）", "compound assignment (+=)"),
         probe_l(lang, "$EXPR ?? $DEFAULT", "Nullish Coalescing", "nullish coalescing"),
         probe_l(lang, "$OBJ?.$PROP", "Optional Chaining", "optional chaining"),
         probe_l(lang, "throw new $TYPE($$$ARGS)", "例外スロー", "throw"),
@@ -306,6 +341,8 @@ fn go_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "go $FUNC($$$ARGS)", "goroutine 起動", "go statement"),
         probe_l(lang, "$VAR, err := $EXPR", "エラー返却代入", "error return assign"),
         probe_l(lang, "$VAR := $EXPR", "短縮変数宣言", "short var decl"),
+        probe_l(lang, "$VAR = $EXPR", "代入", "assignment"),
+        probe_l(lang, "$VAR += $EXPR", "複合代入（+=）", "compound assignment (+=)"),
         probe_l(lang, "defer $FUNC($$$ARGS)", "defer", "defer"),
     ]
 }
@@ -315,6 +352,7 @@ fn c_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "$RET $NAME($$$ARGS) { $$$BODY }", "関数定義", "function"),
         probe_l(lang, "$TYPE $VAR = $EXPR;", "変数定義", "variable def"),
         probe_l(lang, "$VAR = $EXPR;", "代入", "assignment"),
+        probe_l(lang, "$VAR += $EXPR;", "複合代入（+=）", "compound assignment (+=)"),
         probe_l(lang, "$FUNC($$$ARGS)", "関数呼び出し", "function call"),
         probe_l(lang, "if ($COND) { $$$BODY }", "if 文", "if"),
         probe_l(lang, "if ($COND) { $$$THEN } else { $$$ELSE }", "if-else 文", "if-else"),
@@ -325,6 +363,36 @@ fn c_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "$PTR == NULL", "NULL チェック", "NULL check"),
         probe_l(lang, "$PTR != NULL", "NULL 非チェック", "not NULL check"),
         probe_l(lang, "#include $HEADER", "include", "#include"),
+        probe_l(
+            lang,
+            "#ifdef $MACRO\n$$$THEN\n#else\n$$$ELSE\n#endif",
+            "#ifdef … #else … #endif",
+            "#ifdef … #else … #endif",
+        ),
+        probe_l(
+            lang,
+            "#ifndef $MACRO\n$$$THEN\n#else\n$$$ELSE\n#endif",
+            "#ifndef … #else … #endif",
+            "#ifndef … #else … #endif",
+        ),
+        probe_l(
+            lang,
+            "#ifdef $MACRO\n$$$BODY\n#endif",
+            "#ifdef … #endif（分岐全体。真・偽の両方の行を $$$BODY がまとめてマッチ）",
+            "#ifdef … #endif (whole block; both branches match as $$$BODY)",
+        ),
+        probe_l(
+            lang,
+            "#ifndef $MACRO\n$$$BODY\n#endif",
+            "#ifndef … #endif（分岐全体）",
+            "#ifndef … #endif (whole block)",
+        ),
+        probe_l(
+            lang,
+            "#if $COND\n$$$THEN\n#else\n$$$ELSE\n#endif",
+            "#if … #else … #endif",
+            "#if … #else … #endif",
+        ),
         probe_l(lang, "$TYPE *$VAR", "ポインタ宣言", "pointer decl"),
         probe_l(lang, "$TYPE $NAME[$SIZE]", "配列宣言", "array decl"),
     ]
@@ -363,6 +431,15 @@ fn cpp_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "throw $EXPR;", "throw", "throw"),
         probe_l(lang, "std::cout << $EXPR", "std::cout", "std::cout"),
         probe_l(lang, "auto $VAR = $EXPR;", "auto 変数宣言", "auto"),
+        probe_l(lang, "$VAR -= $EXPR;", "複合代入（-=）", "compound assignment (-=)"),
+        probe_l(lang, "$VAR *= $EXPR;", "複合代入（*=）", "compound assignment (*=)"),
+        probe_l(lang, "$VAR /= $EXPR;", "複合代入（/=）", "compound assignment (/=)"),
+        probe_l(lang, "$VAR %= $EXPR;", "複合代入（%=）", "compound assignment (%=)"),
+        probe_l(lang, "$OBJ.$FIELD = $EXPR;", "メンバ代入（`.`）", "member assignment (.)"),
+        probe_l(lang, "$OBJ->$FIELD = $EXPR;", "ポインタメンバ代入（`->`）", "pointer member assignment (->)"),
+        probe_l(lang, "this->$FIELD = $EXPR;", "this-> メンバ代入", "this-> member assignment"),
+        probe_l(lang, "*$PTR = $EXPR;", "間接代入（`*ptr`）", "indirect assignment"),
+        probe_l(lang, "$ARR[$I] = $EXPR;", "添字代入", "subscript assignment"),
         probe_l(lang, "$PTR == nullptr", "nullptr チェック", "nullptr check"),
         probe_l(lang, "$PTR != nullptr", "nullptr 非チェック", "not nullptr check"),
         probe_l(lang, "#include <$HEADER>", "include <...>", "#include <>"),
@@ -476,6 +553,96 @@ fn cpp_probes(lang: UiLanguage) -> Vec<(String, String)> {
             "requires clause (block)",
         ),
         probe_l(lang, "if constexpr ($COND) { $$$BODY }", "if constexpr", "if constexpr"),
+        // ─── C++ 頻出（標準ライブラリ・宣言・慣用句。OSS でよく見られる形）────────────
+        probe_l(lang, "std::string_view $VAR", "std::string_view 変数", "std::string_view var"),
+        probe_l(
+            lang,
+            "std::scoped_lock<$TYPE> $VAR($MUTEX);",
+            "std::scoped_lock",
+            "std::scoped_lock",
+        ),
+        probe_l(lang, "$OBJ.push_back($EXPR);", "コンテナ push_back", "container push_back"),
+        probe_l(lang, "$OBJ.emplace_back($$$ARGS);", "コンテナ emplace_back", "container emplace_back"),
+        probe_l(
+            lang,
+            "std::unordered_map<$K, $V> $VAR",
+            "std::unordered_map 変数",
+            "std::unordered_map var",
+        ),
+        probe_l(lang, "std::map<$K, $V> $VAR", "std::map 変数", "std::map var"),
+        probe_l(lang, "std::lock($A, $B);", "std::lock（複数 mutex）", "std::lock (multiple mutexes)"),
+        probe_l(lang, "std::function<$TYPE> $VAR", "std::function 変数", "std::function var"),
+        probe_l(lang, "std::atomic<$TYPE> $VAR", "std::atomic 変数", "std::atomic var"),
+        probe_l(lang, "namespace { $$$BODY }", "無名 namespace", "anonymous namespace"),
+        probe_l(
+            lang,
+            "extern \"C\" { $$$BODY }",
+            "extern \"C\" リンケージ",
+            "extern \"C\" linkage",
+        ),
+        probe_l(
+            lang,
+            "static_assert($COND);",
+            "static_assert（メッセージ省略）",
+            "static_assert (no message)",
+        ),
+        probe_l(
+            lang,
+            "$RET operator()($$$ARGS) { $$$BODY }",
+            "operator()（関数オブジェクト）",
+            "operator() (call operator)",
+        ),
+        probe_l(
+            lang,
+            "$NAME($$$ARGS) : $FIELD($EXPR) { $$$BODY }",
+            "コンストラクタ（メンバ初期化子 1 件）",
+            "constructor (single member initializer)",
+        ),
+        probe_l(
+            lang,
+            "$NAME($$$ARGS) = default;",
+            "特殊メンバ（= default 宣言）",
+            "special member (= default decl)",
+        ),
+        probe_l(
+            lang,
+            "$NAME($$$ARGS) = delete;",
+            "特殊メンバ（= delete 宣言）",
+            "special member (= delete decl)",
+        ),
+        probe_l(
+            lang,
+            "auto $NAME($$$ARGS) -> $RET { $$$BODY }",
+            "末尾戻り値型（trailing return）",
+            "trailing return type",
+        ),
+        probe_l(lang, "decltype($EXPR)", "decltype 式", "decltype expression"),
+        probe_l(lang, "std::to_string($EXPR)", "std::to_string", "std::to_string"),
+        probe_l(
+            lang,
+            "for (auto &$VAR : $ITER) { $$$BODY }",
+            "range-based for（auto&）",
+            "range-based for (auto&)",
+        ),
+        probe_l(
+            lang,
+            "for (const auto &$VAR : $ITER) { $$$BODY }",
+            "range-based for（const auto&）",
+            "range-based for (const auto&)",
+        ),
+        probe_l(lang, "friend $RET $NAME($$$ARGS);", "friend 関数宣言", "friend function declaration"),
+        probe_l(lang, "std::variant<$TYPES> $VAR", "std::variant 変数", "std::variant var"),
+        probe_l(lang, "std::visit($VISITOR, $VARIANT);", "std::visit", "std::visit"),
+        probe_l(lang, "std::get<$N>($VARIANT);", "std::get（variant/tuple）", "std::get (variant/tuple)"),
+        probe_l(lang, "std::pair<$A, $B> $VAR", "std::pair 変数", "std::pair var"),
+        probe_l(lang, "std::tuple<$TYPES> $VAR", "std::tuple 変数", "std::tuple var"),
+        probe_l(lang, "std::clamp($V, $LO, $HI)", "std::clamp", "std::clamp"),
+        probe_l(lang, "std::exchange($OBJ, $NEW)", "std::exchange", "std::exchange"),
+        probe_l(lang, "std::accumulate($$$ARGS)", "std::accumulate", "std::accumulate"),
+        probe_l(lang, "std::find($$$ARGS)", "std::find", "std::find"),
+        probe_l(lang, "std::sort($$$ARGS)", "std::sort", "std::sort"),
+        probe_l(lang, "std::lower_bound($$$ARGS)", "std::lower_bound", "std::lower_bound"),
+        probe_l(lang, "std::thread::hardware_concurrency()", "hardware_concurrency", "hardware_concurrency"),
     ]);
     probes
 }
@@ -486,9 +653,11 @@ fn csharp_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "interface $NAME { $$$BODY }", "interface 定義", "interface"),
         probe_l(lang, "enum $NAME { $$$BODY }", "enum 定義", "enum"),
         probe_l(lang, "namespace $NAME { $$$BODY }", "namespace", "namespace"),
-        probe_l(lang, "$MODS $RET $NAME($$$ARGS) { $$$BODY }", "メソッド定義", "method"),
+        probe_l(lang, "public $RET $NAME($$$ARGS) { $$$BODY }", "public メソッド定義", "public method"),
         probe_l(lang, "$TYPE $VAR = $EXPR;", "変数宣言", "variable"),
         probe_l(lang, "var $VAR = $EXPR;", "var 宣言", "var"),
+        probe_l(lang, "$VAR = $EXPR;", "代入", "assignment"),
+        probe_l(lang, "$VAR += $EXPR;", "複合代入（+=）", "compound assignment (+=)"),
         probe_l(lang, "$FUNC($$$ARGS)", "関数呼び出し", "function call"),
         probe_l(lang, "$RECV.$METHOD($$$ARGS)", "メソッド呼び出し", "method call"),
         probe_l(lang, "if ($COND) { $$$BODY }", "if 文", "if"),
@@ -519,6 +688,7 @@ fn kotlin_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "$RECV.$METHOD($$$ARGS)", "メソッド呼び出し", "method call"),
         probe_l(lang, "val $VAR = $EXPR", "val 宣言", "val"),
         probe_l(lang, "var $VAR = $EXPR", "var 宣言", "var"),
+        probe_l(lang, "$VAR = $EXPR", "代入", "assignment"),
         probe_l(lang, "if ($COND) { $$$BODY }", "if 式", "if"),
         probe_l(lang, "if ($COND) { $$$THEN } else { $$$ELSE }", "if-else", "if-else"),
         probe_l(lang, "when ($EXPR) { $$$BODY }", "when 式", "when"),
@@ -541,6 +711,7 @@ fn scala_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "$RECV.$METHOD($$$ARGS)", "メソッド呼び出し", "method call"),
         probe_l(lang, "val $VAR = $EXPR", "val 宣言", "val"),
         probe_l(lang, "var $VAR = $EXPR", "var 宣言", "var"),
+        probe_l(lang, "$VAR = $EXPR", "代入", "assignment"),
         probe_l(lang, "if ($COND) { $$$BODY }", "if 式", "if"),
         probe_l(lang, "if ($COND) { $$$THEN } else { $$$ELSE }", "if-else", "if-else"),
         probe_l(lang, "for ($VAR <- $ITER) { $$$BODY }", "for 内包", "for comprehension"),
@@ -558,6 +729,7 @@ fn generic_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "$FUNC($$$ARGS)", "関数/メソッド呼び出し（汎用）", "call (generic)"),
         probe_l(lang, "$RECV.$METHOD($$$ARGS)", "メソッド呼び出し（汎用）", "method call (generic)"),
         probe_l(lang, "$VAR = $EXPR", "代入（汎用）", "assignment (generic)"),
+        probe_l(lang, "$VAR += $EXPR", "複合代入（+=）（汎用）", "compound += (generic)"),
         probe_l(lang, "return $EXPR", "return（汎用）", "return (generic)"),
         probe_l(lang, "$A == $B", "等値比較（汎用）", "equality (generic)"),
         probe_l(lang, "$A != $B", "非等値比較（汎用）", "inequality (generic)"),
@@ -565,4 +737,77 @@ fn generic_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "$A || $B", "論理OR", "logical OR"),
         probe_l(lang, "if ($COND) { $$$BODY }", "if 文（汎用）", "if (generic)"),
     ]
+}
+
+#[cfg(test)]
+mod probe_pattern_syntax {
+    use std::collections::HashSet;
+
+    use crate::ast_pattern::compile_strategies;
+    use crate::i18n::UiLanguage;
+    use crate::lang::SupportedLanguage;
+
+    /// `build_probes` が返すパターン文字列（空の完全一致プレースホルダを除き、順序維持で重複除去）
+    fn probe_patterns_for_lang(lang: SupportedLanguage) -> Vec<String> {
+        let mut out: Vec<String> = super::build_probes("", lang, UiLanguage::English)
+            .into_iter()
+            .map(|(p, _)| p)
+            .filter(|p| !p.is_empty())
+            .collect();
+        let mut seen = HashSet::new();
+        out.retain(|p| seen.insert(p.clone()));
+        out
+    }
+
+    /// 本番と同じ `compile_strategies` で、各言語のパターン支援プローブが少なくとも 1 戦略でコンパイルできること
+    #[test]
+    fn all_fixed_languages_probe_patterns_compile() {
+        let langs = [
+            SupportedLanguage::Rust,
+            SupportedLanguage::Java,
+            SupportedLanguage::Python,
+            SupportedLanguage::JavaScript,
+            SupportedLanguage::TypeScript,
+            SupportedLanguage::Go,
+            SupportedLanguage::C,
+            SupportedLanguage::Cpp,
+            SupportedLanguage::CSharp,
+            SupportedLanguage::Kotlin,
+            SupportedLanguage::Scala,
+        ];
+        for lang in langs {
+            let ast_lang = lang.to_support_lang().expect("fixed language maps to SupportLang");
+            let patterns = probe_patterns_for_lang(lang);
+            assert!(
+                !patterns.is_empty(),
+                "no probe patterns collected for {lang:?}"
+            );
+            for (i, pattern) in patterns.iter().enumerate() {
+                let compiled = compile_strategies(pattern.as_str(), lang, ast_lang.clone());
+                assert!(
+                    !compiled.is_empty(),
+                    "lang={lang:?} probe[{i}] compile_strategies empty: {pattern:?}"
+                );
+            }
+        }
+    }
+
+    /// Auto は `generate_patterns` と同様に汎用プローブのみ。Rust パーサでコンパイル可否を確認する
+    #[test]
+    fn auto_mode_generic_probes_compile_with_rust_parser() {
+        let lang_ui = SupportedLanguage::Auto;
+        let lang_parse = SupportedLanguage::Rust;
+        let ast_lang = lang_parse
+            .to_support_lang()
+            .expect("Rust maps to SupportLang");
+        let patterns = probe_patterns_for_lang(lang_ui);
+        assert!(!patterns.is_empty(), "Auto should yield generic probes");
+        for (i, pattern) in patterns.iter().enumerate() {
+            let compiled = compile_strategies(pattern.as_str(), lang_parse, ast_lang.clone());
+            assert!(
+                !compiled.is_empty(),
+                "Auto/generic probe[{i}] compile_strategies empty: {pattern:?}"
+            );
+        }
+    }
 }

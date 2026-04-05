@@ -11,8 +11,8 @@ use crate::highlight::Highlighter;
 use crate::i18n::{Tr, UiLanguage, UiLanguagePreference};
 use crate::lang::SupportedLanguage;
 use crate::search::{
-    refresh_match_contexts, spawn_search, FileResult, MatchItem, SearchConditions, SearchMessage,
-    SearchMode, SearchStats,
+    refresh_match_contexts, spawn_search, FileResult, MatchItem, PlainTextSearchOptions,
+    SearchConditions, SearchMessage, SearchMode, SearchStats,
 };
 use crate::pattern_assist::PatternSuggestion;
 use crate::rewrite::{RewriteMessage, RewritePreview};
@@ -115,6 +115,8 @@ struct PersistedAppState {
     max_search_hits: usize,
     skip_dirs: String,
     search_mode: SearchMode,
+    #[serde(default)]
+    plain_text_options: PlainTextSearchOptions,
     /// UI 表示言語（自動 / 日本語 / 英語）
     #[serde(default)]
     ui_language_preference: UiLanguagePreference,
@@ -153,6 +155,7 @@ impl Default for PersistedAppState {
             max_search_hits: 100_000,
             skip_dirs: ".git;.hg;.svn;target;node_modules;dist;build;.cache;.next;vendor;__pycache__;venv;.venv".to_string(),
             search_mode: SearchMode::AstGrep,
+            plain_text_options: PlainTextSearchOptions::default(),
             ui_language_preference: UiLanguagePreference::default(),
             pattern_history: Vec::new(),
             regex_visualizer_test_text: String::new(),
@@ -190,6 +193,8 @@ pub struct AstGrepApp {
     pub pattern_assist_snippet: String,
     /// パターン支援：生成結果
     pub pattern_assist_results: Vec<PatternSuggestion>,
+    /// パターン候補表で選択中の行（0 始まり）。スニペットのマッチハイライトに使う
+    pub pattern_assist_selected_row: Option<usize>,
     /// ファイルクリック時にスクロールする対象行（1-based）、消費後はNone
     pub pending_scroll_line: Option<usize>,
     /// 結果の表示モード
@@ -206,9 +211,11 @@ pub struct AstGrepApp {
     pub skip_dirs: String,
     /// 検索モード（AstGrep / PlainText / Regex）
     pub search_mode: SearchMode,
+    /// 文字列検索モードのオプション（大文字小文字・単語単位）
+    pub plain_text_options: PlainTextSearchOptions,
     /// UI 表示言語
     pub ui_language_preference: UiLanguagePreference,
-    /// パターン支援ポップアップに転送するスニペット（Some のとき自動的に反映）
+    /// パターン支援ポップアップに転送するスニペット（Some のとき反映しパターン生成まで実行）
     pub pending_pattern_assist_snippet: Option<String>,
     /// 表モード: ダブルクリックで開くコードプレビュー（None で非表示）
     pub table_preview: Option<TablePreviewState>,
@@ -298,6 +305,7 @@ impl AstGrepApp {
             show_regex_visualizer: false,
             pattern_assist_snippet: String::new(),
             pattern_assist_results: Vec::new(),
+            pattern_assist_selected_row: None,
             pending_scroll_line: None,
             view_mode: persisted.view_mode,
             file_filter: persisted.file_filter,
@@ -306,6 +314,7 @@ impl AstGrepApp {
             max_search_hits: persisted.max_search_hits,
             skip_dirs: persisted.skip_dirs,
             search_mode: persisted.search_mode,
+            plain_text_options: persisted.plain_text_options,
             ui_language_preference: persisted.ui_language_preference,
             pending_pattern_assist_snippet: None,
             table_preview: None,
@@ -381,6 +390,7 @@ impl AstGrepApp {
             max_search_hits: self.max_search_hits,
             skip_dirs: self.skip_dirs.clone(),
             search_mode: self.search_mode,
+            plain_text_options: self.plain_text_options,
         }
     }
 
@@ -397,6 +407,7 @@ impl AstGrepApp {
             max_search_hits: self.max_search_hits,
             skip_dirs: self.skip_dirs.clone(),
             search_mode: self.search_mode,
+            plain_text_options: self.plain_text_options,
             ui_language_preference: self.ui_language_preference,
             pattern_history: self.pattern_history.clone(),
             regex_visualizer_test_text: self.regex_visualizer_test_text.clone(),
@@ -448,6 +459,7 @@ impl AstGrepApp {
             self.pattern.clone(),
             self.selected_lang,
             self.search_mode,
+            self.plain_text_options,
             self.context_lines,
             self.file_filter.clone(),
             self.file_encoding_preference,
@@ -479,6 +491,7 @@ impl AstGrepApp {
             self.max_search_hits,
             self.skip_dirs.clone(),
             self.search_mode,
+            self.plain_text_options,
         ));
     }
 
@@ -558,6 +571,7 @@ impl AstGrepApp {
             job.pattern.clone(),
             job.selected_lang,
             job.search_mode,
+            job.plain_text_options,
             job.context_lines,
             job.file_filter.clone(),
             job.file_encoding_preference,

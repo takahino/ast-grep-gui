@@ -33,6 +33,17 @@ impl SearchMode {
     }
 }
 
+/// 文字列検索モード（`SearchMode::PlainText`）のオプション
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct PlainTextSearchOptions {
+    /// 大文字小文字を区別しない
+    #[serde(default)]
+    pub case_insensitive: bool,
+    /// 前後が空白（Unicode `is_whitespace`）または行頭／行末で区切られた一致
+    #[serde(default)]
+    pub whole_word: bool,
+}
+
 /// バックグラウンド検索から UI へ送るメッセージ
 #[derive(Debug)]
 pub enum SearchMessage {
@@ -134,6 +145,26 @@ impl MatchItem {
 /// フォーマット: `*.rs;src/*.java;test_.*` のように `;` 区切りで指定する。
 /// 各エントリはファイル名全体に対してマッチされる。
 /// 空文字列の場合は `None`（言語デフォルト拡張子を使用）を返す。
+/// 行内の `[start, end)` が空白または行頭／行末で区切られた「塊」か。
+/// `regex` クレートは先読み・後読みをサポートしないため、単語単位はこれで判定する。
+fn is_whitespace_delimited_token(line: &str, start: usize, end: usize) -> bool {
+    if start > 0 {
+        if let Some(c) = line[..start].chars().next_back() {
+            if !c.is_whitespace() {
+                return false;
+            }
+        }
+    }
+    if end < line.len() {
+        if let Some(c) = line[end..].chars().next() {
+            if !c.is_whitespace() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn parse_file_filter(filter: &str) -> Option<Vec<regex::Regex>> {
     let trimmed = filter.trim();
     if trimmed.is_empty() {
@@ -165,6 +196,7 @@ pub fn spawn_search(
     pattern: String,
     lang: SupportedLanguage,
     search_mode: SearchMode,
+    plain_text_options: PlainTextSearchOptions,
     context_lines: usize,
     file_filter: String,
     file_encoding_preference: FileEncodingPreference,
@@ -179,6 +211,29 @@ pub fn spawn_search(
     std::thread::spawn(move || {
         let start = Instant::now();
         let pattern_str = Arc::new(pattern);
+        // 大文字小文字を区別しないときだけリテラル正規表現を使う（`regex` は look-around 非対応のため、
+        // 「単語単位」はマッチ後に `is_whitespace_delimited_token` で判定する）
+        let plain_text_ci_re: Option<Arc<regex::Regex>> =
+            if search_mode == SearchMode::PlainText && plain_text_options.case_insensitive {
+                let escaped = regex::escape(pattern_str.as_str());
+                match regex::RegexBuilder::new(&escaped)
+                    .case_insensitive(true)
+                    .build()
+                {
+                    Ok(re) => Some(Arc::new(re)),
+                    Err(e) => {
+                        let msg = Tr(ui_lang).err_regex_compile(e);
+                        let _ = tx.send(SearchMessage::Error {
+                            job_id,
+                            msg,
+                        });
+                        egui_ctx.request_repaint();
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
         let search_dir_path = Arc::new(Path::new(&search_dir).to_path_buf());
         let tx = Arc::new(tx);
         let scanned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -391,25 +446,92 @@ pub fn spawn_search(
                         out
                     }
                     SearchMode::PlainText => {
-                        // 行ごとにスキャンして部分一致を検索
                         let needle = pattern_str.as_str();
                         let mut result = Vec::new();
-                        'lines: for (line_idx, line) in lines.iter().enumerate() {
-                            let mut search_start = 0;
-                            while let Some(byte_pos) = line[search_start..].find(needle) {
-                                if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
-                                    break 'lines;
+                        let whole = plain_text_options.whole_word;
+
+                        if let Some(re) = plain_text_ci_re.as_ref() {
+                            'lines_re: for (line_idx, line) in lines.iter().enumerate() {
+                                for mat in re.find_iter(line) {
+                                    if whole
+                                        && !is_whitespace_delimited_token(line, mat.start(), mat.end())
+                                    {
+                                        continue;
+                                    }
+                                    if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
+                                        break 'lines_re;
+                                    }
+                                    let col_start = mat.start();
+                                    let col_end = mat.end();
+                                    let matched_text = line[col_start..col_end].to_string();
+                                    result.push(build_match_item(
+                                        line_idx,
+                                        col_start,
+                                        line_idx,
+                                        col_end,
+                                        matched_text,
+                                        &lines,
+                                        context_lines,
+                                        None,
+                                    ));
                                 }
-                                let col_start = search_start + byte_pos;
-                                let col_end = col_start + needle.len();
-                                let matched_text = line[col_start..col_end].to_string();
-                                result.push(build_match_item(
-                                    line_idx, col_start, line_idx, col_end,
-                                    matched_text, &lines, context_lines,
-                                    None,
-                                ));
-                                search_start = col_end;
-                                if search_start >= line.len() { break; }
+                            }
+                        } else if whole {
+                            'lines_w: for (line_idx, line) in lines.iter().enumerate() {
+                                let mut search_start = 0;
+                                while let Some(byte_pos) = line[search_start..].find(needle) {
+                                    let col_start = search_start + byte_pos;
+                                    let col_end = col_start + needle.len();
+                                    if !is_whitespace_delimited_token(line, col_start, col_end) {
+                                        search_start = col_start.saturating_add(1);
+                                        continue;
+                                    }
+                                    if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
+                                        break 'lines_w;
+                                    }
+                                    let matched_text = line[col_start..col_end].to_string();
+                                    result.push(build_match_item(
+                                        line_idx,
+                                        col_start,
+                                        line_idx,
+                                        col_end,
+                                        matched_text,
+                                        &lines,
+                                        context_lines,
+                                        None,
+                                    ));
+                                    search_start = col_end;
+                                    if search_start >= line.len() {
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            // 行ごとにスキャンして部分一致（大小区別・単語境界なしの高速パス）
+                            'lines: for (line_idx, line) in lines.iter().enumerate() {
+                                let mut search_start = 0;
+                                while let Some(byte_pos) = line[search_start..].find(needle) {
+                                    if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
+                                        break 'lines;
+                                    }
+                                    let col_start = search_start + byte_pos;
+                                    let col_end = col_start + needle.len();
+                                    let matched_text = line[col_start..col_end].to_string();
+                                    result.push(build_match_item(
+                                        line_idx,
+                                        col_start,
+                                        line_idx,
+                                        col_end,
+                                        matched_text,
+                                        &lines,
+                                        context_lines,
+                                        None,
+                                    ));
+                                    search_start = col_end;
+                                    if search_start >= line.len() {
+                                        break;
+                                    }
+                                }
                             }
                         }
                         result
@@ -586,6 +708,9 @@ pub struct SearchConditions {
     pub max_search_hits: usize,
     pub skip_dirs: String,
     pub search_mode: SearchMode,
+    /// 文字列検索モード時のみ有効（それ以外は無視）
+    #[serde(default)]
+    pub plain_text_options: PlainTextSearchOptions,
 }
 
 pub(crate) fn default_max_search_hits() -> usize {
