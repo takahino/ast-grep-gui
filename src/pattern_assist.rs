@@ -103,6 +103,8 @@ fn build_probes(
         SupportedLanguage::C => c_probes(ui_lang),
         SupportedLanguage::Cpp => cpp_probes(ui_lang),
         SupportedLanguage::CSharp => csharp_probes(ui_lang),
+        SupportedLanguage::Kotlin => kotlin_probes(ui_lang),
+        SupportedLanguage::Scala => scala_probes(ui_lang),
     };
     probes.extend(lang_probes);
 
@@ -476,6 +478,49 @@ fn csharp_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "$VAR == null", "null チェック", "null check"),
         probe_l(lang, "$VAR != null", "null 非チェック", "not-null check"),
         probe_l(lang, "Console.WriteLine($$$ARGS)", "Console.WriteLine", "Console.WriteLine"),
+    ]
+}
+
+// ─── Kotlin ──────────────────────────────────────────────────────────────
+
+fn kotlin_probes(lang: UiLanguage) -> Vec<(String, String)> {
+    vec![
+        probe_l(lang, "fun $NAME($$$ARGS) { $$$BODY }", "関数定義", "function"),
+        probe_l(lang, "class $NAME { $$$BODY }", "クラス定義", "class"),
+        probe_l(lang, "interface $NAME { $$$BODY }", "インターフェース定義", "interface"),
+        probe_l(lang, "object $NAME { $$$BODY }", "object 宣言", "object"),
+        probe_l(lang, "$FUNC($$$ARGS)", "関数呼び出し", "function call"),
+        probe_l(lang, "$RECV.$METHOD($$$ARGS)", "メソッド呼び出し", "method call"),
+        probe_l(lang, "val $VAR = $EXPR", "val 宣言", "val"),
+        probe_l(lang, "var $VAR = $EXPR", "var 宣言", "var"),
+        probe_l(lang, "if ($COND) { $$$BODY }", "if 式", "if"),
+        probe_l(lang, "if ($COND) { $$$THEN } else { $$$ELSE }", "if-else", "if-else"),
+        probe_l(lang, "when ($EXPR) { $$$BODY }", "when 式", "when"),
+        probe_l(lang, "for ($VAR in $ITER) { $$$BODY }", "for ループ", "for-in"),
+        probe_l(lang, "while ($COND) { $$$BODY }", "while ループ", "while"),
+        probe_l(lang, "return $EXPR", "return", "return"),
+        probe_l(lang, "println($$$ARGS)", "println", "println"),
+    ]
+}
+
+// ─── Scala ─────────────────────────────────────────────────────────────────
+
+fn scala_probes(lang: UiLanguage) -> Vec<(String, String)> {
+    vec![
+        probe_l(lang, "def $NAME($$$ARGS) = $EXPR", "def 定義", "def"),
+        probe_l(lang, "class $NAME { $$$BODY }", "クラス定義", "class"),
+        probe_l(lang, "object $NAME { $$$BODY }", "object 定義", "object"),
+        probe_l(lang, "trait $NAME { $$$BODY }", "trait 定義", "trait"),
+        probe_l(lang, "$FUNC($$$ARGS)", "関数呼び出し", "function call"),
+        probe_l(lang, "$RECV.$METHOD($$$ARGS)", "メソッド呼び出し", "method call"),
+        probe_l(lang, "val $VAR = $EXPR", "val 宣言", "val"),
+        probe_l(lang, "var $VAR = $EXPR", "var 宣言", "var"),
+        probe_l(lang, "if ($COND) { $$$BODY }", "if 式", "if"),
+        probe_l(lang, "if ($COND) { $$$THEN } else { $$$ELSE }", "if-else", "if-else"),
+        probe_l(lang, "for ($VAR <- $ITER) { $$$BODY }", "for 内包", "for comprehension"),
+        probe_l(lang, "while ($COND) { $$$BODY }", "while ループ", "while"),
+        probe_l(lang, "return $EXPR", "return", "return"),
+        probe_l(lang, "println($$$ARGS)", "println", "println"),
     ]
 }
 

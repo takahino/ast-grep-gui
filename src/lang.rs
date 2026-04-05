@@ -19,6 +19,8 @@ pub enum SupportedLanguage {
     Cpp,
     C,
     CSharp,
+    Kotlin,
+    Scala,
 }
 
 impl SupportedLanguage {
@@ -34,6 +36,8 @@ impl SupportedLanguage {
             Self::Cpp,
             Self::C,
             Self::CSharp,
+            Self::Kotlin,
+            Self::Scala,
         ]
     }
 
@@ -50,6 +54,8 @@ impl SupportedLanguage {
             Self::Cpp,
             Self::C,
             Self::CSharp,
+            Self::Kotlin,
+            Self::Scala,
         ]
     }
 
@@ -74,6 +80,8 @@ impl SupportedLanguage {
             Self::C => "C",
             Self::Cpp => "C++",
             Self::CSharp => "C#",
+            Self::Kotlin => "Kotlin",
+            Self::Scala => "Scala",
         }
     }
 
@@ -89,6 +97,8 @@ impl SupportedLanguage {
             Self::C => &["c", "h"],
             Self::Cpp => &["cpp", "cc", "cxx", "h", "hpp", "hh", "hxx"],
             Self::CSharp => &["cs"],
+            Self::Kotlin => &["kt", "kts", "ktm"],
+            Self::Scala => &["scala", "sc", "sbt"],
         }
     }
 
@@ -106,6 +116,8 @@ impl SupportedLanguage {
             Self::C => Some("c"),
             Self::Cpp => Some("cpp"),
             Self::CSharp => Some("csharp"),
+            Self::Kotlin => Some("kotlin"),
+            Self::Scala => Some("scala"),
         }
     }
 
@@ -121,6 +133,8 @@ impl SupportedLanguage {
             "c" => Some(Self::C),
             "cpp" | "c++" | "cc" | "cxx" => Some(Self::Cpp),
             "csharp" | "cs" | "c#" => Some(Self::CSharp),
+            "kotlin" | "kt" | "kts" | "ktm" => Some(Self::Kotlin),
+            "scala" | "sc" | "sbt" => Some(Self::Scala),
             _ => None,
         }
     }
@@ -138,6 +152,8 @@ impl SupportedLanguage {
             Self::C => Some(SupportLang::C),
             Self::Cpp => Some(SupportLang::Cpp),
             Self::CSharp => Some(SupportLang::CSharp),
+            Self::Kotlin => Some(SupportLang::Kotlin),
+            Self::Scala => Some(SupportLang::Scala),
         }
     }
 
@@ -154,6 +170,8 @@ impl SupportedLanguage {
             Self::C => "C",
             Self::Cpp => "C++",
             Self::CSharp => "C#",
+            Self::Kotlin => "Kotlin",
+            Self::Scala => "Scala",
         }
     }
 
@@ -289,6 +307,30 @@ pub fn presets_for(lang: SupportedLanguage, ui: UiLanguage) -> Vec<Preset> {
             pattern: "if err != nil { $$$BODY }",
             description: t.preset_go_err_desc().to_string(),
         }],
+        SupportedLanguage::Kotlin => vec![
+            Preset {
+                label: t.preset_kotlin_println().to_string(),
+                pattern: "println($$$ARGS)",
+                description: t.preset_kotlin_println_desc().to_string(),
+            },
+            Preset {
+                label: t.preset_kotlin_fun().to_string(),
+                pattern: "fun $NAME($$$ARGS) { $$$BODY }",
+                description: t.preset_kotlin_fun_desc().to_string(),
+            },
+        ],
+        SupportedLanguage::Scala => vec![
+            Preset {
+                label: t.preset_scala_println().to_string(),
+                pattern: "println($$$ARGS)",
+                description: t.preset_scala_println_desc().to_string(),
+            },
+            Preset {
+                label: t.preset_scala_def().to_string(),
+                pattern: "def $NAME($$$ARGS) = $EXPR",
+                description: t.preset_scala_def_desc().to_string(),
+            },
+        ],
         _ => vec![Preset {
             label: t.preset_generic_any().to_string(),
             pattern: "$EXPR",

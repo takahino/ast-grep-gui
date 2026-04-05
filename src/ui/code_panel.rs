@@ -94,6 +94,12 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     .color(egui::Color32::GRAY),
                             );
                             let block = m.text_with_context();
+                            let hover = match m.recv_type_hint.as_ref().filter(|s| !s.is_empty()) {
+                                Some(h) => {
+                                    format!("{}{}\n\n{}", t.code_recv_hint_prefix(), h, block)
+                                }
+                                None => block.clone(),
+                            };
                             let preview = block.lines().next().unwrap_or("").trim();
                             let short = if preview.len() > 60 {
                                 format!("{}…", &preview[..57])
@@ -106,7 +112,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     .monospace()
                                     .color(egui::Color32::from_rgb(220, 200, 100)),
                             )
-                            .on_hover_text(&block);
+                            .on_hover_text(&hover);
                             if ui
                                 .small_button(t.to_assist())
                                 .on_hover_text(t.to_assist_tooltip())

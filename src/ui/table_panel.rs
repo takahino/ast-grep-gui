@@ -3,7 +3,7 @@ use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 
 use crate::app::{AstGrepApp, TablePreviewState, TableRowRef};
 use crate::highlight::build_layout_job_from_line;
-use crate::search::MatchItem;
+use crate::search::{pattern_contains_dollar_recv, MatchItem};
 
 /// 長いパスは先頭を「...」で省略し末尾のみ表示する（UTF-8 の文字境界で切る）。
 fn ellipsis_path_tail(path: &str, max_chars: usize, tail_chars: usize) -> String {
@@ -70,10 +70,11 @@ fn context_match_item(m: &MatchItem) -> MatchItem {
         span_lines_text: m.span_lines_text.clone(),
         context_before: Vec::new(),
         context_after: Vec::new(),
+        recv_type_hint: m.recv_type_hint.clone(),
     }
 }
 
-fn render_header(ui: &mut Ui, t: crate::i18n::Tr) {
+fn render_header(ui: &mut Ui, t: crate::i18n::Tr, show_recv_col: bool) {
     ui.horizontal(|ui| {
         ui.add_sized(
             [240.0, ui.spacing().interact_size.y],
@@ -95,6 +96,12 @@ fn render_header(ui: &mut Ui, t: crate::i18n::Tr) {
             [520.0, ui.spacing().interact_size.y],
             Label::new(RichText::new(t.table_col_source_context()).strong()),
         );
+        if show_recv_col {
+            ui.add_sized(
+                [160.0, ui.spacing().interact_size.y],
+                Label::new(RichText::new(t.table_col_recv_hint()).strong()),
+            );
+        }
         ui.add_sized(
             [90.0, ui.spacing().interact_size.y],
             Label::new(RichText::new(t.table_col_action()).strong()),
@@ -139,9 +146,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     const LINE_W: f32 = 60.0;
     const COL_W: f32 = 60.0;
     const MATCH_W: f32 = 280.0;
+    const RECV_HINT_W: f32 = 160.0;
     const SOURCE_W: f32 = 520.0;
     const ACTION_W: f32 = 90.0;
-    const TOTAL_W: f32 = FILE_W + LINE_W + COL_W + MATCH_W + SOURCE_W + ACTION_W + 48.0;
+    let show_recv_col = pattern_contains_dollar_recv(app.pattern.as_str());
+    let total_w = FILE_W
+        + LINE_W
+        + COL_W
+        + MATCH_W
+        + SOURCE_W
+        + (if show_recv_col { RECV_HINT_W } else { 0.0 })
+        + ACTION_W
+        + 48.0;
 
     let row_unit_height = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
 
@@ -149,8 +165,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         .id_salt("table_view")
         .auto_shrink([false, false])
         .show_viewport(ui, |ui, viewport| {
-            ui.set_min_width(TOTAL_W);
-            render_header(ui, t);
+            ui.set_min_width(total_w);
+            render_header(ui, t, show_recv_col);
             ui.separator();
 
             let header_height = row_unit_height + ui.spacing().item_spacing.y + 6.0;
@@ -163,7 +179,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 let target_height_units = app.table_row_units.get(target_row).copied().unwrap_or(1);
                 let target_rect = Rect::from_min_size(
                     egui::pos2(0.0, content_top + target_units as f32 * row_unit_height),
-                    Vec2::new(TOTAL_W, target_height_units as f32 * row_unit_height),
+                    Vec2::new(total_w, target_height_units as f32 * row_unit_height),
                 );
                 ui.scroll_to_rect(target_rect, Some(Align::Center));
             }
@@ -194,6 +210,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     line_start,
                     col_start,
                     matched_text,
+                    recv_type_hint,
                     source_context_job,
                     full_context,
                     matches,
@@ -202,6 +219,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 ) = {
                     let file = &app.results[file_idx];
                     let m = &file.matches[match_idx];
+                    let recv_type_hint = m.recv_type_hint.clone();
                     let full_context = m.program_with_context();
                     let snippet_cache_key =
                         format!("table:{}:{match_idx}:{}:{}", file.relative_path, m.line_start, m.col_start);
@@ -218,6 +236,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         m.line_start,
                         m.col_start,
                         m.matched_text.clone(),
+                        recv_type_hint,
                         build_layout_job_from_line(
                             snippet_highlighted,
                             &snippet_matches,
@@ -229,6 +248,27 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         file.source_language,
                         file.text_encoding.clone(),
                     )
+                };
+
+                let recv_hint_cell: Option<(String, String)> = if show_recv_col {
+                    Some(
+                        match recv_type_hint.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                            None => (
+                                "—".to_string(),
+                                t.table_recv_hint_none_tooltip().to_string(),
+                            ),
+                            Some(s) => {
+                                let display = if s.chars().count() > 28 {
+                                    format!("{}…", s.chars().take(25).collect::<String>())
+                                } else {
+                                    s.to_string()
+                                };
+                                (display, s.to_string())
+                            }
+                        },
+                    )
+                } else {
+                    None
                 };
 
                 let file_label = ellipsis_path_tail(&relative_path, 40, 37);
@@ -246,7 +286,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 };
 
                 egui::Frame::default().fill(row_bg).show(ui, |ui| {
-                    ui.set_min_width(TOTAL_W);
+                    ui.set_min_width(total_w);
                     ui.set_min_height(row_height);
                     ui.horizontal(|ui| {
                         let r_file =
@@ -273,6 +313,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         )
                             .on_hover_text(&full_context);
 
+                        let r_recv_hint = recv_hint_cell.as_ref().map(|(disp, hov)| {
+                            label_cell(ui, RECV_HINT_W, disp.as_str(), Sense::click())
+                                .on_hover_text(hov.as_str())
+                        });
+
                         let r_assist = ui
                             .add_sized([ACTION_W, row_unit_height], egui::Button::new(t.to_assist()).small())
                             .on_hover_text(t.to_assist_tooltip());
@@ -281,22 +326,28 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                             send_to_assist = Some(matched_text.clone());
                         }
 
-                        if r_file.clicked()
+                        let mut any_click = r_file.clicked()
                             || r_line.clicked()
                             || r_col.clicked()
                             || r_matched.clicked()
                             || r_src.clicked()
-                            || r_assist.clicked()
-                        {
+                            || r_assist.clicked();
+                        if let Some(ref r) = r_recv_hint {
+                            any_click |= r.clicked();
+                        }
+                        if any_click {
                             app.table_last_clicked_row = Some(row_idx);
                         }
 
-                        if r_file.double_clicked()
+                        let mut any_dbl = r_file.double_clicked()
                             || r_line.double_clicked()
                             || r_col.double_clicked()
                             || r_matched.double_clicked()
-                            || r_src.double_clicked()
-                        {
+                            || r_src.double_clicked();
+                        if let Some(ref r) = r_recv_hint {
+                            any_dbl |= r.double_clicked();
+                        }
+                        if any_dbl {
                             open_table_preview = Some(TablePreviewState {
                                 path,
                                 relative_path,

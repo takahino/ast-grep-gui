@@ -1228,6 +1228,34 @@ impl Tr {
         }
     }
 
+    /// 表: `$RECV` から推定した型（表示専用）
+    pub fn table_col_recv_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "推定型 ($RECV)",
+            UiLanguage::English => "Inferred ($RECV)",
+        }
+    }
+
+    /// 表: 推定型が無いときのツールチップ
+    pub fn table_recv_hint_none_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "パターンに $RECV が無いか、構文から型を推定できませんでした"
+            }
+            UiLanguage::English => {
+                "No $RECV in pattern, or type could not be inferred from syntax"
+            }
+        }
+    }
+
+    /// コードビュー: マッチ一覧の推定型ツールチップ用プレフィックス
+    pub fn code_recv_hint_prefix(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "推定型: ",
+            UiLanguage::English => "Inferred: ",
+        }
+    }
+
     /// 表: ダブルクリックで開くコードプレビューウィンドウのタイトル
     pub fn table_preview_window_title(self) -> &'static str {
         match self.0 {
@@ -1352,6 +1380,18 @@ impl Tr {
         }
     }
 
+    /// Markdown テーブル: `$RECV` 推定型列付き（パターンに `$RECV` があるとき）
+    pub fn export_md_table_header_with_recv(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "| ファイル | 行 | 列 | マッチテキスト | 元コード（前後） | 推定型 ($RECV) |\n"
+            }
+            UiLanguage::English => {
+                "| File | Line | Col | Matched text | Source (context) | Inferred ($RECV) |\n"
+            }
+        }
+    }
+
     pub fn export_html_lang(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "ja",
@@ -1410,6 +1450,14 @@ impl Tr {
         }
     }
 
+    /// HTML テーブル: `$RECV` 推定型列（パターンに `$RECV` があるとき）
+    pub fn export_html_th_recv_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "推定型 ($RECV)",
+            UiLanguage::English => "Inferred ($RECV)",
+        }
+    }
+
     pub fn export_xlsx_sheet_results(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "検索結果",
@@ -1452,6 +1500,15 @@ impl Tr {
             UiLanguage::English => "Source (context)",
         }
     }
+
+    /// Excel: `$RECV` 推定型列（パターンに `$RECV` があるとき）
+    pub fn export_xlsx_col_recv_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "推定型 ($RECV)",
+            UiLanguage::English => "Inferred ($RECV)",
+        }
+    }
+
     pub fn export_xlsx_total_matches(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "総マッチ数",
@@ -1689,6 +1746,48 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "エラーチェック",
             UiLanguage::English => "if err != nil { ... }",
+        }
+    }
+    pub fn preset_kotlin_println(self) -> &'static str {
+        "println"
+    }
+    pub fn preset_kotlin_println_desc(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "println()の使用箇所",
+            UiLanguage::English => "println() calls",
+        }
+    }
+    pub fn preset_kotlin_fun(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "fun 定義",
+            UiLanguage::English => "fun definition",
+        }
+    }
+    pub fn preset_kotlin_fun_desc(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "トップレベルまたはメンバの関数定義",
+            UiLanguage::English => "Top-level or member function",
+        }
+    }
+    pub fn preset_scala_println(self) -> &'static str {
+        "println"
+    }
+    pub fn preset_scala_println_desc(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "println()の使用箇所",
+            UiLanguage::English => "println() calls",
+        }
+    }
+    pub fn preset_scala_def(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "def 定義",
+            UiLanguage::English => "def definition",
+        }
+    }
+    pub fn preset_scala_def_desc(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "def で = 右辺を持つ定義",
+            UiLanguage::English => "def with = body",
         }
     }
     pub fn preset_generic_any(self) -> &'static str {

@@ -8,6 +8,7 @@ mod highlight;
 mod i18n;
 mod lang;
 mod pattern_assist;
+mod receiver_hint;
 mod search;
 mod sg_command;
 mod terminal;

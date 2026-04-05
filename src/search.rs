@@ -12,6 +12,7 @@ use rayon::prelude::*;
 use crate::file_encoding::{read_text_file, read_text_file_as, FileEncoding, FileEncodingPreference};
 use crate::i18n::{Tr, UiLanguage};
 use crate::lang::SupportedLanguage;
+use crate::receiver_hint;
 
 /// 検索モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -81,6 +82,10 @@ pub struct MatchItem {
     pub span_lines_text: String,
     pub context_before: Vec<String>,
     pub context_after: Vec<String>,
+    /// `$RECV` から推定した receiver 型（JSON 等では値が無いときはキー省略）
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recv_type_hint: Option<String>,
 }
 
 impl MatchItem {
@@ -320,6 +325,7 @@ pub fn spawn_search(
 
                         let root = ast_lang.ast_grep(&source);
                         let mut out = Vec::new();
+                        let want_recv_hint = pattern_contains_dollar_recv(pattern_str.as_str());
                         for node in root.root().find_all(&compiled_pat) {
                             if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
                                 break;
@@ -336,9 +342,21 @@ pub fn spawn_search(
                                 .get(node_range.start..matched_end)
                                 .map(str::to_owned)
                                 .unwrap_or_else(|| node.text().to_string());
+                            let recv_type_hint = if want_recv_hint {
+                                let hint_ctx = receiver_hint::RecvHintContext {
+                                    file_path: path.as_path(),
+                                    source: source.as_str(),
+                                };
+                                node.get_env().get_match("RECV").and_then(|recv| {
+                                    receiver_hint::infer_recv_type(file_lang, recv, Some(&hint_ctx))
+                                })
+                            } else {
+                                None
+                            };
                             out.push(build_match_item(
                                 line_start, col_start, line_end, col_end,
                                 matched_text, &lines, context_lines,
+                                recv_type_hint,
                             ));
                         }
                         out
@@ -359,6 +377,7 @@ pub fn spawn_search(
                                 result.push(build_match_item(
                                     line_idx, col_start, line_idx, col_end,
                                     matched_text, &lines, context_lines,
+                                    None,
                                 ));
                                 search_start = col_end;
                                 if search_start >= line.len() { break; }
@@ -381,6 +400,7 @@ pub fn spawn_search(
                             out.push(build_match_item(
                                 line_start, col_start, line_end, col_end,
                                 mat.as_str().to_string(), &lines, context_lines,
+                                None,
                             ));
                         }
                         out
@@ -456,6 +476,11 @@ fn join_span_lines(lines: &[&str], line_start_0: usize, line_end_0: usize) -> St
     lines[line_start_0..=end].join("\n")
 }
 
+/// パターンにメタ変数 `$RECV` が含まれるか（型ヒント計算・UI/エクスポート列のゲート）
+pub fn pattern_contains_dollar_recv(pattern: &str) -> bool {
+    pattern.contains("$RECV")
+}
+
 /// MatchItem を生成するヘルパー（0-based の行/列を受け取り 1-based に変換）
 fn build_match_item(
     line_start: usize,
@@ -465,6 +490,7 @@ fn build_match_item(
     matched_text: String,
     lines: &[&str],
     context_lines: usize,
+    recv_type_hint: Option<String>,
 ) -> MatchItem {
     let (context_before, context_after) = slice_context_lines(lines, line_start, line_end, context_lines);
     let span_lines_text = join_span_lines(lines, line_start, line_end);
@@ -478,6 +504,7 @@ fn build_match_item(
         span_lines_text,
         context_before,
         context_after,
+        recv_type_hint,
     }
 }
 

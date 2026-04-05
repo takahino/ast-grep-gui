@@ -1,5 +1,12 @@
 use crate::i18n::{Tr, UiLanguage};
-use crate::search::{FileResult, SearchConditions, SearchMode, SearchStats};
+use crate::search::{
+    pattern_contains_dollar_recv, FileResult, SearchConditions, SearchMode, SearchStats,
+};
+
+/// Markdown 区切り行（列数 n）
+fn markdown_table_sep(n: usize) -> String {
+    format!("|{}|\n", vec!["---"; n].join("|"))
+}
 
 // Excel のセル1件あたりの文字数上限（xlsx仕様: 32,767文字）
 const EXCEL_MAX_CELL_CHARS: usize = 32_000;
@@ -239,8 +246,14 @@ pub fn results_to_markdown(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
-    out.push_str(t.export_md_table_header());
-    out.push_str("|---|---|---|---|---|\n");
+    let show_recv = pattern_contains_dollar_recv(&cond.pattern);
+    if show_recv {
+        out.push_str(t.export_md_table_header_with_recv());
+        out.push_str(&markdown_table_sep(6));
+    } else {
+        out.push_str(t.export_md_table_header());
+        out.push_str(&markdown_table_sep(5));
+    }
 
     for file in results {
         for m in &file.matches {
@@ -248,10 +261,22 @@ pub fn results_to_markdown(
             let matched_cell = md_cell(&m.matched_text);
             let program_cell = md_cell(&m.program_with_context());
             let path = file.relative_path.replace('|', "\\|");
-            out.push_str(&format!(
-                "| `{}` | {} | {} | {} | {} |\n",
-                path, m.line_start, m.col_start, matched_cell, program_cell
-            ));
+            if show_recv {
+                let hint = m
+                    .recv_type_hint
+                    .as_deref()
+                    .map(md_cell)
+                    .unwrap_or_else(|| md_cell(""));
+                out.push_str(&format!(
+                    "| `{}` | {} | {} | {} | {} | {} |\n",
+                    path, m.line_start, m.col_start, matched_cell, program_cell, hint
+                ));
+            } else {
+                out.push_str(&format!(
+                    "| `{}` | {} | {} | {} | {} |\n",
+                    path, m.line_start, m.col_start, matched_cell, program_cell
+                ));
+            }
         }
     }
 
@@ -360,6 +385,7 @@ pub fn results_to_html(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
+    let show_recv = pattern_contains_dollar_recv(&cond.pattern);
     out.push_str("<table>\n<thead>\n<tr>\n");
     out.push_str("<th>");
     out.push_str(t.export_html_th_file());
@@ -371,7 +397,13 @@ pub fn results_to_html(
     out.push_str(t.export_html_th_match());
     out.push_str("</th><th>");
     out.push_str(t.export_html_th_source_context());
-    out.push_str("</th>\n");
+    out.push_str("</th>");
+    if show_recv {
+        out.push_str("<th>");
+        out.push_str(t.export_html_th_recv_hint());
+        out.push_str("</th>");
+    }
+    out.push_str("\n");
     out.push_str("</tr>\n</thead>\n<tbody>\n");
 
     for file in results {
@@ -384,6 +416,10 @@ pub fn results_to_html(
             out.push_str(&format!("<td>{}</td>\n", m.col_start));
             out.push_str(&format!("<td><code>{}</code></td>\n", matched_html));
             out.push_str(&format!("<td><code>{}</code></td>\n", program_html));
+            if show_recv {
+                let hint = m.recv_type_hint.as_deref().unwrap_or("");
+                out.push_str(&format!("<td><code>{}</code></td>\n", escape(hint)));
+            }
             out.push_str("</tr>\n");
         }
     }
@@ -408,6 +444,7 @@ pub fn export_xlsx_to_file(
 
     let t = Tr(lang);
     let mut workbook = Workbook::new();
+    let show_recv = pattern_contains_dollar_recv(&cond.pattern);
 
     // ─ 結果シート ─
     let sheet = workbook.add_worksheet();
@@ -421,6 +458,9 @@ pub fn export_xlsx_to_file(
     sheet.write_with_format(0, 2, t.export_xlsx_col_col(), &header_fmt)?;
     sheet.write_with_format(0, 3, t.export_xlsx_col_match(), &header_fmt)?;
     sheet.write_with_format(0, 4, t.export_xlsx_col_source_context(), &header_fmt)?;
+    if show_recv {
+        sheet.write_with_format(0, 5, t.export_xlsx_col_recv_hint(), &header_fmt)?;
+    }
 
     // 列幅の設定
     sheet.set_column_width(0, 50)?;
@@ -428,6 +468,9 @@ pub fn export_xlsx_to_file(
     sheet.set_column_width(2, 8)?;
     sheet.set_column_width(3, 40)?;
     sheet.set_column_width(4, 80)?;
+    if show_recv {
+        sheet.set_column_width(5, 36)?;
+    }
 
     let mut row = 1u32;
     for file in results {
@@ -438,6 +481,10 @@ pub fn export_xlsx_to_file(
             sheet.write(row, 2, m.col_start as u32)?;
             sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
             sheet.write(row, 4, truncate_for_excel(&program))?;
+            if show_recv {
+                let hint = m.recv_type_hint.as_deref().unwrap_or("");
+                sheet.write(row, 5, truncate_for_excel(hint))?;
+            }
             row += 1;
         }
     }
