@@ -112,8 +112,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                 None => block.clone(),
                             };
                             let preview = block.lines().next().unwrap_or("").trim();
-                            let short = if preview.len() > 60 {
-                                format!("{}…", &preview[..57])
+                            let short = if preview.chars().count() > 60 {
+                                format!("{}…", preview.chars().take(57).collect::<String>())
                             } else {
                                 preview.to_string()
                             };

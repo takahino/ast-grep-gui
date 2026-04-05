@@ -63,7 +63,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         egui::CollapsingHeader::new(t.batch_report_matches())
                             .id_salt((run.job_id, "matches"))
                             .show(ui, |ui| {
-                                show_run_matches(ui, run);
+                                show_run_matches(ui, run, t);
                             });
                     }
                 });
@@ -104,16 +104,16 @@ fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
     ));
 }
 
-fn show_run_matches(ui: &mut Ui, run: &BatchRunResult) {
+fn show_run_matches(ui: &mut Ui, run: &BatchRunResult, t: crate::i18n::Tr) {
     egui::Grid::new(format!("batch_run_{}", run.job_id))
         .num_columns(4)
         .spacing([12.0, 4.0])
         .striped(true)
         .show(ui, |ui| {
-            ui.label("file");
-            ui.label("line");
-            ui.label("col");
-            ui.label("match");
+            ui.label(t.table_col_file());
+            ui.label(t.table_col_line());
+            ui.label(t.table_col_col());
+            ui.label(t.table_col_text());
             ui.end_row();
             for file in &run.results {
                 for m in &file.matches {

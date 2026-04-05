@@ -100,18 +100,14 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
 
                                 let n = app.batch_jobs.len();
                                 for i in 0..n {
-                                    let label = app.batch_jobs[i].label.clone();
-                                    let pat_full = app.batch_jobs[i].pattern.clone();
-                                    let pat_short = {
-                                        let p = app.batch_jobs[i].pattern.as_str();
-                                        if p.chars().count() > 40 {
-                                            format!("{}…", p.chars().take(40).collect::<String>())
-                                        } else {
-                                            p.to_string()
-                                        }
+                                    let job = &app.batch_jobs[i];
+                                    let pat_short = if job.pattern.chars().count() > 40 {
+                                        format!("{}…", job.pattern.chars().take(40).collect::<String>())
+                                    } else {
+                                        job.pattern.clone()
                                     };
-                                    ui.label(&label);
-                                    ui.monospace(&pat_short).on_hover_text(&pat_full);
+                                    ui.label(&job.label);
+                                    ui.monospace(&pat_short).on_hover_text(&job.pattern);
                                     let mut en = app.batch_jobs[i].enabled;
                                     if ui.checkbox(&mut en, "").changed() {
                                         app.batch_jobs[i].enabled = en;
