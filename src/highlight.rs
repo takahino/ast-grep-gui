@@ -71,6 +71,38 @@ fn syntect_to_egui_color(color: syntect::highlighting::Color) -> egui::Color32 {
 const LINE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 80, 0, 40);
 /// マッチテキスト部分の強い背景色
 const MATCH_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(200, 160, 0, 180);
+/// 表示時のタブ幅
+const TAB_WIDTH: usize = 4;
+
+fn expand_tabs(text: &str, visual_col: &mut usize) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch == '\t' {
+            let spaces = TAB_WIDTH - (*visual_col % TAB_WIDTH);
+            for _ in 0..spaces {
+                out.push(' ');
+            }
+            *visual_col += spaces;
+        } else {
+            out.push(ch);
+            *visual_col += 1;
+        }
+    }
+    out
+}
+
+fn append_text_with_format(
+    job: &mut LayoutJob,
+    text: &str,
+    format: egui::TextFormat,
+    visual_col: &mut usize,
+) {
+    let expanded = expand_tabs(text, visual_col);
+    if expanded.is_empty() {
+        return;
+    }
+    job.append(&expanded, 0.0, format);
+}
 
 /// 1行分のハイライトデータを egui LayoutJob のセクションとして追加する
 ///
@@ -105,6 +137,7 @@ fn append_highlighted_line(
     }
 
     let mut byte_pos = 0usize;
+    let mut visual_col = 0usize;
 
     for (style, text) in line_tokens {
         // 改行文字を除去
@@ -120,14 +153,15 @@ fn append_highlighted_line(
         match &col_highlight {
             None => {
                 // 通常行
-                job.append(
+                append_text_with_format(
+                    job,
                     text,
-                    0.0,
                     egui::TextFormat {
                         font_id: font_id.clone(),
                         color: fg,
                         ..Default::default()
                     },
+                    &mut visual_col,
                 );
             }
             Some(range) => {
@@ -140,6 +174,7 @@ fn append_highlighted_line(
                     range.clone(),
                     fg,
                     &font_id,
+                    &mut visual_col,
                 );
             }
         }
@@ -168,6 +203,7 @@ fn append_token_with_highlight(
     range: std::ops::Range<usize>,
     fg: egui::Color32,
     font_id: &egui::FontId,
+    visual_col: &mut usize,
 ) {
     // トークンと強調範囲の交差
     let hl_start = range.start.max(token_start);
@@ -175,15 +211,16 @@ fn append_token_with_highlight(
 
     if hl_start >= hl_end {
         // 強調なし（ただしマッチ行なので薄い背景）
-        job.append(
+        append_text_with_format(
+            job,
             text,
-            0.0,
             egui::TextFormat {
                 font_id: font_id.clone(),
                 color: fg,
                 background: LINE_BG,
                 ..Default::default()
             },
+            visual_col,
         );
         return;
     }
@@ -191,47 +228,51 @@ fn append_token_with_highlight(
     // 強調前
     let before_len = hl_start - token_start;
     if before_len > 0 {
-        let before = &text[..before_len];
-        job.append(
-            before,
-            0.0,
-            egui::TextFormat {
-                font_id: font_id.clone(),
-                color: fg,
-                background: LINE_BG,
-                ..Default::default()
-            },
-        );
-    }
-
-    // 強調部分
-    let hl_local_start = hl_start - token_start;
-    let hl_local_end = hl_end - token_start;
-    if let Some(hl_text) = text.get(hl_local_start..hl_local_end) {
-        job.append(
-            hl_text,
-            0.0,
-            egui::TextFormat {
-                font_id: font_id.clone(),
-                color: egui::Color32::BLACK,
-                background: MATCH_BG,
-                ..Default::default()
-            },
-        );
-    }
-
-    // 強調後
-    if let Some(after) = text.get(hl_local_end..) {
-        if !after.is_empty() {
-            job.append(
-                after,
-                0.0,
+        if let Some(before) = text.get(..before_len) {
+            append_text_with_format(
+                job,
+                before,
                 egui::TextFormat {
                     font_id: font_id.clone(),
                     color: fg,
                     background: LINE_BG,
                     ..Default::default()
                 },
+                visual_col,
+            );
+        }
+    }
+
+    // 強調部分
+    let hl_local_start = hl_start - token_start;
+    let hl_local_end = hl_end - token_start;
+    if let Some(hl_text) = text.get(hl_local_start..hl_local_end) {
+        append_text_with_format(
+            job,
+            hl_text,
+            egui::TextFormat {
+                font_id: font_id.clone(),
+                color: egui::Color32::BLACK,
+                background: MATCH_BG,
+                ..Default::default()
+            },
+            visual_col,
+        );
+    }
+
+    // 強調後
+    if let Some(after) = text.get(hl_local_end..) {
+        if !after.is_empty() {
+            append_text_with_format(
+                job,
+                after,
+                egui::TextFormat {
+                    font_id: font_id.clone(),
+                    color: fg,
+                    background: LINE_BG,
+                    ..Default::default()
+                },
+                visual_col,
             );
         }
     }
@@ -246,11 +287,21 @@ pub fn build_layout_job(
     matches: &[MatchItem],
     font_size: f32,
 ) -> LayoutJob {
+    build_layout_job_from_line(highlighted, matches, font_size, 1)
+}
+
+/// 行番号の開始値を指定して LayoutJob を生成する。
+pub fn build_layout_job_from_line(
+    highlighted: &[Vec<(Style, String)>],
+    matches: &[MatchItem],
+    font_size: f32,
+    start_line_number: usize,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
 
     for (idx, line_tokens) in highlighted.iter().enumerate() {
-        let line_number = idx + 1; // 1-based
+        let line_number = start_line_number + idx;
 
         // この行に対するハイライト範囲を決定
         let col_highlight = col_highlight_for_line(line_number, matches);

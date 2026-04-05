@@ -49,6 +49,29 @@ pub enum ViewMode {
     Table, // 表形式
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TableRowRef {
+    pub file_idx: usize,
+    pub match_idx: usize,
+}
+
+fn count_display_lines(text: &str) -> usize {
+    if text.is_empty() {
+        1
+    } else {
+        text.bytes().filter(|b| *b == b'\n').count() + 1
+    }
+}
+
+fn table_row_line_units(m: &MatchItem) -> usize {
+    let center_lines = if m.span_lines_text.is_empty() {
+        count_display_lines(&m.matched_text)
+    } else {
+        count_display_lines(&m.span_lines_text)
+    };
+    (m.context_before.len() + center_lines + m.context_after.len()).max(1)
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PersistedAppState {
     search_dir: String,
@@ -136,6 +159,12 @@ pub struct AstGrepApp {
     pub table_preview: Option<TablePreviewState>,
     /// 表モード: 最後にクリックしたデータ行（0 始まりのフラットインデックス）
     pub table_last_clicked_row: Option<usize>,
+    /// 表モード: フラットな行インデックス -> (file_idx, match_idx)
+    pub table_rows: Vec<TableRowRef>,
+    /// 表モード: 各行の表示行数
+    pub table_row_units: Vec<usize>,
+    /// 表モード: 各行の先頭表示行オフセット（prefix sum）
+    pub table_row_prefix_units: Vec<usize>,
     /// 表モード: コンテキスト行数変更直後にこの行の先頭へスクロール（描画後にクリア）
     pub(crate) table_scroll_to_row: Option<usize>,
     /// パターン入力履歴（新しい順、最大30件）
@@ -190,6 +219,9 @@ impl AstGrepApp {
             pending_pattern_assist_snippet: None,
             table_preview: None,
             table_last_clicked_row: None,
+            table_rows: Vec::new(),
+            table_row_units: Vec::new(),
+            table_row_prefix_units: vec![0],
             table_scroll_to_row: None,
             pattern_history: persisted.pattern_history,
             pattern_suggest_idx: None,
@@ -273,6 +305,10 @@ impl AstGrepApp {
         self.selected_file_idx = None;
         self.table_preview = None;
         self.table_last_clicked_row = None;
+        self.table_rows.clear();
+        self.table_row_units.clear();
+        self.table_row_prefix_units.clear();
+        self.table_row_prefix_units.push(0);
         self.table_scroll_to_row = None;
         self.highlighter.clear_cache();
         self.search_state = SearchState::Running;
@@ -314,6 +350,10 @@ impl AstGrepApp {
         self.selected_file_idx = None;
         self.table_preview = None;
         self.table_last_clicked_row = None;
+        self.table_rows.clear();
+        self.table_row_units.clear();
+        self.table_row_prefix_units.clear();
+        self.table_row_prefix_units.push(0);
         self.table_scroll_to_row = None;
         self.search_state = SearchState::Idle;
         self.highlighter.clear_cache();
@@ -328,6 +368,7 @@ impl AstGrepApp {
         }
         if self.context_lines != self.last_context_lines_applied {
             refresh_match_contexts(&mut self.results, self.context_lines);
+            self.rebuild_table_row_metrics();
             self.last_context_lines_applied = self.context_lines;
             if let Some(ref mut preview) = self.table_preview {
                 if let Some(fr) = self.results.iter().find(|f| f.path == preview.path) {
@@ -336,6 +377,34 @@ impl AstGrepApp {
                 preview.pending_scroll_line = Some(preview.line);
             }
         }
+    }
+
+    fn push_table_row(&mut self, row: TableRowRef, m: &MatchItem) {
+        self.table_rows.push(row);
+        let units = table_row_line_units(m);
+        self.table_row_units.push(units);
+        let next = self.table_row_prefix_units.last().copied().unwrap_or(0) + units;
+        self.table_row_prefix_units.push(next);
+    }
+
+    fn rebuild_table_row_metrics(&mut self) {
+        let mut rows = Vec::new();
+        let mut units = Vec::new();
+        let mut prefix_units = vec![0];
+
+        for (file_idx, file) in self.results.iter().enumerate() {
+            for (match_idx, m) in file.matches.iter().enumerate() {
+                rows.push(TableRowRef { file_idx, match_idx });
+                let row_units = table_row_line_units(m);
+                units.push(row_units);
+                let next = prefix_units.last().copied().unwrap_or(0) + row_units;
+                prefix_units.push(next);
+            }
+        }
+
+        self.table_rows = rows;
+        self.table_row_units = units;
+        self.table_row_prefix_units = prefix_units;
     }
 
     /// バックグラウンド検索からのメッセージを処理する
@@ -347,8 +416,12 @@ impl AstGrepApp {
         for msg in messages {
             match msg {
                 SearchMessage::FileResult(file_result) => {
+                    let file_idx = self.results.len();
                     self.stats.total_matches += file_result.matches.len();
                     self.stats.total_files += 1;
+                    for (match_idx, m) in file_result.matches.iter().enumerate() {
+                        self.push_table_row(TableRowRef { file_idx, match_idx }, m);
+                    }
                     self.results.push(file_result);
                 }
                 SearchMessage::Progress { scanned } => {
@@ -364,6 +437,7 @@ impl AstGrepApp {
                     self.result_rx = None;
                     // 検索中にスライダーが変わった場合も含め、現在の設定でコンテキストを揃える
                     refresh_match_contexts(&mut self.results, self.context_lines);
+                    self.rebuild_table_row_metrics();
                     self.last_context_lines_applied = self.context_lines;
                 }
                 SearchMessage::Error(msg) => {
