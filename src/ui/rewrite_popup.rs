@@ -1,7 +1,9 @@
 use crate::app::{AstGrepApp, RewritePhase};
-use crate::highlight::build_rewrite_compare_layout_jobs;
+use crate::highlight::build_unified_diff_layout_job;
 
 const REWRITE_PREVIEW_FONT_SIZE: f32 = 13.0;
+/// unified diff の最大行数（ヘッダ 2 行含む。超えた分は省略メッセージ）
+const REWRITE_UNIFIED_DIFF_MAX_LINES: usize = 800;
 
 pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
     if !app.show_rewrite_popup {
@@ -95,51 +97,24 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
             );
             ui.add_space(4.0);
 
-            let (job_before, job_after) = build_rewrite_compare_layout_jobs(
+            let job = build_unified_diff_layout_job(
+                &file.relative_path,
                 &file.source_before,
                 &file.source_after,
                 REWRITE_PREVIEW_FONT_SIZE,
+                REWRITE_UNIFIED_DIFF_MAX_LINES,
             );
 
             let scroll_h = (ui.available_height() - 72.0).max(160.0);
 
-            ui.horizontal_top(|ui| {
-                let w = ((ui.available_width() - 12.0) * 0.5).max(120.0);
-
-                ui.vertical(|ui| {
-                    ui.set_min_width(w);
-                    ui.label(
-                        egui::RichText::new(t.rewrite_panel_before())
-                            .strong()
-                            .color(egui::Color32::from_rgb(230, 160, 160)),
-                    );
-                    egui::ScrollArea::vertical()
-                        .id_salt("rewrite_before_scroll")
-                        .auto_shrink([false, false])
-                        .max_height(scroll_h)
-                        .show(ui, |ui| {
-                            let galley = ui.fonts(|f| f.layout_job(job_before));
-                            ui.add(egui::Label::new(galley).selectable(true));
-                        });
+            egui::ScrollArea::vertical()
+                .id_salt("rewrite_unified_diff")
+                .auto_shrink([false, false])
+                .max_height(scroll_h)
+                .show(ui, |ui| {
+                    let galley = ui.fonts(|f| f.layout_job(job));
+                    ui.add(egui::Label::new(galley).selectable(true));
                 });
-
-                ui.vertical(|ui| {
-                    ui.set_min_width(w);
-                    ui.label(
-                        egui::RichText::new(t.rewrite_panel_after())
-                            .strong()
-                            .color(egui::Color32::from_rgb(160, 220, 175)),
-                    );
-                    egui::ScrollArea::vertical()
-                        .id_salt("rewrite_after_scroll")
-                        .auto_shrink([false, false])
-                        .max_height(scroll_h)
-                        .show(ui, |ui| {
-                            let galley = ui.fonts(|f| f.layout_job(job_after));
-                            ui.add(egui::Label::new(galley).selectable(true));
-                        });
-                });
-            });
 
             ui.separator();
 

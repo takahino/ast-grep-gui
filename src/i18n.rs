@@ -1058,25 +1058,13 @@ impl Tr {
             UiLanguage::English => format!("Updated {n} file(s). Search refreshed."),
         }
     }
-    pub fn rewrite_panel_before(self) -> &'static str {
-        match self.0 {
-            UiLanguage::Japanese => "置換前",
-            UiLanguage::English => "Before",
-        }
-    }
-    pub fn rewrite_panel_after(self) -> &'static str {
-        match self.0 {
-            UiLanguage::Japanese => "置換後",
-            UiLanguage::English => "After",
-        }
-    }
     pub fn rewrite_compare_hint(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {
-                "変更のあった行は、左（赤系）と右（緑系）で色分け表示します。行番号は対応しています。"
+                "unified diff 形式です。コンテキストは通常色、削除行（-）は赤系、追加行（+）は緑系で表示します。"
             }
             UiLanguage::English => {
-                "Changed lines: reddish background (before), greenish (after). Line numbers align."
+                "Unified diff: context lines are neutral, removals (-) are reddish, additions (+) are greenish."
             },
         }
     }
