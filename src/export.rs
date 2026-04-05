@@ -12,7 +12,7 @@ fn markdown_table_sep(n: usize) -> String {
 // Excel のセル1件あたりの文字数上限（xlsx仕様: 32,767文字）
 const EXCEL_MAX_CELL_CHARS: usize = 32_000;
 
-/// 長い文字列を Excel セル上限に切り詰める
+/// 長い文字列を Excel セル上限に切り詰める（バイト境界を考慮）
 fn truncate_for_excel(s: &str) -> &str {
     if s.len() <= EXCEL_MAX_CELL_CHARS {
         s
@@ -985,4 +985,53 @@ pub fn export_batch_html_to_file(
 ) -> anyhow::Result<()> {
     std::fs::write(path, batch_report_to_html(report, lang))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_for_excel_short_string_unchanged() {
+        let s = "hello world";
+        assert_eq!(truncate_for_excel(s), s);
+    }
+
+    #[test]
+    fn truncate_for_excel_exact_limit_unchanged() {
+        let s = "a".repeat(EXCEL_MAX_CELL_CHARS);
+        assert_eq!(truncate_for_excel(&s).len(), EXCEL_MAX_CELL_CHARS);
+    }
+
+    #[test]
+    fn truncate_for_excel_over_limit_is_truncated() {
+        let s = "b".repeat(EXCEL_MAX_CELL_CHARS + 500);
+        let result = truncate_for_excel(&s);
+        assert_eq!(result.len(), EXCEL_MAX_CELL_CHARS);
+    }
+
+    #[test]
+    fn truncate_for_excel_multibyte_at_boundary() {
+        // "あ" is 3 bytes in UTF-8; build a string that crosses the limit mid-char
+        let base = "あ".repeat(EXCEL_MAX_CELL_CHARS); // each 3 bytes
+        let result = truncate_for_excel(&base);
+        // Must not panic and must be valid UTF-8
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn markdown_table_sep_one_column() {
+        assert_eq!(markdown_table_sep(1), "|---|\n");
+    }
+
+    #[test]
+    fn markdown_table_sep_three_columns() {
+        assert_eq!(markdown_table_sep(3), "|---|---|---|\n");
+    }
+
+    #[test]
+    fn markdown_table_sep_zero_columns() {
+        // vec!["---"; 0].join("|") is "", so the result is "||\n"
+        assert_eq!(markdown_table_sep(0), "||\n");
+    }
 }

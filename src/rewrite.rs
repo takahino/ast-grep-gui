@@ -182,6 +182,92 @@ pub fn spawn_apply_rewrite(
     });
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lang::SupportedLanguage;
+
+    #[test]
+    fn auto_lang_returns_none() {
+        let result = apply_rewrite_to_string(
+            "print('hello')",
+            "print($$$ARGS)",
+            "logger.info($$$ARGS)",
+            SupportedLanguage::Auto,
+        );
+        assert_eq!(result, Ok(None));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        let result = apply_rewrite_to_string(
+            "x = 1",
+            "print($$$ARGS)",
+            "logger.info($$$ARGS)",
+            SupportedLanguage::Python,
+        );
+        assert_eq!(result, Ok(None));
+    }
+
+    #[test]
+    fn python_simple_replacement() {
+        let source = "print(\"hello\")";
+        let (after, count) = apply_rewrite_to_string(
+            source,
+            "print($$$ARGS)",
+            "logger.info($$$ARGS)",
+            SupportedLanguage::Python,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(count > 0);
+        assert!(after.contains("logger.info"));
+        assert!(!after.contains("print("));
+    }
+
+    #[test]
+    fn rust_unwrap_replacement() {
+        let source = "fn main() { let x = foo.unwrap(); }";
+        let (after, count) = apply_rewrite_to_string(
+            source,
+            "$E.unwrap()",
+            "$E.expect(\"error\")",
+            SupportedLanguage::Rust,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(count > 0);
+        assert!(after.contains("expect("));
+        assert!(!after.contains(".unwrap()"));
+    }
+
+    #[test]
+    fn rust_multiple_matches_counted() {
+        let source =
+            "fn main() {\n    let a = x.unwrap();\n    let b = y.unwrap();\n}";
+        let (_, count) = apply_rewrite_to_string(
+            source,
+            "$E.unwrap()",
+            "$E.expect(\"err\")",
+            SupportedLanguage::Rust,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(count >= 2, "expected >= 2 replacements, got {count}");
+    }
+
+    #[test]
+    fn empty_pattern_returns_none() {
+        let result = apply_rewrite_to_string(
+            "fn main() {}",
+            "",
+            "replaced",
+            SupportedLanguage::Rust,
+        );
+        assert_eq!(result, Ok(None));
+    }
+}
+
 /// プレビュー内容をディスクに書き戻す
 pub fn apply_preview_to_disk(files: &[RewriteFilePreview]) -> Result<usize, Vec<(PathBuf, String)>> {
     let mut errors = Vec::new();

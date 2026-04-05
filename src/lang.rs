@@ -231,6 +231,210 @@ impl SupportedLanguage {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn from_extension_rust() {
+        assert_eq!(SupportedLanguage::from_extension("rs"), Some(SupportedLanguage::Rust));
+    }
+
+    #[test]
+    fn from_extension_python_multiple_exts() {
+        assert_eq!(SupportedLanguage::from_extension("py"), Some(SupportedLanguage::Python));
+        assert_eq!(SupportedLanguage::from_extension("pyi"), Some(SupportedLanguage::Python));
+    }
+
+    #[test]
+    fn from_extension_javascript_multiple_exts() {
+        assert_eq!(SupportedLanguage::from_extension("js"), Some(SupportedLanguage::JavaScript));
+        assert_eq!(SupportedLanguage::from_extension("jsx"), Some(SupportedLanguage::JavaScript));
+        assert_eq!(SupportedLanguage::from_extension("mjs"), Some(SupportedLanguage::JavaScript));
+        assert_eq!(SupportedLanguage::from_extension("cjs"), Some(SupportedLanguage::JavaScript));
+    }
+
+    #[test]
+    fn from_extension_typescript_multiple_exts() {
+        assert_eq!(SupportedLanguage::from_extension("ts"), Some(SupportedLanguage::TypeScript));
+        assert_eq!(SupportedLanguage::from_extension("tsx"), Some(SupportedLanguage::TypeScript));
+        assert_eq!(SupportedLanguage::from_extension("mts"), Some(SupportedLanguage::TypeScript));
+        assert_eq!(SupportedLanguage::from_extension("cts"), Some(SupportedLanguage::TypeScript));
+    }
+
+    #[test]
+    fn from_extension_cpp_multiple_exts() {
+        assert_eq!(SupportedLanguage::from_extension("cpp"), Some(SupportedLanguage::Cpp));
+        assert_eq!(SupportedLanguage::from_extension("cc"), Some(SupportedLanguage::Cpp));
+        assert_eq!(SupportedLanguage::from_extension("cxx"), Some(SupportedLanguage::Cpp));
+        assert_eq!(SupportedLanguage::from_extension("hpp"), Some(SupportedLanguage::Cpp));
+    }
+
+    #[test]
+    fn from_extension_kotlin_multiple_exts() {
+        assert_eq!(SupportedLanguage::from_extension("kt"), Some(SupportedLanguage::Kotlin));
+        assert_eq!(SupportedLanguage::from_extension("kts"), Some(SupportedLanguage::Kotlin));
+        assert_eq!(SupportedLanguage::from_extension("ktm"), Some(SupportedLanguage::Kotlin));
+    }
+
+    #[test]
+    fn from_extension_scala_multiple_exts() {
+        assert_eq!(SupportedLanguage::from_extension("scala"), Some(SupportedLanguage::Scala));
+        assert_eq!(SupportedLanguage::from_extension("sc"), Some(SupportedLanguage::Scala));
+        assert_eq!(SupportedLanguage::from_extension("sbt"), Some(SupportedLanguage::Scala));
+    }
+
+    #[test]
+    fn from_extension_unknown_returns_none() {
+        assert_eq!(SupportedLanguage::from_extension("txt"), None);
+        assert_eq!(SupportedLanguage::from_extension(""), None);
+        assert_eq!(SupportedLanguage::from_extension("xyz"), None);
+        assert_eq!(SupportedLanguage::from_extension("html"), None);
+    }
+
+    #[test]
+    fn from_extension_is_case_insensitive() {
+        assert_eq!(SupportedLanguage::from_extension("RS"), Some(SupportedLanguage::Rust));
+        assert_eq!(SupportedLanguage::from_extension("Java"), Some(SupportedLanguage::Java));
+        assert_eq!(SupportedLanguage::from_extension("PY"), Some(SupportedLanguage::Python));
+    }
+
+    #[test]
+    fn from_extension_strips_leading_dot() {
+        assert_eq!(SupportedLanguage::from_extension(".rs"), Some(SupportedLanguage::Rust));
+        assert_eq!(SupportedLanguage::from_extension(".java"), Some(SupportedLanguage::Java));
+    }
+
+    #[test]
+    fn from_path_detects_language() {
+        assert_eq!(
+            SupportedLanguage::from_path(Path::new("src/main.rs")),
+            Some(SupportedLanguage::Rust)
+        );
+        assert_eq!(
+            SupportedLanguage::from_path(Path::new("App.java")),
+            Some(SupportedLanguage::Java)
+        );
+        assert_eq!(
+            SupportedLanguage::from_path(Path::new("script.py")),
+            Some(SupportedLanguage::Python)
+        );
+    }
+
+    #[test]
+    fn from_path_no_extension_returns_none() {
+        assert_eq!(SupportedLanguage::from_path(Path::new("Makefile")), None);
+        assert_eq!(SupportedLanguage::from_path(Path::new("README")), None);
+    }
+
+    #[test]
+    fn from_cli_str_all_variants() {
+        let cases: &[(&str, SupportedLanguage)] = &[
+            ("rust", SupportedLanguage::Rust),
+            ("rs", SupportedLanguage::Rust),
+            ("java", SupportedLanguage::Java),
+            ("python", SupportedLanguage::Python),
+            ("py", SupportedLanguage::Python),
+            ("javascript", SupportedLanguage::JavaScript),
+            ("js", SupportedLanguage::JavaScript),
+            ("typescript", SupportedLanguage::TypeScript),
+            ("ts", SupportedLanguage::TypeScript),
+            ("go", SupportedLanguage::Go),
+            ("c", SupportedLanguage::C),
+            ("cpp", SupportedLanguage::Cpp),
+            ("c++", SupportedLanguage::Cpp),
+            ("cc", SupportedLanguage::Cpp),
+            ("cxx", SupportedLanguage::Cpp),
+            ("csharp", SupportedLanguage::CSharp),
+            ("cs", SupportedLanguage::CSharp),
+            ("c#", SupportedLanguage::CSharp),
+            ("kotlin", SupportedLanguage::Kotlin),
+            ("kt", SupportedLanguage::Kotlin),
+            ("kts", SupportedLanguage::Kotlin),
+            ("ktm", SupportedLanguage::Kotlin),
+            ("scala", SupportedLanguage::Scala),
+            ("sc", SupportedLanguage::Scala),
+            ("sbt", SupportedLanguage::Scala),
+        ];
+        for (s, expected) in cases {
+            assert_eq!(
+                SupportedLanguage::from_cli_str(s),
+                Some(*expected),
+                "failed for: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_cli_str_case_insensitive() {
+        assert_eq!(SupportedLanguage::from_cli_str("RUST"), Some(SupportedLanguage::Rust));
+        assert_eq!(SupportedLanguage::from_cli_str("Python"), Some(SupportedLanguage::Python));
+        assert_eq!(SupportedLanguage::from_cli_str("GO"), Some(SupportedLanguage::Go));
+    }
+
+    #[test]
+    fn from_cli_str_unknown_returns_none() {
+        assert_eq!(SupportedLanguage::from_cli_str("cobol"), None);
+        assert_eq!(SupportedLanguage::from_cli_str(""), None);
+        assert_eq!(SupportedLanguage::from_cli_str("auto"), None);
+    }
+
+    #[test]
+    fn to_cli_lang_str_auto_is_none() {
+        assert_eq!(SupportedLanguage::Auto.to_cli_lang_str(), None);
+    }
+
+    #[test]
+    fn to_cli_lang_str_fixed_langs() {
+        assert_eq!(SupportedLanguage::Rust.to_cli_lang_str(), Some("rust"));
+        assert_eq!(SupportedLanguage::Java.to_cli_lang_str(), Some("java"));
+        assert_eq!(SupportedLanguage::Python.to_cli_lang_str(), Some("python"));
+        assert_eq!(SupportedLanguage::Go.to_cli_lang_str(), Some("go"));
+        assert_eq!(SupportedLanguage::Cpp.to_cli_lang_str(), Some("cpp"));
+        assert_eq!(SupportedLanguage::CSharp.to_cli_lang_str(), Some("csharp"));
+    }
+
+    #[test]
+    fn all_does_not_include_auto() {
+        assert!(!SupportedLanguage::all().contains(&SupportedLanguage::Auto));
+    }
+
+    #[test]
+    fn all_with_auto_starts_with_auto() {
+        assert_eq!(SupportedLanguage::all_with_auto()[0], SupportedLanguage::Auto);
+    }
+
+    #[test]
+    fn union_extensions_contains_common_extensions() {
+        let set = SupportedLanguage::union_extensions_for_auto_filter();
+        assert!(!set.is_empty());
+        for ext in ["rs", "java", "py", "js", "ts", "go", "cpp", "c", "cs", "kt", "scala"] {
+            assert!(set.contains(ext), "missing: {ext}");
+        }
+    }
+
+    #[test]
+    fn auto_extensions_is_empty() {
+        assert!(SupportedLanguage::Auto.extensions().is_empty());
+    }
+
+    #[test]
+    fn ast_grep_extension_mapping_rust() {
+        let pairs = SupportedLanguage::Rust.ast_grep_extension_mapping();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, ".rs");
+        assert_eq!(pairs[0].1, "Rust");
+    }
+
+    #[test]
+    fn ast_grep_extension_mapping_auto_is_sorted() {
+        let pairs = SupportedLanguage::Auto.ast_grep_extension_mapping();
+        let is_sorted = pairs.windows(2).all(|w| w[0].0 <= w[1].0);
+        assert!(is_sorted, "auto mapping should be sorted by extension");
+    }
+}
+
 /// プリセットパターン（言語ごと）
 pub struct Preset {
     pub label: String,

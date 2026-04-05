@@ -186,3 +186,155 @@ pub struct BatchRunnerState {
     pub runs: Vec<BatchRunResult>,
     pub started: std::time::Instant,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::file_encoding::FileEncodingPreference;
+    use crate::lang::SupportedLanguage;
+    use crate::search::{SearchConditions, SearchMode, SearchStats};
+
+    fn make_job(id: usize, enabled: bool, pattern: &str, search_dir: &str) -> PatternJob {
+        PatternJob {
+            id,
+            label: format!("job-{id}"),
+            enabled,
+            pattern: pattern.to_string(),
+            search_dir: search_dir.to_string(),
+            selected_lang: SupportedLanguage::Rust,
+            context_lines: 0,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::Auto,
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::AstGrep,
+        }
+    }
+
+    fn make_run_result(matches: usize, files: usize, error: Option<String>) -> BatchRunResult {
+        BatchRunResult {
+            job_id: 1,
+            label: "test".to_string(),
+            conditions: SearchConditions {
+                search_dir: String::new(),
+                pattern: String::new(),
+                selected_lang: SupportedLanguage::Rust,
+                context_lines: 0,
+                file_filter: String::new(),
+                file_encoding_preference: FileEncodingPreference::Auto,
+                max_file_size_mb: 10,
+                max_search_hits: 100,
+                skip_dirs: String::new(),
+                search_mode: SearchMode::AstGrep,
+            },
+            results: vec![],
+            stats: SearchStats {
+                total_matches: matches,
+                total_files: files,
+                elapsed_ms: 0,
+                scanned: 0,
+                hit_limit_reached: false,
+            },
+            error,
+        }
+    }
+
+    #[test]
+    fn is_runnable_enabled_with_content() {
+        assert!(make_job(1, true, "fn $NAME()", "/src").is_runnable());
+    }
+
+    #[test]
+    fn is_runnable_false_when_disabled() {
+        assert!(!make_job(1, false, "fn $NAME()", "/src").is_runnable());
+    }
+
+    #[test]
+    fn is_runnable_false_when_pattern_blank() {
+        assert!(!make_job(1, true, "   ", "/src").is_runnable());
+    }
+
+    #[test]
+    fn is_runnable_false_when_dir_blank() {
+        assert!(!make_job(1, true, "fn $NAME()", "  ").is_runnable());
+    }
+
+    #[test]
+    fn renumber_ids_assigns_sequential_from_one() {
+        let jobs = vec![
+            make_job(99, true, "p1", "/a"),
+            make_job(42, true, "p2", "/b"),
+            make_job(7, true, "p3", "/c"),
+        ];
+        let (renumbered, next_id) = BatchJobsFile::new(jobs).renumber_job_ids();
+        assert_eq!(renumbered[0].id, 1);
+        assert_eq!(renumbered[1].id, 2);
+        assert_eq!(renumbered[2].id, 3);
+        assert_eq!(next_id, 4);
+    }
+
+    #[test]
+    fn renumber_ids_empty_returns_next_one() {
+        let (jobs, next_id) = BatchJobsFile::new(vec![]).renumber_job_ids();
+        assert!(jobs.is_empty());
+        assert_eq!(next_id, 1);
+    }
+
+    #[test]
+    fn batch_report_aggregates_totals() {
+        let report = BatchReport {
+            total_elapsed_ms: 500,
+            runs: vec![make_run_result(5, 2, None), make_run_result(3, 1, None)],
+        };
+        assert_eq!(report.total_matches(), 8);
+        assert_eq!(report.total_files(), 3);
+        assert_eq!(report.failed_count(), 0);
+    }
+
+    #[test]
+    fn batch_report_failed_count() {
+        let report = BatchReport {
+            total_elapsed_ms: 100,
+            runs: vec![
+                make_run_result(0, 0, Some("error".to_string())),
+                make_run_result(5, 1, None),
+                make_run_result(0, 0, Some("another error".to_string())),
+            ],
+        };
+        assert_eq!(report.failed_count(), 2);
+        assert_eq!(report.total_matches(), 5);
+    }
+
+    #[test]
+    fn yaml_round_trip_preserves_fields() {
+        let jobs = vec![make_job(1, true, "fn $NAME($$$ARGS)", "/my/src")];
+        let yaml = batch_jobs_to_yaml_string(&jobs).unwrap();
+        let (parsed, next_id) = parse_batch_jobs_file_str(&yaml).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].pattern, "fn $NAME($$$ARGS)");
+        assert_eq!(parsed[0].search_dir, "/my/src");
+        assert!(parsed[0].enabled);
+        assert_eq!(next_id, 2);
+    }
+
+    #[test]
+    fn yaml_round_trip_multiple_jobs() {
+        let jobs = vec![
+            make_job(1, true, "pattern1", "/a"),
+            make_job(2, false, "pattern2", "/b"),
+        ];
+        let yaml = batch_jobs_to_yaml_string(&jobs).unwrap();
+        let (parsed, next_id) = parse_batch_jobs_file_str(&yaml).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].pattern, "pattern1");
+        assert!(!parsed[1].enabled);
+        assert_eq!(next_id, 3);
+    }
+
+    #[test]
+    fn unsupported_version_returns_error() {
+        let yaml = "version: 9999\njobs: []\n";
+        assert!(parse_batch_jobs_file_str(yaml).is_err());
+    }
+}
