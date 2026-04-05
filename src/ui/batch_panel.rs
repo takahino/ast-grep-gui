@@ -195,7 +195,7 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                     ui.horizontal(|ui| {
                         ui.label(t.mode_label());
                         ui.selectable_value(&mut job.search_mode, SearchMode::AstGrep, t.mode_ast());
-                        ui.selectable_value(&mut job.search_mode, SearchMode::AstGrepRaw, t.mode_ast_raw());
+                        ui.selectable_value(&mut job.search_mode, SearchMode::TokenSearch, t.mode_token());
                         ui.selectable_value(&mut job.search_mode, SearchMode::PlainText, t.mode_plain());
                         ui.selectable_value(&mut job.search_mode, SearchMode::Regex, t.mode_regex());
                     });
@@ -219,7 +219,7 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
 
                     let (pattern_tooltip, pattern_hint) = match job.search_mode {
                         SearchMode::AstGrep => (t.pattern_label_tooltip_ast(), t.pattern_hint_ast()),
-                        SearchMode::AstGrepRaw => (t.pattern_label_tooltip_ast_raw(), t.pattern_hint_ast_raw()),
+                        SearchMode::TokenSearch => (t.pattern_label_tooltip_token(), t.pattern_hint_token()),
                         SearchMode::PlainText => (t.pattern_label_tooltip_plain(), t.pattern_hint_plain()),
                         SearchMode::Regex => (t.pattern_label_tooltip_regex(), t.pattern_hint_regex()),
                     };

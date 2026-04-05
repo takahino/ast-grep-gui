@@ -2,10 +2,8 @@ use egui::Ui;
 
 use crate::app::{AstGrepApp, CodeViewPaneFocus};
 use crate::ui::scroll_keyboard;
-use crate::export::file_to_ast_grep_console;
 use crate::file_encoding::read_text_file_as;
 use crate::highlight::build_layout_job;
-use crate::search::SearchMode;
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let t = app.tr();
@@ -54,41 +52,6 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .small()
             .color(egui::Color32::GRAY),
     );
-
-    if app.search_mode == SearchMode::AstGrepRaw {
-        ui.separator();
-        let mut console_text = file_to_ast_grep_console(file_result);
-        let sid = scroll_keyboard::scroll_area_persistent_id(ui, "ast_grep_raw_console");
-        let rect = ui.available_rect_before_wrap();
-        let pointer_on_code = ui.rect_contains_pointer(rect);
-        let pointer_on_list = app.code_view_pointer_on_list;
-        let allow_code_scroll = pointer_on_code
-            || (matches!(app.code_view_pane_focus, CodeViewPaneFocus::Code) && !pointer_on_list);
-        scroll_keyboard::apply_keyboard_scroll_before_show(
-            ui.ctx(),
-            ui,
-            sid,
-            rect,
-            egui::Vec2b::from([true, true]),
-            allow_code_scroll,
-        );
-        let scroll_out = egui::ScrollArea::both()
-            .id_salt("ast_grep_raw_console")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let te = egui::TextEdit::multiline(&mut console_text)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY)
-                    .interactive(false);
-                let te_resp = ui.add(te);
-                if te_resp.clicked() {
-                    app.code_view_pane_focus = CodeViewPaneFocus::Code;
-                }
-            });
-        scroll_keyboard::store_scroll_metrics(ui.ctx(), sid, &scroll_out, rect);
-        app.code_view_pointer_on_code = ui.rect_contains_pointer(scroll_out.inner_rect);
-        return;
-    }
 
     // マッチ一覧（コンパクト表示）：各マッチに「→パターン支援」ボタン
     if !matches.is_empty() {

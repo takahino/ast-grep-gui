@@ -34,7 +34,7 @@ pub fn search_mode_label_for_export(t: Tr, mode: SearchMode) -> &'static str {
 fn search_mode_label(t: Tr, mode: SearchMode) -> &'static str {
     match mode {
         SearchMode::AstGrep => t.mode_ast(),
-        SearchMode::AstGrepRaw => t.mode_ast_raw(),
+        SearchMode::TokenSearch => t.mode_token(),
         SearchMode::PlainText => t.mode_plain(),
         SearchMode::Regex => t.mode_regex(),
     }
@@ -207,62 +207,14 @@ pub fn results_to_text(
     out
 }
 
-/// ast-grep そのままモード向けのコンソール風テキスト
-pub fn results_to_ast_grep_console(
-    results: &[FileResult],
-    stats: &SearchStats,
-    cond: &SearchConditions,
-    lang: UiLanguage,
-) -> String {
-    let t = Tr(lang);
-    let mut out = String::new();
-    out.push_str(&t.export_console_header(
-        stats.total_matches,
-        stats.total_files,
-        stats.elapsed_ms,
-        stats.hit_limit_reached,
-    ));
-    out.push_str(&format_search_conditions_plain(t, cond, lang));
-
-    for file in results {
-        out.push_str(&file_to_ast_grep_console(file));
-        out.push('\n');
-    }
-
-    out
-}
-
-/// 1ファイル分を ast-grep コンソール風に整形
-pub fn file_to_ast_grep_console(file: &FileResult) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("{}\n", file.relative_path));
-
-    for m in &file.matches {
-        out.push_str(&format!("{}:{}\n", m.line_start, m.col_start));
-        for line in m.matched_text.lines() {
-            out.push_str("  ");
-            out.push_str(line);
-            out.push('\n');
-        }
-        if m.matched_text.is_empty() {
-            out.push_str("  \n");
-        }
-    }
-
-    out
-}
-
 pub fn results_to_text_for_mode(
     results: &[FileResult],
     stats: &SearchStats,
     cond: &SearchConditions,
-    search_mode: SearchMode,
+    _search_mode: SearchMode,
     lang: UiLanguage,
 ) -> String {
-    match search_mode {
-        SearchMode::AstGrepRaw => results_to_ast_grep_console(results, stats, cond, lang),
-        _ => results_to_text(results, stats, cond, lang),
-    }
+    results_to_text(results, stats, cond, lang)
 }
 
 // ─── Markdown テーブル ────────────────────────────────────────────────────

@@ -53,8 +53,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         ui.label(t.mode_label()).on_hover_text(t.mode_tooltip());
         ui.selectable_value(&mut app.search_mode, SearchMode::AstGrep, t.mode_ast())
             .on_hover_text(t.mode_ast_tooltip());
-        ui.selectable_value(&mut app.search_mode, SearchMode::AstGrepRaw, t.mode_ast_raw())
-            .on_hover_text(t.mode_ast_raw_tooltip());
+        ui.selectable_value(&mut app.search_mode, SearchMode::TokenSearch, t.mode_token())
+            .on_hover_text(t.mode_token_tooltip());
         ui.selectable_value(&mut app.search_mode, SearchMode::PlainText, t.mode_plain())
             .on_hover_text(t.mode_plain_tooltip());
         ui.selectable_value(&mut app.search_mode, SearchMode::Regex, t.mode_regex())
@@ -190,7 +190,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let (pattern_label_tooltip, pattern_hint) = match app.search_mode {
             SearchMode::AstGrep => (t.pattern_label_tooltip_ast(), t.pattern_hint_ast()),
-            SearchMode::AstGrepRaw => (t.pattern_label_tooltip_ast_raw(), t.pattern_hint_ast_raw()),
+            SearchMode::TokenSearch => (t.pattern_label_tooltip_token(), t.pattern_hint_token()),
             SearchMode::PlainText => (t.pattern_label_tooltip_plain(), t.pattern_hint_plain()),
             SearchMode::Regex => (t.pattern_label_tooltip_regex(), t.pattern_hint_regex()),
         };
@@ -323,7 +323,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         } else {
             let search_tooltip = match app.search_mode {
                 SearchMode::AstGrep => t.search_tooltip_ast(),
-                SearchMode::AstGrepRaw => t.search_tooltip_ast_raw(),
+                SearchMode::TokenSearch => t.search_tooltip_token(),
                 SearchMode::PlainText => t.search_tooltip_plain(),
                 SearchMode::Regex => t.search_tooltip_regex(),
             };

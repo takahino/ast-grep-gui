@@ -19,8 +19,8 @@ use crate::receiver_hint;
 pub enum SearchMode {
     /// AST パターン検索（マッチ範囲は ast-grep 本体・CLI と同じ）
     AstGrep,
-    /// 上と同じ検索。コードパネルで CLI 風のテキスト出力を表示
-    AstGrepRaw,
+    /// スペース区切りトークンを順序通りに検索（空白の有無は問わない）
+    TokenSearch,
     /// 通常の文字列検索
     PlainText,
     /// 正規表現検索
@@ -29,7 +29,7 @@ pub enum SearchMode {
 
 impl SearchMode {
     pub fn is_ast_mode(self) -> bool {
-        matches!(self, Self::AstGrep | Self::AstGrepRaw)
+        matches!(self, Self::AstGrep)
     }
 }
 
@@ -258,6 +258,32 @@ pub fn spawn_search(
             None
         };
 
+        // TokenSearch モード用の正規表現をコンパイル（トークンを \s* で結合）
+        let token_search_re: Option<Arc<regex::Regex>> = if search_mode == SearchMode::TokenSearch {
+            let tokens: Vec<&str> = pattern_str.split_whitespace().collect();
+            if tokens.is_empty() {
+                let _ = tx.send(SearchMessage::Error { job_id, msg: "パターンが空です".into() });
+                egui_ctx.request_repaint();
+                return;
+            }
+            let regex_pattern = tokens
+                .iter()
+                .map(|t| regex::escape(t))
+                .collect::<Vec<_>>()
+                .join(r"\s*");
+            match regex::Regex::new(&regex_pattern) {
+                Ok(re) => Some(Arc::new(re)),
+                Err(e) => {
+                    let msg = Tr(ui_lang).err_regex_compile(e);
+                    let _ = tx.send(SearchMessage::Error { job_id, msg });
+                    egui_ctx.request_repaint();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
         // スキップディレクトリを HashSet に変換（O(1) ルックアップ）
         let skip_dirs: std::collections::HashSet<String> = skip_dirs_str
             .split(';')
@@ -382,7 +408,7 @@ pub fn spawn_search(
                 let limit_flag = Arc::clone(&hit_limit_reached);
 
                 let matches: Vec<MatchItem> = match search_mode {
-                    SearchMode::AstGrep | SearchMode::AstGrepRaw => {
+                    SearchMode::AstGrep => {
                         let ast_lang = match file_lang.to_support_lang() {
                             Some(l) => l,
                             None => return,
@@ -552,6 +578,25 @@ pub fn spawn_search(
                                 line_start, col_start, line_end, col_end,
                                 mat.as_str().to_string(), &lines, context_lines,
                                 None,
+                            ));
+                        }
+                        out
+                    }
+                    SearchMode::TokenSearch => {
+                        // ソース全体を対象に検索（\s* が改行にもマッチするため行跨ぎに対応）
+                        let re = token_search_re.as_ref().unwrap();
+                        let mut out = Vec::new();
+                        for mat in re.find_iter(&source) {
+                            if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
+                                break;
+                            }
+                            let (line_start, col_start) =
+                                byte_offset_to_line_col(&source, mat.start());
+                            let (line_end, col_end) =
+                                byte_offset_to_line_col(&source, mat.end());
+                            out.push(build_match_item(
+                                line_start, col_start, line_end, col_end,
+                                mat.as_str().to_string(), &lines, context_lines, None,
                             ));
                         }
                         out

@@ -1,8 +1,6 @@
 use crate::app::AstGrepApp;
-use crate::export::file_to_ast_grep_console;
 use crate::file_encoding::read_text_file_as;
 use crate::highlight::build_layout_job;
-use crate::search::{FileResult, SearchMode};
 
 pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
     let scroll_line = match &mut app.table_preview {
@@ -43,30 +41,6 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                     .color(egui::Color32::GRAY),
             );
             ui.add_space(4.0);
-
-            let file_result = FileResult {
-                path: path.clone(),
-                relative_path: relative_path.clone(),
-                source_language: lang,
-                text_encoding: text_encoding.clone(),
-                matches: matches.clone(),
-            };
-
-            if app.search_mode == SearchMode::AstGrepRaw {
-                let mut console_text = file_to_ast_grep_console(&file_result);
-                egui::ScrollArea::both()
-                    .id_salt("table_preview_raw")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut console_text)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .interactive(false),
-                        );
-                    });
-                return;
-            }
 
             let source = match read_text_file_as(&path, text_encoding) {
                 Ok(s) => s,

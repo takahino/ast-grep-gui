@@ -124,14 +124,14 @@ impl Tr {
             UiLanguage::Japanese => {
                 "検索方法を選択します\n\
                  AST: ast-grep の AST パターン検索（マッチ範囲は本体・CLI と同じ）\n\
-                 ast-grepそのまま: 検索は同じ。コードパネルに CLI 風の出力を表示\n\
+                 トークン: スペース区切りのトークンを順序通りに検索（空白の有無は問わない）\n\
                  文字列: 通常のテキスト検索（単純な部分一致）\n\
                  正規表現: 正規表現パターンで検索"
             }
             UiLanguage::English => {
                 "Search method\n\
                  AST: ast-grep AST patterns (match spans match the CLI)\n\
-                 ast-grep (raw): same search; code panel shows console-style output\n\
+                 Token: search by space-separated tokens in order (whitespace-flexible)\n\
                  Text: plain substring search\n\
                  Regex: regular expression search"
             }
@@ -158,21 +158,24 @@ impl Tr {
             }
         }
     }
-    pub fn mode_ast_raw(self) -> &'static str {
+    pub fn mode_token(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "ast-grepそのまま",
-            UiLanguage::English => "ast-grep (raw)",
+            UiLanguage::Japanese => "トークン",
+            UiLanguage::English => "Token",
         }
     }
-    pub fn mode_ast_raw_tooltip(self) -> &'static str {
+    pub fn mode_token_tooltip(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {
-                "AST モードと同じ検索結果を、コードパネルで CLI に近いテキストとして表示します\n\
-                 エクスポートや表のマッチ範囲は AST モードと同じです"
+                "スペースで区切ったトークンを順序通りに検索します\n\
+                 空白の有無は問いません\n\
+                 例: `method ( int` は `method(int` にもマッチします\n\
+                 ファイルフィルタ未指定時は全ファイルが対象です"
             }
             UiLanguage::English => {
-                "Same search as AST mode; code panel shows console-style text\n\
-                 Table/export spans are identical to AST mode"
+                "Search by space-separated tokens in order (whitespace-flexible)\n\
+                 e.g. `method ( int` matches `method(int`\n\
+                 Without a file filter, all files are searched"
             }
         }
     }
@@ -462,20 +465,21 @@ impl Tr {
             }
         }
     }
-    pub fn pattern_label_tooltip_ast_raw(self) -> &'static str {
+    pub fn pattern_label_tooltip_token(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {
-                "ast-grep 本体にそのまま渡す AST パターンを入力します\n\
+                "スペースで区切ったトークンを入力します\n\
                  ─────────────────────────\n\
-                 $VAR   … 任意の単一ノードにマッチ\n\
-                 $$$VAR … 0個以上の複数ノードにマッチ\n\
-                 $_     … 何にでもマッチ（キャプチャしない）\n\
+                 各トークンはリテラル文字列として扱われます\n\
+                 トークン間の空白は「0個以上の空白」としてマッチします\n\
                  ─────────────────────────\n\
-                 AST モードと同じ（マッチ範囲は本体・CLI と一致）"
+                 例: method ( int i = 0 ) は method(int i=0) にもマッチ"
             }
             UiLanguage::English => {
-                "AST pattern passed to ast-grep as-is\n\
-                 Same match spans as AST mode / the CLI"
+                "Enter tokens separated by spaces\n\
+                 Each token is matched literally\n\
+                 Whitespace between tokens matches zero or more spaces\n\
+                 e.g. method ( int matches method(int"
             }
         }
     }
@@ -516,10 +520,10 @@ impl Tr {
             UiLanguage::English => "e.g. fn $NAME($$$ARGS)",
         }
     }
-    pub fn pattern_hint_ast_raw(self) -> &'static str {
+    pub fn pattern_hint_token(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "例: for ($$$ARGS)",
-            UiLanguage::English => "e.g. for ($$$ARGS)",
+            UiLanguage::Japanese => "例: method ( int i = 0 )",
+            UiLanguage::English => "e.g. method ( int i = 0 )",
         }
     }
     pub fn pattern_hint_plain(self) -> &'static str {
@@ -566,10 +570,10 @@ impl Tr {
             UiLanguage::English => "Start AST search (same spans as ast-grep CLI)",
         }
     }
-    pub fn search_tooltip_ast_raw(self) -> &'static str {
+    pub fn search_tooltip_token(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "AST モードと同じ検索を開始します（コードパネルは CLI 風表示）",
-            UiLanguage::English => "Same search as AST mode (console-style code panel)",
+            UiLanguage::Japanese => "トークン検索を開始します（スペース区切りで空白柔軟マッチ）",
+            UiLanguage::English => "Start token search (space-separated, whitespace-flexible)",
         }
     }
     pub fn search_tooltip_plain(self) -> &'static str {
@@ -1923,20 +1927,6 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => format!("  行 {}:{} \n", line, col),
             UiLanguage::English => format!("  line {}:{} \n", line, col),
-        }
-    }
-
-    pub fn export_console_header(self, m: usize, f: usize, ms: u64, hit_limit_reached: bool) -> String {
-        match self.0 {
-            UiLanguage::Japanese => format!(
-                "ast-grep console\n{} 件 / {} ファイル ({}ms){}\n\n",
-                m, f, ms, self.hit_limit_suffix(hit_limit_reached)
-            ),
-            UiLanguage::English => {
-                // 英語版はサフィックスが丸括弧の内側に入る形式のため個別処理
-                let note = if hit_limit_reached { ", truncated at hit limit" } else { "" };
-                format!("ast-grep console\n{} matches in {} files ({}ms{})\n\n", m, f, ms, note)
-            }
         }
     }
 
