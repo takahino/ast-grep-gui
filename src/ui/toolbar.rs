@@ -333,6 +333,13 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             {
                 app.show_pattern_assist = !app.show_pattern_assist;
             }
+        } else if app.search_mode == SearchMode::Regex {
+            if ui.button(t.regex_visualizer_btn())
+                .on_hover_text(t.regex_visualizer_btn_tooltip())
+                .clicked()
+            {
+                app.show_regex_visualizer = !app.show_regex_visualizer;
+            }
         }
 
         ui.separator();

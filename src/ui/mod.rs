@@ -6,4 +6,5 @@ pub mod help_popup;
 pub mod table_panel;
 pub mod table_preview_popup;
 pub mod pattern_assist_popup;
+pub mod regex_visualizer_popup;
 pub mod terminal_panel;

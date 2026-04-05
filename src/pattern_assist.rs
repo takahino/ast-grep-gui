@@ -3,9 +3,9 @@
 //! 各言語ごとに「プローブパターン」のリストを持ち、
 //! 入力スニペットに実際にマッチするものだけを候補として返す。
 
-use ast_grep_core::Pattern;
 use ast_grep_language::LanguageExt;
 
+use crate::ast_pattern::compile_strategies;
 use crate::i18n::{tr_pair, UiLanguage};
 use crate::lang::SupportedLanguage;
 
@@ -54,9 +54,15 @@ pub fn generate_patterns(
     let mut results: Vec<PatternSuggestion> = probes
         .into_iter()
         .filter_map(|(pat, desc)| {
-            // Pattern::try_new で事前検証し、MultipleNode 等の無効パターンを静かにスキップ
-            let compiled = Pattern::try_new(pat.as_str(), ast_lang).ok()?;
-            let count = root.root().find_all(compiled).count();
+            let compiled_patterns = compile_strategies(pat.as_str(), lang, ast_lang);
+            if compiled_patterns.is_empty() {
+                return None;
+            }
+            let count = compiled_patterns
+                .into_iter()
+                .map(|compiled| root.root().find_all(&compiled).count())
+                .find(|count| *count > 0)
+                .unwrap_or(0);
             if count > 0 {
                 Some(PatternSuggestion {
                     pattern: pat,
@@ -332,6 +338,26 @@ fn cpp_probes(lang: UiLanguage) -> Vec<(String, String)> {
         probe_l(lang, "namespace $NAME { $$$BODY }", "namespace", "namespace"),
         probe_l(lang, "template <$$$ARGS> $DECL", "template 宣言", "template"),
         probe_l(lang, "$RET $NAME($$$ARGS) const { $$$BODY }", "const メンバ関数", "const member fn"),
+        probe_l(
+            lang,
+            "$CLASS::$METHOD($$$ARGS)",
+            "スコープ解決付き呼び出し",
+            "scope-qualified call",
+        ),
+        probe_l(lang, "$CLASS::$METHOD()", "スコープ解決付き呼び出し（0引数）", "scope-qualified call (0 args)"),
+        probe_l(lang, "$CLASS::$METHOD($ARG)", "スコープ解決付き呼び出し（1引数）", "scope-qualified call (1 arg)"),
+        probe_l(
+            lang,
+            "$CLASS::$METHOD($ARG1, $ARG2)",
+            "スコープ解決付き呼び出し（2引数）",
+            "scope-qualified call (2 args)",
+        ),
+        probe_l(
+            lang,
+            "$CLASS::$METHOD($ARG1, $ARG2, $ARG3)",
+            "スコープ解決付き呼び出し（3引数）",
+            "scope-qualified call (3 args)",
+        ),
         probe_l(lang, "for ($TYPE $VAR : $ITER) { $$$BODY }", "range-based for", "range-for"),
         probe_l(lang, "try { $$$BODY } catch ($EX) { $$$CATCH }", "try-catch", "try-catch"),
         probe_l(lang, "throw $EXPR;", "throw", "throw"),

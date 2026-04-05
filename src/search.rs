@@ -3,12 +3,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use ast_grep_core::Pattern;
 use ast_grep_language::LanguageExt;
 use crossbeam_channel::Sender;
 use jwalk::WalkDir;
 use rayon::prelude::*;
 
+use crate::ast_pattern::compile_strategies;
 use crate::file_encoding::{read_text_file, read_text_file_as, FileEncoding, FileEncodingPreference};
 use crate::i18n::{Tr, UiLanguage};
 use crate::lang::SupportedLanguage;
@@ -316,48 +316,61 @@ pub fn spawn_search(
                             Some(l) => l,
                             None => return,
                         };
-                        // ast-grep でパターンマッチ
-                        // Pattern::try_new で検証し、無効パターン（MultipleNode等）はスキップ
-                        let compiled_pat = match Pattern::try_new(pattern_str.as_str(), ast_lang) {
-                            Ok(p) => p,
-                            Err(_) => return,
-                        };
+                        let compiled_patterns =
+                            compile_strategies(pattern_str.as_str(), file_lang, ast_lang);
+                        if compiled_patterns.is_empty() {
+                            return;
+                        }
 
                         let root = ast_lang.ast_grep(&source);
                         let mut out = Vec::new();
                         let want_recv_hint = pattern_contains_dollar_recv(pattern_str.as_str());
-                        for node in root.root().find_all(&compiled_pat) {
-                            if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
+                        for compiled_pat in compiled_patterns {
+                            for node in root.root().find_all(&compiled_pat) {
+                                if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
+                                    break;
+                                }
+                                let matched_node = node.get_node().clone();
+                                let node_range = matched_node.range();
+                                // ast-grep 本体（CLI）と同じノード範囲を使う
+                                let matched_end = node_range.end.min(source.len());
+                                let (line_start, col_start) =
+                                    byte_offset_to_line_col(&source, node_range.start);
+                                let (line_end, col_end) =
+                                    byte_offset_to_line_col(&source, matched_end);
+                                let matched_text = source
+                                    .get(node_range.start..matched_end)
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| node.text().to_string());
+                                let recv_type_hint = if want_recv_hint {
+                                    let hint_ctx = receiver_hint::RecvHintContext {
+                                        file_path: path.as_path(),
+                                        source: source.as_str(),
+                                    };
+                                    node.get_env().get_match("RECV").and_then(|recv| {
+                                        receiver_hint::infer_recv_type(
+                                            file_lang,
+                                            recv,
+                                            Some(&hint_ctx),
+                                        )
+                                    })
+                                } else {
+                                    None
+                                };
+                                out.push(build_match_item(
+                                    line_start,
+                                    col_start,
+                                    line_end,
+                                    col_end,
+                                    matched_text,
+                                    &lines,
+                                    context_lines,
+                                    recv_type_hint,
+                                ));
+                            }
+                            if !out.is_empty() {
                                 break;
                             }
-                            let matched_node = node.get_node().clone();
-                            let node_range = matched_node.range();
-                            // ast-grep 本体（CLI）と同じノード範囲を使う
-                            let matched_end = node_range.end.min(source.len());
-                            let (line_start, col_start) =
-                                byte_offset_to_line_col(&source, node_range.start);
-                            let (line_end, col_end) =
-                                byte_offset_to_line_col(&source, matched_end);
-                            let matched_text = source
-                                .get(node_range.start..matched_end)
-                                .map(str::to_owned)
-                                .unwrap_or_else(|| node.text().to_string());
-                            let recv_type_hint = if want_recv_hint {
-                                let hint_ctx = receiver_hint::RecvHintContext {
-                                    file_path: path.as_path(),
-                                    source: source.as_str(),
-                                };
-                                node.get_env().get_match("RECV").and_then(|recv| {
-                                    receiver_hint::infer_recv_type(file_lang, recv, Some(&hint_ctx))
-                                })
-                            } else {
-                                None
-                            };
-                            out.push(build_match_item(
-                                line_start, col_start, line_end, col_end,
-                                matched_text, &lines, context_lines,
-                                recv_type_hint,
-                            ));
                         }
                         out
                     }

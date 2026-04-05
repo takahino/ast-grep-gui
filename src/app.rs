@@ -14,8 +14,8 @@ use crate::search::{
 use crate::pattern_assist::PatternSuggestion;
 use crate::terminal::TerminalState;
 use crate::ui::{
-    code_panel, file_panel, help_popup, pattern_assist_popup, status_bar, table_panel,
-    table_preview_popup, terminal_panel, toolbar,
+    code_panel, file_panel, help_popup, pattern_assist_popup, regex_visualizer_popup,
+    status_bar, table_panel, table_preview_popup, terminal_panel, toolbar,
 };
 
 /// 表モードでダブルクリックしたファイルをコードビューと同じ表示で開く
@@ -94,6 +94,9 @@ struct PersistedAppState {
     /// パターン入力履歴（新しい順、最大30件）
     #[serde(default)]
     pattern_history: Vec<String>,
+    /// Regex visualiser 用のテスト文字列
+    #[serde(default)]
+    regex_visualizer_test_text: String,
 }
 
 impl Default for PersistedAppState {
@@ -112,6 +115,7 @@ impl Default for PersistedAppState {
             search_mode: SearchMode::AstGrep,
             ui_language_preference: UiLanguagePreference::default(),
             pattern_history: Vec::new(),
+            regex_visualizer_test_text: String::new(),
         }
     }
 }
@@ -131,6 +135,8 @@ pub struct AstGrepApp {
     pub highlighter: Highlighter,
     /// パターン支援ポップアップの表示フラグ
     pub show_pattern_assist: bool,
+    /// 正規表現 visualiser の表示フラグ
+    pub show_regex_visualizer: bool,
     /// パターン支援：入力スニペット
     pub pattern_assist_snippet: String,
     /// パターン支援：生成結果
@@ -169,6 +175,8 @@ pub struct AstGrepApp {
     pub(crate) table_scroll_to_row: Option<usize>,
     /// パターン入力履歴（新しい順、最大30件）
     pub pattern_history: Vec<String>,
+    /// Regex visualiser: パターンに対して試すテキスト
+    pub regex_visualizer_test_text: String,
     /// パターンサジェストポップアップで現在選択中の候補インデックス
     pub pattern_suggest_idx: Option<usize>,
     /// ターミナルパネルの表示フラグ
@@ -205,6 +213,7 @@ impl AstGrepApp {
             stats: SearchStats::default(),
             highlighter: Highlighter::new(),
             show_pattern_assist: false,
+            show_regex_visualizer: false,
             pattern_assist_snippet: String::new(),
             pattern_assist_results: Vec::new(),
             pending_scroll_line: None,
@@ -224,6 +233,7 @@ impl AstGrepApp {
             table_row_prefix_units: vec![0],
             table_scroll_to_row: None,
             pattern_history: persisted.pattern_history,
+            regex_visualizer_test_text: persisted.regex_visualizer_test_text,
             pattern_suggest_idx: None,
             show_terminal: false,
             terminal: None,
@@ -283,6 +293,7 @@ impl AstGrepApp {
             search_mode: self.search_mode,
             ui_language_preference: self.ui_language_preference,
             pattern_history: self.pattern_history.clone(),
+            regex_visualizer_test_text: self.regex_visualizer_test_text.clone(),
         }
     }
 
@@ -475,6 +486,9 @@ impl eframe::App for AstGrepApp {
 
         // パターン支援ポップアップ
         pattern_assist_popup::show(self, ctx);
+
+        // 正規表現 visualiser
+        regex_visualizer_popup::show(self, ctx);
 
         // 上部ツールバー
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {

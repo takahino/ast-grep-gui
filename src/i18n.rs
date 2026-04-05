@@ -562,6 +562,124 @@ impl Tr {
             UiLanguage::English => "Generate pattern candidates from a code snippet",
         }
     }
+    pub fn regex_visualizer_btn(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "🧩 Regex 補助",
+            UiLanguage::English => "🧩 Regex helper",
+        }
+    }
+    pub fn regex_visualizer_btn_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "正規表現の構造を見やすく分解し、コンパイル可否も確認できます"
+            }
+            UiLanguage::English => {
+                "Break down the regex structure and check whether it compiles"
+            }
+        }
+    }
+    pub fn regex_visualizer_window_title(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Regex visualiser",
+            UiLanguage::English => "Regex visualiser",
+        }
+    }
+    pub fn regex_visualizer_intro(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "現在の正規表現をライブで分解表示します。量指定、分岐、グループ、文字クラスの位置が追いやすくなります。"
+            }
+            UiLanguage::English => {
+                "Live breakdown of the current regex so groups, alternations, character classes, and quantifiers are easier to follow."
+            }
+        }
+    }
+    pub fn regex_visualizer_pattern_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "対象の正規表現:",
+            UiLanguage::English => "Regex pattern:",
+        }
+    }
+    pub fn regex_visualizer_status_ok(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "コンパイル成功",
+            UiLanguage::English => "Compiles successfully",
+        }
+    }
+    pub fn regex_visualizer_status_error(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "コンパイルエラー",
+            UiLanguage::English => "Compile error",
+        }
+    }
+    pub fn regex_visualizer_summary(
+        self,
+        groups: usize,
+        alternations: usize,
+        char_classes: usize,
+        quantifiers: usize,
+    ) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!(
+                "グループ: {groups} / 分岐: {alternations} / 文字クラス: {char_classes} / 量指定: {quantifiers}"
+            ),
+            UiLanguage::English => format!(
+                "Groups: {groups} / Alternations: {alternations} / Character classes: {char_classes} / Quantifiers: {quantifiers}"
+            ),
+        }
+    }
+    pub fn regex_visualizer_empty(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "正規表現を入力すると、ここに分解結果が表示されます。",
+            UiLanguage::English => "Enter a regex pattern to see the breakdown here.",
+        }
+    }
+    pub fn regex_visualizer_automaton_heading(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "簡易オートマトン表示",
+            UiLanguage::English => "Simplified automaton view",
+        }
+    }
+    pub fn regex_visualizer_test_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "テスト文字列:",
+            UiLanguage::English => "Test text:",
+        }
+    }
+    pub fn regex_visualizer_test_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "ここに文字列を入力すると、上の正規表現でマッチ箇所を試せます"
+            }
+            UiLanguage::English => {
+                "Type sample text here to try matches against the pattern above"
+            }
+        }
+    }
+    pub fn regex_visualizer_test_matches_heading(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "マッチ結果",
+            UiLanguage::English => "Matches",
+        }
+    }
+    pub fn regex_visualizer_test_no_matches(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "マッチなし",
+            UiLanguage::English => "No matches",
+        }
+    }
+    pub fn regex_visualizer_test_match_truncated(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "（先頭のみ表示）",
+            UiLanguage::English => "(showing first matches only)",
+        }
+    }
+    pub fn regex_visualizer_test_count(self, n: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("ヒット: {n} 件"),
+            UiLanguage::English => format!("Hits: {n}"),
+        }
+    }
 
     pub fn view_code(self) -> &'static str {
         match self.0 {
