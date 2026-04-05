@@ -89,6 +89,32 @@ fn default_text_encoding() -> FileEncoding {
     FileEncoding::Utf8
 }
 
+#[derive(Debug)]
+struct LineIndex {
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let mut line_starts = Vec::with_capacity(source.bytes().filter(|&b| b == b'\n').count() + 1);
+        line_starts.push(0);
+        for (idx, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(idx + 1);
+            }
+        }
+        Self { line_starts }
+    }
+
+    /// バイトオフセットを (0-based 行インデックス, 行内バイトオフセット) に変換
+    fn byte_offset_to_line_col(&self, source: &str, byte_offset: usize) -> (usize, usize) {
+        let capped = byte_offset.min(source.len());
+        let line = self.line_starts.partition_point(|&start| start <= capped).saturating_sub(1);
+        let col = capped.saturating_sub(self.line_starts[line]);
+        (line, col)
+    }
+}
+
 /// 1マッチの情報
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MatchItem {
@@ -403,6 +429,7 @@ pub fn spawn_search(
                 }
 
                 let lines: Vec<&str> = source.lines().collect();
+                let line_index = LineIndex::new(&source);
 
                 let hits_acc = Arc::clone(&hits_accepted);
                 let limit_flag = Arc::clone(&hit_limit_reached);
@@ -432,9 +459,9 @@ pub fn spawn_search(
                                 // ast-grep 本体（CLI）と同じノード範囲を使う
                                 let matched_end = node_range.end.min(source.len());
                                 let (line_start, col_start) =
-                                    byte_offset_to_line_col(&source, node_range.start);
+                                    line_index.byte_offset_to_line_col(&source, node_range.start);
                                 let (line_end, col_end) =
-                                    byte_offset_to_line_col(&source, matched_end);
+                                    line_index.byte_offset_to_line_col(&source, matched_end);
                                 let matched_text = source
                                     .get(node_range.start..matched_end)
                                     .map(str::to_owned)
@@ -571,9 +598,9 @@ pub fn spawn_search(
                                 break;
                             }
                             let (line_start, col_start) =
-                                byte_offset_to_line_col(&source, mat.start());
+                                line_index.byte_offset_to_line_col(&source, mat.start());
                             let (line_end, col_end) =
-                                byte_offset_to_line_col(&source, mat.end());
+                                line_index.byte_offset_to_line_col(&source, mat.end());
                             out.push(build_match_item(
                                 line_start, col_start, line_end, col_end,
                                 mat.as_str().to_string(), &lines, context_lines,
@@ -591,9 +618,9 @@ pub fn spawn_search(
                                 break;
                             }
                             let (line_start, col_start) =
-                                byte_offset_to_line_col(&source, mat.start());
+                                line_index.byte_offset_to_line_col(&source, mat.start());
                             let (line_end, col_end) =
-                                byte_offset_to_line_col(&source, mat.end());
+                                line_index.byte_offset_to_line_col(&source, mat.end());
                             out.push(build_match_item(
                                 line_start, col_start, line_end, col_end,
                                 mat.as_str().to_string(), &lines, context_lines, None,
@@ -729,14 +756,6 @@ pub fn refresh_match_contexts(results: &mut [FileResult], context_lines: usize) 
     }
 }
 
-/// バイトオフセットを (0-based 行インデックス, 行内バイトオフセット) に変換
-fn byte_offset_to_line_col(source: &str, byte_offset: usize) -> (usize, usize) {
-    let prefix = &source[..byte_offset.min(source.len())];
-    let line = prefix.chars().filter(|&c| c == '\n').count();
-    let col = prefix.rfind('\n').map(|i| byte_offset - i - 1).unwrap_or(byte_offset);
-    (line, col)
-}
-
 /// ファイル出力用の検索条件（UI の検索パラメータと対応）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchConditions {
@@ -790,5 +809,33 @@ fn try_accept_hit(hits: &AtomicUsize, max: usize, limit_reached: &AtomicBool) ->
         {
             return true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LineIndex;
+
+    #[test]
+    fn line_index_maps_offsets_across_lines() {
+        let source = "alpha\nbeta\ngamma";
+        let index = LineIndex::new(source);
+
+        assert_eq!(index.byte_offset_to_line_col(source, 0), (0, 0));
+        assert_eq!(index.byte_offset_to_line_col(source, 3), (0, 3));
+        assert_eq!(index.byte_offset_to_line_col(source, 6), (1, 0));
+        assert_eq!(index.byte_offset_to_line_col(source, 10), (1, 4));
+        assert_eq!(index.byte_offset_to_line_col(source, 11), (2, 0));
+        assert_eq!(index.byte_offset_to_line_col(source, source.len()), (2, 5));
+    }
+
+    #[test]
+    fn line_index_handles_trailing_newline() {
+        let source = "a\n";
+        let index = LineIndex::new(source);
+
+        assert_eq!(index.byte_offset_to_line_col(source, 0), (0, 0));
+        assert_eq!(index.byte_offset_to_line_col(source, 1), (0, 1));
+        assert_eq!(index.byte_offset_to_line_col(source, 2), (1, 0));
     }
 }
