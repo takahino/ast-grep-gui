@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use egui::Ui;
 
-use crate::app::{AstGrepApp, RewritePhase, SearchState, ViewMode};
+use crate::app::{AstGrepApp, CodeViewPaneFocus, RewritePhase, SearchState, ViewMode};
 use crate::ui::batch_panel;
 use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguagePreference;
@@ -193,6 +193,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         // テキスト変更時に候補選択インデックスをリセット
         if response.changed() {
             app.pattern_suggest_idx = None;
+        }
+
+        // パターン欄にフォーカスがあるときは「コードビュー左ペイン」扱いをやめ、→ でペイン切替しない
+        if app.view_mode == ViewMode::Code && (response.clicked() || response.gained_focus()) {
+            app.code_view_pane_focus = CodeViewPaneFocus::Code;
         }
 
         // AST / Regex モードのみ履歴サジェストを表示

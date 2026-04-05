@@ -1,6 +1,6 @@
 use egui::Ui;
 
-use crate::app::AstGrepApp;
+use crate::app::{AstGrepApp, CodeViewPaneFocus};
 use crate::ui::scroll_keyboard;
 use crate::export::file_to_ast_grep_console;
 use crate::file_encoding::read_text_file_as;
@@ -60,25 +60,33 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         let mut console_text = file_to_ast_grep_console(file_result);
         let sid = scroll_keyboard::scroll_area_persistent_id(ui, "ast_grep_raw_console");
         let rect = ui.available_rect_before_wrap();
+        let pointer_on_code = ui.rect_contains_pointer(rect);
+        let pointer_on_list = app.code_view_pointer_on_list;
+        let allow_code_scroll = pointer_on_code
+            || (matches!(app.code_view_pane_focus, CodeViewPaneFocus::Code) && !pointer_on_list);
         scroll_keyboard::apply_keyboard_scroll_before_show(
             ui.ctx(),
             ui,
             sid,
             rect,
             egui::Vec2b::from([true, true]),
+            allow_code_scroll,
         );
         let scroll_out = egui::ScrollArea::both()
             .id_salt("ast_grep_raw_console")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut console_text)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .interactive(false),
-                );
+                let te = egui::TextEdit::multiline(&mut console_text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .interactive(false);
+                let te_resp = ui.add(te);
+                if te_resp.clicked() {
+                    app.code_view_pane_focus = CodeViewPaneFocus::Code;
+                }
             });
         scroll_keyboard::store_scroll_metrics(ui.ctx(), sid, &scroll_out, rect);
+        app.code_view_pointer_on_code = ui.rect_contains_pointer(scroll_out.inner_rect);
         return;
     }
 
@@ -165,12 +173,17 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     let sid = scroll_keyboard::scroll_area_persistent_id(ui, "code_view");
     let rect = ui.available_rect_before_wrap();
+    let pointer_on_code = ui.rect_contains_pointer(rect);
+    let pointer_on_list = app.code_view_pointer_on_list;
+    let allow_code_scroll = pointer_on_code
+        || (matches!(app.code_view_pane_focus, CodeViewPaneFocus::Code) && !pointer_on_list);
     scroll_keyboard::apply_keyboard_scroll_before_show(
         ui.ctx(),
         ui,
         sid,
         rect,
         egui::Vec2b::from([true, true]),
+        allow_code_scroll,
     );
 
     let mut scroll = egui::ScrollArea::both()
@@ -183,7 +196,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     let scroll_out = scroll.show(ui, |ui| {
         let galley = ui.fonts(|f| f.layout_job(job));
-        ui.add(egui::Label::new(galley).selectable(true));
+        let label = ui.add(egui::Label::new(galley).selectable(true));
+        if label.clicked() {
+            app.code_view_pane_focus = CodeViewPaneFocus::Code;
+        }
     });
     scroll_keyboard::store_scroll_metrics(ui.ctx(), sid, &scroll_out, rect);
+    app.code_view_pointer_on_code = ui.rect_contains_pointer(scroll_out.inner_rect);
 }

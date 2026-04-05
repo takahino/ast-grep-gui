@@ -19,13 +19,19 @@ mod terminal;
 mod ui;
 
 use app::AstGrepApp;
+use std::sync::Arc;
 
 fn main() -> eframe::Result<()> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("ast-grep GUI")
+        .with_inner_size([1024.0, 700.0])
+        .with_min_inner_size([600.0, 400.0]);
+    if let Some(icon) = window_icon_from_ico() {
+        viewport = viewport.with_icon(Arc::new(icon));
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("ast-grep GUI")
-            .with_inner_size([1024.0, 700.0])
-            .with_min_inner_size([600.0, 400.0]),
+        viewport,
         ..Default::default()
     };
 
@@ -38,6 +44,19 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(AstGrepApp::new(cc)))
         }),
     )
+}
+
+/// `assets/icon.ico` をウィンドウ／タスクバー用の RGBA アイコンに変換する（左上タイトルバー含む）。
+fn window_icon_from_ico() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../assets/icon.ico");
+    let image = image::load_from_memory(bytes).ok()?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(egui::IconData {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    })
 }
 
 fn setup_custom_fonts(ctx: &egui::Context) {

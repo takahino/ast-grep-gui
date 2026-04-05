@@ -33,6 +33,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         sid,
         rect,
         egui::Vec2b::from([false, true]),
+        false,
     );
 
     let scroll_out = egui::ScrollArea::vertical()

@@ -13,11 +13,13 @@ It is designed to make structural code search easier for users who prefer a visu
 - Batch rewrite (like `--rewrite`): preview, diff, then write back files (AST / ast-grep raw modes)
 - Search modes for `AST`, `ast-grep (raw)`, plain text, and regex
 - Auto language detection by file extension for mixed-language repositories
-- Code view, table view, and **batch report** view (run multiple patterns with per-job settings, then review an aggregated report)
+- Code view, table view (with double-click preview popup), and **batch report** view (run multiple patterns with per-job settings, then review an aggregated report)
 - Best-effort `$RECV` receiver type hints in search results for supported languages
-- Pattern help, presets, and snippet-based pattern assist
+- Pattern help, presets, snippet-based pattern assist, and **pattern input history** (up to 30 entries)
+- Built-in **regex visualizer** to inspect and test regular expressions interactively
 - Export results to `TXT`, `JSON`, `Markdown`, `HTML`, and `Excel (.xlsx)` (including multi-job batch reports after a batch run)
-- UI language switching between Japanese and English
+- UI language switching between Japanese and English (auto-detected from OS locale)
+- Configurable **max hit count** to cap large result sets (default: 100,000)
 - Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16 LE`, `UTF-16 BE`, `Shift_JIS`, `EUC-JP`, `JIS`, `GBK`, `Big5`, `EUC-KR`, and `Latin1` family overrides
 - Built-in terminal panel for PowerShell commands and `sg`-style searches
 
@@ -32,6 +34,8 @@ It is designed to make structural code search easier for users who prefer a visu
 - C
 - C++
 - C#
+- Kotlin
+- Scala
 - `Auto` mode detects the parser from each file extension
 
 ## Requirements
@@ -113,13 +117,18 @@ When the pattern contains `$RECV`, `JSON`, `Markdown`, `HTML`, and `Excel` expor
 src/main.rs              Application entry point
 src/app.rs               App state and main UI flow
 src/search.rs            Background search engine
+src/ast_pattern.rs       Pattern compilation strategies (contextual call support)
 src/receiver_hint.rs     Best-effort receiver type inference
 src/lang.rs              Language definitions and presets
 src/pattern_assist.rs    Snippet-to-pattern suggestions
 src/export.rs            Exporters
-src/terminal.rs          Built-in terminal panel
+src/file_encoding.rs     Text encoding detection and reading
+src/i18n.rs              UI language (Japanese / English)
+src/regex_visualizer.rs  Regex tokenizer for the visualizer feature
+src/help_html.rs         Opens embedded HTML help in the OS browser
+src/terminal.rs          Built-in terminal state
 src/ui/                  GUI panels and popups
-assets/help/             Embedded pattern help pages
+assets/help/             Embedded pattern help HTML pages
 ```
 
 ## Notes

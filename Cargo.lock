@@ -275,6 +275,7 @@ dependencies = [
  "eframe",
  "egui",
  "encoding_rs",
+ "image",
  "jwalk",
  "open",
  "rayon",

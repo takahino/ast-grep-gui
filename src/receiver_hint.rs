@@ -180,22 +180,57 @@ fn java_local_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_start:
     last
 }
 
-/// `formal_parameters` 配下の `formal_parameter` から名前に一致する型を返す。
+/// `_variable_declarator_id` が束ねる名前が `name` と一致するか（`field("name")` が取れない場合のフォールバック付き）。
+fn java_declarator_id_matches<D: Doc>(decl_id: &Node<'_, D>, name: &str) -> bool {
+    if decl_id.kind().as_ref() != "_variable_declarator_id" {
+        return false;
+    }
+    if let Some(id) = decl_id.field("name") {
+        if id.text().trim() == name {
+            return true;
+        }
+    }
+    decl_id.children().any(|c| {
+        matches!(
+            c.kind().as_ref(),
+            "identifier" | "_reserved_identifier" | "underscore_pattern"
+        ) && c.text().trim() == name
+    })
+}
+
+/// `formal_parameters` 配下の `formal_parameter` / `spread_parameter` から名前に一致する型を返す。
 fn java_walk_formal_parameters<D: Doc>(node: &Node<'_, D>, name: &str, out: &mut Option<String>) {
     if out.is_some() {
         return;
     }
-    if node.kind().as_ref() == "formal_parameter" {
+    let node_kind = node.kind();
+    let kind = node_kind.as_ref();
+    if kind == "formal_parameter" {
+        if let Some(ty) = node.field("type") {
+            // tree-sitter-java は `formal_parameter` に `name` / `type` を直接載せる（`_variable_declarator_id` は子に出ない）
+            let name_ok = node
+                .field("name")
+                .map(|n| n.text().trim() == name)
+                .unwrap_or_else(|| {
+                    node.children().any(|c| {
+                        c.kind().as_ref() == "_variable_declarator_id" && java_declarator_id_matches(&c, name)
+                    })
+                });
+            if name_ok {
+                *out = Some(ty.text().trim().to_string());
+                return;
+            }
+        }
+    } else if kind == "spread_parameter" {
         if let Some(ty) = node.field("type") {
             for c in node.children() {
-                if c.kind().as_ref() == "_variable_declarator_id" {
-                    if let Some(id) = c.field("name") {
-                        let id_text = id.text();
-                        if id_text.trim() == name {
-                            let ty_text = ty.text();
-                            *out = Some(ty_text.trim().to_string());
-                            return;
-                        }
+                if c.kind().as_ref() != "variable_declarator" {
+                    continue;
+                }
+                for cc in c.children() {
+                    if cc.kind().as_ref() == "_variable_declarator_id" && java_declarator_id_matches(&cc, name) {
+                        *out = Some(ty.text().trim().to_string());
+                        return;
                     }
                 }
             }
@@ -211,7 +246,13 @@ fn java_walk_formal_parameters<D: Doc>(node: &Node<'_, D>, name: &str, out: &mut
 
 fn java_parameters_from_formals_root<D: Doc>(executable: &Node<'_, D>, name: &str) -> Option<String> {
     let mut out = None;
-    java_walk_formal_parameters(executable, name, &mut out);
+    // `method_declaration` / `constructor_declaration` は `field("parameters")` で `formal_parameters` に直結できる
+    if let Some(params) = executable.field("parameters") {
+        java_walk_formal_parameters(&params, name, &mut out);
+    }
+    if out.is_none() {
+        java_walk_formal_parameters(executable, name, &mut out);
+    }
     out
 }
 
@@ -616,14 +657,17 @@ fn cpp_declaration_declares_name<D: Doc>(decl: &Node<'_, D>, name: &str) -> bool
     if walk(decl, name) {
         return true;
     }
-    if let Some(d) = decl.field("declarator") {
+    // `CString a, b, c;` は `declaration` に `declarator` フィールドが複数付く。`field()` は先頭のみ。
+    for d in decl.field_children("declarator") {
         if d.kind().as_ref() == "init_declarator" {
             if let Some(inner) = d.field("declarator") {
-                return cpp_declarator_matches_name(&inner, name);
+                if cpp_declarator_matches_name(&inner, name) {
+                    return true;
+                }
             }
-            return false;
+        } else if cpp_declarator_matches_name(&d, name) {
+            return true;
         }
-        return cpp_declarator_matches_name(&d, name);
     }
     false
 }
@@ -1142,6 +1186,46 @@ mod tests {
         infer_recv_type(SupportedLanguage::Cpp, recv, None)
     }
 
+    fn java_recv_hint(src: &str, pattern: &str) -> Option<String> {
+        let grep = SupportLang::Java.ast_grep(src);
+        let pat = Pattern::try_new(pattern, SupportLang::Java).unwrap();
+        let root = grep.root();
+        let m = root.find_all(&pat).next().expect("one match");
+        let recv = m.get_env().get_match("RECV").expect("RECV");
+        infer_recv_type(SupportedLanguage::Java, recv, None)
+    }
+
+    #[test]
+    fn java_method_parameter_receiver_in_if_condition() {
+        let src = r#"
+class Foo {
+  public static String stripComments(String s) {
+    if (s == null || s.isEmpty()) return "";
+    try {
+      return "";
+    } catch (Exception e) {
+      return "";
+    }
+  }
+}
+"#;
+        let hint = java_recv_hint(src, "$RECV.isEmpty()");
+        assert_eq!(hint.as_deref(), Some("String"));
+    }
+
+    #[test]
+    fn java_method_parameter_via_method_pattern() {
+        let src = r#"
+class Bar {
+  void f(String s) {
+    s.trim();
+  }
+}
+"#;
+        let hint = java_recv_hint(src, "$RECV.$METHOD($$$ARGS)");
+        assert_eq!(hint.as_deref(), Some("String"));
+    }
+
     #[test]
     fn cpp_simple_local_primitive_int() {
         let src = r#"
@@ -1263,5 +1347,26 @@ void f() {
         assert_eq!(cpp_recv_base_name(recv_call).as_str(), "time");
         let hint = infer_recv_type(SupportedLanguage::Cpp, recv_call, None);
         assert_eq!(hint.as_deref(), Some("CTime"));
+    }
+
+    #[test]
+    fn cpp_comma_separated_declarators_resolve_third_variable() {
+        let src = r#"
+void Pattern1_DirectFormatNest4()
+{
+    CString str1, str2, result_str;
+    CTime   time(2024, 3, 15, 10, 30, 0);
+
+    result_str.Format("LOG: %s",
+        str2.Format(">> %s",
+            str1.Format("[%s]",
+                time.Format("%Y/%m/%d"))));
+}
+"#;
+        let hint = cpp_recv_hint(
+            src,
+            r##"$RECV.Format("LOG: %s", $$$ARGS)"##,
+        );
+        assert_eq!(hint.as_deref(), Some("CString"));
     }
 }

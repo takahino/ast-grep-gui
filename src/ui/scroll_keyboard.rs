@@ -23,14 +23,16 @@ pub fn scroll_area_persistent_id(ui: &Ui, id_salt: impl std::hash::Hash) -> Id {
     ui.make_persistent_id(egui::Id::new(id_salt))
 }
 
+/// `allow_keyboard_without_pointer` が true のときは、ポインタが矩形外でも矢印／PageUp/PageDown でスクロールする（コードビューでコードペインにフォーカスがある場合など）。
 pub fn apply_keyboard_scroll_before_show(
     ctx: &Context,
     ui: &Ui,
     scroll_area_id: Id,
     interaction_rect: Rect,
     scroll_enabled: Vec2b,
+    allow_keyboard_without_pointer: bool,
 ) {
-    if !ui.rect_contains_pointer(interaction_rect) {
+    if !ui.rect_contains_pointer(interaction_rect) && !allow_keyboard_without_pointer {
         return;
     }
 

@@ -28,6 +28,7 @@ sys-locale = "0.3"
 encoding_rs = "0.8"
 chardetng = "0.1"
 open = "5"
+image = { version = "0.25", default-features = false, features = ["ico"] }
 
 [build-dependencies]
 winres = "0.1"

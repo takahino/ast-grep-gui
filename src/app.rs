@@ -56,6 +56,16 @@ pub enum ViewMode {
     BatchReport,
 }
 
+/// コードビュー時のキーボード対象ペイン（←/→ で切り替え）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodeViewPaneFocus {
+    /// 中央のコード／コンソール表示
+    #[default]
+    Code,
+    /// 左のファイル一覧
+    FileList,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TableRowRef {
     pub file_idx: usize,
@@ -161,6 +171,12 @@ pub struct AstGrepApp {
     pub selected_lang: SupportedLanguage,
     pub context_lines: usize,
     pub selected_file_idx: Option<usize>,
+    /// コードビューで矢印キーの優先先（ファイル一覧 vs コード）
+    pub code_view_pane_focus: CodeViewPaneFocus,
+    /// 直近フレームでポインタがファイル一覧スクロール内にあったか（コード側と矢印の衝突回避用）
+    pub(crate) code_view_pointer_on_list: bool,
+    /// 直近フレームでポインタがコード／コンソールのスクロール内にあったか
+    pub(crate) code_view_pointer_on_code: bool,
     pub show_help: bool,
     pub search_state: SearchState,
     pub results: Vec<FileResult>,
@@ -270,6 +286,9 @@ impl AstGrepApp {
             selected_lang: persisted.selected_lang,
             context_lines: persisted.context_lines,
             selected_file_idx: None,
+            code_view_pane_focus: CodeViewPaneFocus::default(),
+            code_view_pointer_on_list: false,
+            code_view_pointer_on_code: false,
             show_help: false,
             search_state: SearchState::Idle,
             results: Vec::new(),
@@ -929,6 +948,26 @@ impl eframe::App for AstGrepApp {
             }
         });
 
+        // コードビュー: ← ファイル一覧 / → コード
+        // ・ツールバーより先に処理する（右矢印が TextEdit 等に取られるのを防ぐ）
+        // ・一覧の Selectable にフォーカスがあると wants_keyboard_input が true になるため、
+        //   「一覧 → コード」の → だけはそのチェックを外す（← はテキスト入力を奪わないよう従来どおり）
+        if self.view_mode == ViewMode::Code {
+            let allow_left = !ctx.wants_keyboard_input();
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+                    if self.code_view_pane_focus == CodeViewPaneFocus::FileList {
+                        self.code_view_pane_focus = CodeViewPaneFocus::Code;
+                    }
+                }
+                if allow_left && i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+                    if self.code_view_pane_focus == CodeViewPaneFocus::Code {
+                        self.code_view_pane_focus = CodeViewPaneFocus::FileList;
+                    }
+                }
+            });
+        }
+
         // ヘルプポップアップ
         help_popup::show(self, ctx);
 
@@ -1043,6 +1082,9 @@ impl eframe::App for AstGrepApp {
 
         match self.view_mode {
             ViewMode::Code => {
+                self.code_view_pointer_on_list = false;
+                self.code_view_pointer_on_code = false;
+
                 // 左ペイン: ファイル一覧
                 egui::SidePanel::left("file_panel")
                     .default_width(200.0)
