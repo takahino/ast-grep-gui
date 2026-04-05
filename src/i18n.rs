@@ -938,6 +938,149 @@ impl Tr {
         }
     }
 
+    // ─── rewrite (AST) ─────────────────────────────────────────────────
+
+    pub fn rewrite_template_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "置換:",
+            UiLanguage::English => "Rewrite:",
+        }
+    }
+    pub fn rewrite_template_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "ast-grep の --rewrite に相当する置換テンプレートです。\n\
+                 検索パターンのメタ変数（$A など）を参照できます。"
+            }
+            UiLanguage::English => {
+                "Replacement template (like ast-grep --rewrite).\n\
+                 Meta-variables from the search pattern can be used."
+            },
+        }
+    }
+    pub fn rewrite_template_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "例: new_name($A)",
+            UiLanguage::English => "e.g. new_name($A)",
+        }
+    }
+    pub fn rewrite_preview_btn(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "置換プレビュー",
+            UiLanguage::English => "Preview rewrite",
+        }
+    }
+    pub fn rewrite_preview_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "ヒットした各ファイルに対し、置換後のソースを生成して差分を確認します（ディスクは変更しません）"
+            }
+            UiLanguage::English => {
+                "Generate rewritten source per hit file and show a diff (does not write to disk)"
+            },
+        }
+    }
+    pub fn rewrite_window_title(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "置換プレビュー",
+            UiLanguage::English => "Rewrite preview",
+        }
+    }
+    pub fn rewrite_preview_summary(self, files: usize, elapsed_ms: u64) -> String {
+        match self.0 {
+            UiLanguage::Japanese => {
+                format!("変更のあるファイル: {files} / 所要時間: {elapsed_ms} ms")
+            }
+            UiLanguage::English => {
+                format!("Files with changes: {files} / Time: {elapsed_ms} ms")
+            }
+        }
+    }
+    pub fn rewrite_no_changes(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "置換の結果、検索ヒットしたファイルに変更はありませんでした（テンプレートが元と同じか、マッチと整合しません）。"
+            }
+            UiLanguage::English => {
+                "No changes after rewrite (template may be identical or incompatible with matches)."
+            },
+        }
+    }
+    pub fn rewrite_close(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "閉じる",
+            UiLanguage::English => "Close",
+        }
+    }
+    pub fn rewrite_file_list_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ファイル:",
+            UiLanguage::English => "Files:",
+        }
+    }
+    pub fn rewrite_replacements_in_file(self, count: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("このファイルでの置換回数: {count}"),
+            UiLanguage::English => format!("Replacements in this file: {count}"),
+        }
+    }
+    pub fn rewrite_apply(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ファイルに書き戻す",
+            UiLanguage::English => "Apply to files",
+        }
+    }
+    pub fn rewrite_apply_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "プレビュー内容を元の文字コードでディスクに保存し、その後検索を再実行します"
+            }
+            UiLanguage::English => {
+                "Save preview using each file's encoding, then run search again"
+            },
+        }
+    }
+    pub fn rewrite_status_previewing(self, done: usize, total: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("置換プレビュー生成中… {done}/{total}"),
+            UiLanguage::English => format!("Building rewrite preview… {done}/{total}"),
+        }
+    }
+    pub fn rewrite_status_applying(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ファイルへ書き込み中…",
+            UiLanguage::English => "Writing files…",
+        }
+    }
+    pub fn rewrite_applied_ok(self, n: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("{n} 件のファイルを書き換えました。検索を更新しました。"),
+            UiLanguage::English => format!("Updated {n} file(s). Search refreshed."),
+        }
+    }
+    pub fn rewrite_panel_before(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "置換前",
+            UiLanguage::English => "Before",
+        }
+    }
+    pub fn rewrite_panel_after(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "置換後",
+            UiLanguage::English => "After",
+        }
+    }
+    pub fn rewrite_compare_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "変更のあった行は、左（赤系）と右（緑系）で色分け表示します。行番号は対応しています。"
+            }
+            UiLanguage::English => {
+                "Changed lines: reddish background (before), greenish (after). Line numbers align."
+            },
+        }
+    }
+
     pub fn err_export_excel(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "Excelエクスポートエラー:",

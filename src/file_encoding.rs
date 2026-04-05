@@ -390,3 +390,39 @@ fn near_miss_candidates(encoding: &FileEncoding) -> &'static [&'static str] {
 fn invalid_data(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
+
+/// テキストをファイルに書き込む（読み込み時と同じ [`FileEncoding`] でエンコード）
+pub fn write_text_file(path: &Path, text: &str, encoding: &FileEncoding) -> io::Result<()> {
+    let bytes = encode_string_to_bytes(text, encoding)?;
+    std::fs::write(path, bytes)
+}
+
+fn encode_string_to_bytes(text: &str, encoding: &FileEncoding) -> io::Result<Vec<u8>> {
+    let enc = encoding
+        .encoding()
+        .ok_or_else(|| invalid_data("cannot encode: unknown encoding label"))?;
+    let (cow, _enc_used, had_errors) = enc.encode(text);
+    if had_errors {
+        return Err(invalid_data("encoding error while writing"));
+    }
+    let mut bytes = cow.into_owned();
+
+    // UTF-8: BOM なし（読み込み時に BOM は除去済みのため）
+    if matches!(encoding, FileEncoding::Utf8) {
+        return Ok(bytes);
+    }
+
+    // UTF-16: 読み込みと同様 BOM を付与
+    if matches!(encoding, FileEncoding::Utf16Le) {
+        let mut out = vec![0xFF, 0xFE];
+        out.append(&mut bytes);
+        return Ok(out);
+    }
+    if matches!(encoding, FileEncoding::Utf16Be) {
+        let mut out = vec![0xFE, 0xFF];
+        out.append(&mut bytes);
+        return Ok(out);
+    }
+
+    Ok(bytes)
+}

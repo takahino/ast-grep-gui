@@ -10,6 +10,7 @@ It is designed to make structural code search easier for users who prefer a visu
 ## Highlights
 
 - AST-based code search powered by `ast-grep-core`
+- Batch rewrite (like `--rewrite`): preview, diff, then write back files (AST / ast-grep raw modes)
 - Search modes for `AST`, `ast-grep (raw)`, plain text, and regex
 - Auto language detection by file extension for mixed-language repositories
 - Code view and table view for browsing results

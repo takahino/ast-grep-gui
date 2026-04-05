@@ -11,6 +11,7 @@ mod lang;
 mod pattern_assist;
 mod regex_visualizer;
 mod receiver_hint;
+mod rewrite;
 mod search;
 mod sg_command;
 mod terminal;

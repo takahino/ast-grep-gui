@@ -12,10 +12,11 @@ use crate::search::{
     SearchMode, SearchStats,
 };
 use crate::pattern_assist::PatternSuggestion;
+use crate::rewrite::{RewriteMessage, RewritePreview};
 use crate::terminal::TerminalState;
 use crate::ui::{
     code_panel, file_panel, help_popup, pattern_assist_popup, regex_visualizer_popup,
-    status_bar, table_panel, table_preview_popup, terminal_panel, toolbar,
+    rewrite_popup, status_bar, table_panel, table_preview_popup, terminal_panel, toolbar,
 };
 
 /// 表モードでダブルクリックしたファイルをコードビューと同じ表示で開く
@@ -53,6 +54,16 @@ pub enum ViewMode {
 pub struct TableRowRef {
     pub file_idx: usize,
     pub match_idx: usize,
+}
+
+/// Rewrite（プレビュー / 適用）の進行状態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewritePhase {
+    Idle,
+    /// プレビュー生成中
+    Previewing,
+    /// ディスクへの書き戻し中
+    Applying,
 }
 
 fn count_display_lines(text: &str) -> usize {
@@ -97,6 +108,9 @@ struct PersistedAppState {
     /// Regex visualiser 用のテスト文字列
     #[serde(default)]
     regex_visualizer_test_text: String,
+    /// AST 置換テンプレート（`--rewrite` 相当）
+    #[serde(default)]
+    rewrite_template: String,
 }
 
 impl Default for PersistedAppState {
@@ -116,6 +130,7 @@ impl Default for PersistedAppState {
             ui_language_preference: UiLanguagePreference::default(),
             pattern_history: Vec::new(),
             regex_visualizer_test_text: String::new(),
+            rewrite_template: String::new(),
         }
     }
 }
@@ -186,8 +201,28 @@ pub struct AstGrepApp {
     /// ターミナルパネルの高さ（0.0 = 未設定）
     pub terminal_height: f32,
 
+    /// AST 一括置換のテンプレート文字列（`$VAR` など）
+    pub rewrite_template: String,
+    /// 置換プレビュー結果
+    pub rewrite_preview: Option<RewritePreview>,
+    /// プレビュー進捗（done / total）
+    pub rewrite_preview_progress: Option<(usize, usize)>,
+    pub rewrite_phase: RewritePhase,
+    /// プレビュー / 適用のエラーメッセージ
+    pub rewrite_error: Option<String>,
+    /// 置換プレビュー ウィンドウを表示
+    pub show_rewrite_popup: bool,
+    /// プレビュー内で選択中のファイルインデックス
+    pub rewrite_selected_file_idx: usize,
+    /// 書き戻し完了などの短い通知
+    pub rewrite_status_note: Option<String>,
+
     // バックグラウンド検索チャンネル
     result_rx: Option<Receiver<SearchMessage>>,
+    /// Rewrite プレビュー生成
+    rewrite_rx: Option<Receiver<RewriteMessage>>,
+    /// Rewrite ディスク適用
+    rewrite_apply_rx: Option<Receiver<Result<usize, Vec<(PathBuf, String)>>>>,
     // repaintのためにContextをキャッシュ
     cached_ctx: Option<egui::Context>,
     /// 表示に反映済みのコンテキスト行数（変更時に結果の前後行だけ再計算する）
@@ -238,7 +273,17 @@ impl AstGrepApp {
             show_terminal: false,
             terminal: None,
             terminal_height: 0.0,
+            rewrite_template: persisted.rewrite_template,
+            rewrite_preview: None,
+            rewrite_preview_progress: None,
+            rewrite_phase: RewritePhase::Idle,
+            rewrite_error: None,
+            show_rewrite_popup: false,
+            rewrite_selected_file_idx: 0,
+            rewrite_status_note: None,
             result_rx: None,
+            rewrite_rx: None,
+            rewrite_apply_rx: None,
             cached_ctx: None,
             last_context_lines_applied: persisted.context_lines,
         }
@@ -294,6 +339,7 @@ impl AstGrepApp {
             ui_language_preference: self.ui_language_preference,
             pattern_history: self.pattern_history.clone(),
             regex_visualizer_test_text: self.regex_visualizer_test_text.clone(),
+            rewrite_template: self.rewrite_template.clone(),
         }
     }
 
@@ -323,6 +369,7 @@ impl AstGrepApp {
         self.table_scroll_to_row = None;
         self.highlighter.clear_cache();
         self.search_state = SearchState::Running;
+        self.clear_rewrite_state();
 
         let Some(ctx) = self.cached_ctx.clone() else {
             return;
@@ -369,6 +416,7 @@ impl AstGrepApp {
         self.search_state = SearchState::Idle;
         self.highlighter.clear_cache();
         self.last_context_lines_applied = self.context_lines;
+        self.clear_rewrite_state();
     }
 
     /// ツールバーで変更したコンテキスト行数を、検索結果の表示に反映する
@@ -416,6 +464,131 @@ impl AstGrepApp {
         self.table_rows = rows;
         self.table_row_units = units;
         self.table_row_prefix_units = prefix_units;
+    }
+
+    /// 検索結果が変わるタイミングで Rewrite の一時状態を消す（テンプレート文字列は保持）
+    pub fn clear_rewrite_state(&mut self) {
+        self.rewrite_preview = None;
+        self.rewrite_preview_progress = None;
+        self.rewrite_phase = RewritePhase::Idle;
+        self.rewrite_rx = None;
+        self.rewrite_apply_rx = None;
+        self.show_rewrite_popup = false;
+        self.rewrite_error = None;
+        self.rewrite_selected_file_idx = 0;
+        self.rewrite_status_note = None;
+    }
+
+    /// 置換プレビューをバックグラウンドで生成する（AST / ast-grep raw のみ）
+    pub fn start_rewrite_preview(&mut self) {
+        if !self.search_mode.is_ast_mode() {
+            return;
+        }
+        if self.results.is_empty()
+            || self.pattern.trim().is_empty()
+            || self.rewrite_template.trim().is_empty()
+        {
+            return;
+        }
+        let Some(ctx) = self.cached_ctx.clone() else {
+            return;
+        };
+
+        self.rewrite_error = None;
+        self.rewrite_status_note = None;
+        self.rewrite_preview = None;
+        self.rewrite_preview_progress = Some((0, self.results.len()));
+        self.rewrite_phase = RewritePhase::Previewing;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.rewrite_rx = Some(rx);
+
+        crate::rewrite::spawn_rewrite_preview(
+            self.results.clone(),
+            self.pattern.clone(),
+            self.rewrite_template.clone(),
+            self.file_encoding_preference,
+            tx,
+            ctx,
+        );
+    }
+
+    /// プレビュー内容をディスクに書き戻し、その後検索をやり直す
+    pub fn start_rewrite_apply(&mut self) {
+        let Some(preview) = self.rewrite_preview.clone() else {
+            return;
+        };
+        if preview.files.is_empty() {
+            return;
+        }
+        let Some(ctx) = self.cached_ctx.clone() else {
+            return;
+        };
+
+        self.rewrite_error = None;
+        self.rewrite_status_note = None;
+        self.rewrite_phase = RewritePhase::Applying;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.rewrite_apply_rx = Some(rx);
+
+        crate::rewrite::spawn_apply_rewrite(preview.files, tx, ctx);
+    }
+
+    fn drain_rewrite_messages(&mut self) {
+        let Some(rx) = &self.rewrite_rx else {
+            return;
+        };
+
+        let messages: Vec<RewriteMessage> = rx.try_iter().collect();
+        for msg in messages {
+            match msg {
+                RewriteMessage::Progress { done, total } => {
+                    self.rewrite_preview_progress = Some((done, total));
+                }
+                RewriteMessage::Done(preview) => {
+                    self.rewrite_preview = Some(preview);
+                    self.rewrite_rx = None;
+                    self.rewrite_phase = RewritePhase::Idle;
+                    self.rewrite_preview_progress = None;
+                    self.show_rewrite_popup = true;
+                    self.rewrite_selected_file_idx = 0;
+                }
+                RewriteMessage::Error(e) => {
+                    self.rewrite_error = Some(e);
+                    self.rewrite_rx = None;
+                    self.rewrite_phase = RewritePhase::Idle;
+                    self.rewrite_preview_progress = None;
+                }
+            }
+        }
+    }
+
+    fn drain_rewrite_apply_messages(&mut self) {
+        let Some(rx) = &self.rewrite_apply_rx else {
+            return;
+        };
+        let Ok(result) = rx.try_recv() else {
+            return;
+        };
+        self.rewrite_apply_rx = None;
+        self.rewrite_phase = RewritePhase::Idle;
+        match result {
+            Ok(n) => {
+                self.show_rewrite_popup = false;
+                self.rewrite_preview = None;
+                self.start_search();
+                self.rewrite_status_note = Some(self.tr().rewrite_applied_ok(n));
+            }
+            Err(errs) => {
+                let msg = errs
+                    .iter()
+                    .map(|(p, e)| format!("{}: {e}", p.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.rewrite_error = Some(msg);
+            }
+        }
     }
 
     /// バックグラウンド検索からのメッセージを処理する
@@ -470,6 +643,8 @@ impl eframe::App for AstGrepApp {
 
         // バックグラウンドからメッセージをドレイン
         self.drain_messages();
+        self.drain_rewrite_messages();
+        self.drain_rewrite_apply_messages();
 
         // コンテキスト行数: Shift + Page Up / Page Down（修飾キー付きのためテキスト入力中も利用可）
         ctx.input_mut(|i| {
@@ -509,6 +684,9 @@ impl eframe::App for AstGrepApp {
 
         // 表モード: マッチ行のコードプレビュー（sync 後に描画し、コンテキスト更新と一致させる）
         table_preview_popup::show(self, ctx);
+
+        // Rewrite プレビュー / 確認
+        rewrite_popup::show(self, ctx);
 
         // ターミナルパネル（ステータスバーより先に宣言して、その上に表示）
         if self.show_terminal {

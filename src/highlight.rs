@@ -341,3 +341,92 @@ fn col_highlight_for_line(line_number: usize, matches: &[MatchItem]) -> Option<s
     }
     None
 }
+
+/// 置換プレビュー用: 置換前・置換後を並べて表示する `LayoutJob`（行単位で差分を色分け）
+///
+/// - 変更行: 置換前は赤系背景、置換後は緑系背景
+/// - 同一行: 通常の前景色、背景なし
+pub fn build_rewrite_compare_layout_jobs(
+    old_source: &str,
+    new_source: &str,
+    font_size: f32,
+) -> (LayoutJob, LayoutJob) {
+    let old_lines: Vec<&str> = old_source.lines().collect();
+    let new_lines: Vec<&str> = new_source.lines().collect();
+    let max_lines = old_lines.len().max(new_lines.len());
+    let mut old_job = LayoutJob::default();
+    let mut new_job = LayoutJob::default();
+    old_job.wrap.max_width = f32::INFINITY;
+    new_job.wrap.max_width = f32::INFINITY;
+
+    let font_id = egui::FontId::monospace(font_size);
+    let gutter_w = max_lines.to_string().len().max(3);
+
+    // 置換前: 削除・変更に近いトーン / 置換後: 追加・変更に近いトーン（ダーク UI 向け）
+    let bg_before_changed = egui::Color32::from_rgba_premultiplied(130, 55, 55, 110);
+    let bg_after_changed = egui::Color32::from_rgba_premultiplied(50, 115, 65, 110);
+    let fg_normal = egui::Color32::from_rgba_premultiplied(215, 215, 215, 255);
+    let fg_changed = egui::Color32::from_rgba_premultiplied(255, 250, 235, 255);
+    let fg_gutter = egui::Color32::from_gray(130);
+
+    for i in 0..max_lines {
+        let ol = old_lines.get(i).copied();
+        let nl = new_lines.get(i).copied();
+        let changed = match (ol, nl) {
+            (Some(a), Some(b)) => a != b,
+            (Some(_), None) | (None, Some(_)) => true,
+            (None, None) => false,
+        };
+
+        let gutter = format!("{:>width$} │ ", i + 1, width = gutter_w);
+        let gutter_fmt = egui::TextFormat {
+            font_id: font_id.clone(),
+            color: fg_gutter,
+            ..Default::default()
+        };
+        old_job.append(&gutter, 0.0, gutter_fmt.clone());
+        new_job.append(&gutter, 0.0, gutter_fmt);
+
+        let fg = if changed { fg_changed } else { fg_normal };
+        let (bg_old, bg_new) = if changed {
+            (bg_before_changed, bg_after_changed)
+        } else {
+            (egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT)
+        };
+
+        let old_fmt = egui::TextFormat {
+            font_id: font_id.clone(),
+            color: fg,
+            background: bg_old,
+            ..Default::default()
+        };
+        let new_fmt = egui::TextFormat {
+            font_id: font_id.clone(),
+            color: fg,
+            background: bg_new,
+            ..Default::default()
+        };
+
+        let old_text = ol.unwrap_or("");
+        let new_text = nl.unwrap_or("");
+        old_job.append(old_text, 0.0, old_fmt);
+        new_job.append(new_text, 0.0, new_fmt);
+
+        let nl_fmt = egui::TextFormat {
+            font_id: font_id.clone(),
+            color: fg,
+            background: bg_old,
+            ..Default::default()
+        };
+        let nl_fmt2 = egui::TextFormat {
+            font_id: font_id.clone(),
+            color: fg,
+            background: bg_new,
+            ..Default::default()
+        };
+        old_job.append("\n", 0.0, nl_fmt);
+        new_job.append("\n", 0.0, nl_fmt2);
+    }
+
+    (old_job, new_job)
+}

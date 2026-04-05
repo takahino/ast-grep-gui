@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use egui::Ui;
 
-use crate::app::{AstGrepApp, SearchState, ViewMode};
+use crate::app::{AstGrepApp, RewritePhase, SearchState, ViewMode};
 use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguagePreference;
 use crate::lang::SupportedLanguage;
@@ -455,6 +455,44 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 .color(egui::Color32::GRAY),
         );
     });
+
+    // AST モード: 置換テンプレート（--rewrite 相当）とプレビュー
+    if app.search_mode.is_ast_mode() {
+        ui.horizontal(|ui| {
+            ui.label(t.rewrite_template_label())
+                .on_hover_text(t.rewrite_template_tooltip());
+            ui.add(
+                egui::TextEdit::singleline(&mut app.rewrite_template)
+                    .desired_width(350.0)
+                    .hint_text(t.rewrite_template_hint()),
+            );
+
+            let can_preview = !app.results.is_empty()
+                && !app.pattern.trim().is_empty()
+                && !app.rewrite_template.trim().is_empty()
+                && !matches!(app.search_state, SearchState::Running)
+                && app.rewrite_phase == RewritePhase::Idle;
+
+            if app.rewrite_phase == RewritePhase::Previewing {
+                ui.spinner();
+                if let Some((done, total)) = app.rewrite_preview_progress {
+                    ui.label(
+                        egui::RichText::new(t.rewrite_status_previewing(done, total))
+                            .small()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
+            }
+
+            if ui
+                .add_enabled(can_preview, egui::Button::new(t.rewrite_preview_btn()))
+                .on_hover_text(t.rewrite_preview_tooltip())
+                .clicked()
+            {
+                app.start_rewrite_preview();
+            }
+        });
+    }
 }
 
 fn auto_encoding_feedback(app: &AstGrepApp) -> Option<String> {

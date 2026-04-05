@@ -1,6 +1,6 @@
 use egui::Ui;
 
-use crate::app::{AstGrepApp, SearchState};
+use crate::app::{AstGrepApp, RewritePhase, SearchState};
 use crate::export::{
     copy_to_clipboard, export_html_to_file, export_json_to_file, export_markdown_to_file,
     export_text_to_file, export_xlsx_to_file, results_to_text_for_mode,
@@ -35,6 +35,34 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 ui.label(
                     egui::RichText::new(t.status_error(msg))
                         .color(egui::Color32::RED),
+                );
+            }
+        }
+
+        if app.search_mode.is_ast_mode() {
+            if app.rewrite_phase == RewritePhase::Applying {
+                ui.separator();
+                ui.spinner();
+                ui.label(
+                    egui::RichText::new(t.rewrite_status_applying())
+                        .small()
+                        .color(egui::Color32::from_rgb(180, 180, 120)),
+                );
+            }
+            if let Some(ref err) = app.rewrite_error {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(err)
+                        .small()
+                        .color(egui::Color32::RED),
+                );
+            }
+            if let Some(ref note) = app.rewrite_status_note {
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(note)
+                        .small()
+                        .color(egui::Color32::from_rgb(100, 200, 140)),
                 );
             }
         }
