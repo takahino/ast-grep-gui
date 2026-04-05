@@ -1,3 +1,6 @@
+pub mod batch_panel;
+pub mod batch_report_panel;
+pub mod scroll_keyboard;
 pub mod toolbar;
 pub mod file_panel;
 pub mod code_panel;

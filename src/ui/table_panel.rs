@@ -2,6 +2,7 @@ use egui::text::LayoutJob;
 use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 
 use crate::app::{AstGrepApp, TablePreviewState, TableRowRef};
+use crate::ui::scroll_keyboard;
 use crate::highlight::build_layout_job_from_line;
 use crate::search::{pattern_contains_dollar_recv, MatchItem};
 
@@ -161,7 +162,17 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     let row_unit_height = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
 
-    egui::ScrollArea::both()
+    let sid = scroll_keyboard::scroll_area_persistent_id(ui, "table_view");
+    let rect = ui.available_rect_before_wrap();
+    scroll_keyboard::apply_keyboard_scroll_before_show(
+        ui.ctx(),
+        ui,
+        sid,
+        rect,
+        egui::Vec2b::from([true, true]),
+    );
+
+    let scroll_out = egui::ScrollArea::both()
         .id_salt("table_view")
         .auto_shrink([false, false])
         .show_viewport(ui, |ui, viewport| {
@@ -221,8 +232,16 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     let m = &file.matches[match_idx];
                     let recv_type_hint = m.recv_type_hint.clone();
                     let full_context = m.program_with_context();
-                    let snippet_cache_key =
-                        format!("table:{}:{match_idx}:{}:{}", file.relative_path, m.line_start, m.col_start);
+                    // コンテキスト行数が変わると full_context の行数も変わる。ハイライトキャッシュキーに含めないと
+                    // 古い syntect 行配列が再利用され、行番号オフセットと表示テキストがずれる。
+                    let snippet_cache_key = format!(
+                        "table:{}:{match_idx}:{}:{}:{}:{}",
+                        file.relative_path,
+                        m.line_start,
+                        m.col_start,
+                        m.context_before.len(),
+                        m.context_after.len(),
+                    );
                     let snippet_matches = vec![context_match_item(m)];
                     let source_context_start_line = m.line_start.saturating_sub(m.context_before.len());
                     let snippet_highlighted = app.highlighter.highlight_source(
@@ -366,6 +385,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             let end_units = app.table_row_prefix_units.get(end).copied().unwrap_or(total_units);
             ui.add_space(total_units.saturating_sub(end_units) as f32 * row_unit_height);
         });
+    scroll_keyboard::store_scroll_metrics(ui.ctx(), sid, &scroll_out, rect);
 
     app.table_scroll_to_row = None;
 

@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use crossbeam_channel::Receiver;
 use eframe::egui;
 
+use crate::batch::{
+    BatchReport, BatchRunResult, BatchRunnerState, PatternJob, SINGLE_SEARCH_JOB_ID,
+};
 use crate::file_encoding::{FileEncoding, FileEncodingPreference};
 use crate::highlight::Highlighter;
 use crate::i18n::{Tr, UiLanguage, UiLanguagePreference};
@@ -15,8 +18,9 @@ use crate::pattern_assist::PatternSuggestion;
 use crate::rewrite::{RewriteMessage, RewritePreview};
 use crate::terminal::TerminalState;
 use crate::ui::{
-    code_panel, file_panel, help_popup, pattern_assist_popup, regex_visualizer_popup,
-    rewrite_popup, status_bar, table_panel, table_preview_popup, terminal_panel, toolbar,
+    batch_report_panel, code_panel, file_panel, help_popup, pattern_assist_popup,
+    regex_visualizer_popup, rewrite_popup, status_bar, table_panel, table_preview_popup,
+    terminal_panel, toolbar,
 };
 
 /// 表モードでダブルクリックしたファイルをコードビューと同じ表示で開く
@@ -48,6 +52,8 @@ pub enum SearchState {
 pub enum ViewMode {
     Code,  // コードビュー
     Table, // 表形式
+    /// バッチ検索の集約レポート
+    BatchReport,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +117,16 @@ struct PersistedAppState {
     /// AST 置換テンプレート（`--rewrite` 相当）
     #[serde(default)]
     rewrite_template: String,
+    /// バッチ検索ジョブ一覧
+    #[serde(default)]
+    batch_jobs: Vec<PatternJob>,
+    /// 新規ジョブ ID（1 から）
+    #[serde(default = "default_next_pattern_job_id")]
+    next_pattern_job_id: usize,
+}
+
+fn default_next_pattern_job_id() -> usize {
+    1
 }
 
 impl Default for PersistedAppState {
@@ -131,6 +147,8 @@ impl Default for PersistedAppState {
             pattern_history: Vec::new(),
             regex_visualizer_test_text: String::new(),
             rewrite_template: String::new(),
+            batch_jobs: Vec::new(),
+            next_pattern_job_id: 1,
         }
     }
 }
@@ -227,6 +245,16 @@ pub struct AstGrepApp {
     cached_ctx: Option<egui::Context>,
     /// 表示に反映済みのコンテキスト行数（変更時に結果の前後行だけ再計算する）
     last_context_lines_applied: usize,
+
+    // ── バッチ検索 ──
+    pub batch_jobs: Vec<PatternJob>,
+    pub next_pattern_job_id: usize,
+    /// バッチ実行中のみ Some（直列でジョブを回す）
+    pub batch_runner: Option<BatchRunnerState>,
+    /// 最後に完了したバッチレポート（レポート画面用）
+    pub batch_report: Option<BatchReport>,
+    /// `batch_jobs` のインデックス: ジョブ編集ウィンドウを開く
+    pub batch_edit_list_index: Option<usize>,
 }
 
 impl AstGrepApp {
@@ -286,6 +314,11 @@ impl AstGrepApp {
             rewrite_apply_rx: None,
             cached_ctx: None,
             last_context_lines_applied: persisted.context_lines,
+            batch_jobs: persisted.batch_jobs,
+            next_pattern_job_id: persisted.next_pattern_job_id.max(1),
+            batch_runner: None,
+            batch_report: None,
+            batch_edit_list_index: None,
         }
     }
 
@@ -297,6 +330,15 @@ impl AstGrepApp {
     /// 翻訳アクセサ
     pub fn tr(&self) -> Tr {
         Tr(self.ui_lang())
+    }
+
+    /// バッチ実行中の場合 `(現在番号, 総ジョブ数)`（1-based）
+    pub fn batch_job_progress(&self) -> Option<(usize, usize)> {
+        let r = self.batch_runner.as_ref()?;
+        if r.ordered_indices.is_empty() {
+            return None;
+        }
+        Some((r.active_idx + 1, r.ordered_indices.len()))
     }
 
     /// パターン支援で使う言語（自動モード時は Rust パーサでスニペットを解析）
@@ -340,6 +382,8 @@ impl AstGrepApp {
             pattern_history: self.pattern_history.clone(),
             regex_visualizer_test_text: self.regex_visualizer_test_text.clone(),
             rewrite_template: self.rewrite_template.clone(),
+            batch_jobs: self.batch_jobs.clone(),
+            next_pattern_job_id: self.next_pattern_job_id,
         }
     }
 
@@ -348,6 +392,8 @@ impl AstGrepApp {
         if self.search_dir.is_empty() || self.pattern.is_empty() {
             return;
         }
+
+        self.batch_runner = None;
 
         // 検索履歴に追加（最新を先頭に、重複排除、最大30件）
         let pat = self.pattern.trim().to_string();
@@ -390,14 +436,140 @@ impl AstGrepApp {
             self.max_search_hits,
             self.skip_dirs.clone(),
             self.ui_lang(),
+            SINGLE_SEARCH_JOB_ID,
             tx,
             ctx,
         );
     }
 
+    /// 現在のツールバー設定をコピーしたジョブをバッチ一覧に追加する
+    pub fn add_pattern_job_from_current(&mut self) {
+        let id = self.next_pattern_job_id;
+        self.next_pattern_job_id = self.next_pattern_job_id.saturating_add(1);
+        let label = format!("{} {}", self.tr().batch_job_default_label_prefix(), id);
+        self.batch_jobs.push(PatternJob::from_app_snapshot(
+            id,
+            label,
+            self.pattern.clone(),
+            self.search_dir.clone(),
+            self.selected_lang,
+            self.context_lines,
+            self.file_filter.clone(),
+            self.file_encoding_preference,
+            self.max_file_size_mb,
+            self.max_search_hits,
+            self.skip_dirs.clone(),
+            self.search_mode,
+        ));
+    }
+
+    /// 有効なジョブを順に実行するバッチ検索
+    pub fn start_batch_search(&mut self) {
+        let ordered_indices: Vec<usize> = self
+            .batch_jobs
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| j.is_runnable())
+            .map(|(i, _)| i)
+            .collect();
+
+        if ordered_indices.is_empty() {
+            self.search_state = SearchState::Error(self.tr().batch_no_runnable_jobs().to_string());
+            return;
+        }
+
+        let Some(ctx) = self.cached_ctx.clone() else {
+            return;
+        };
+
+        let runs: Vec<BatchRunResult> = ordered_indices
+            .iter()
+            .map(|&list_idx| {
+                let j = &self.batch_jobs[list_idx];
+                BatchRunResult {
+                    job_id: j.id,
+                    label: j.label.clone(),
+                    conditions: j.to_conditions(),
+                    results: Vec::new(),
+                    stats: SearchStats::default(),
+                    error: None,
+                }
+            })
+            .collect();
+
+        self.batch_runner = Some(BatchRunnerState {
+            ordered_indices,
+            active_idx: 0,
+            runs,
+            started: std::time::Instant::now(),
+        });
+
+        self.results.clear();
+        self.stats = SearchStats::default();
+        self.selected_file_idx = None;
+        self.table_preview = None;
+        self.table_last_clicked_row = None;
+        self.table_rows.clear();
+        self.table_row_units.clear();
+        self.table_row_prefix_units.clear();
+        self.table_row_prefix_units.push(0);
+        self.table_scroll_to_row = None;
+        self.highlighter.clear_cache();
+        self.search_state = SearchState::Running;
+        self.clear_rewrite_state();
+        self.batch_report = None;
+
+        self.spawn_search_for_current_batch_job(ctx);
+    }
+
+    fn spawn_search_for_current_batch_job(&mut self, ctx: egui::Context) {
+        let Some(runner) = &mut self.batch_runner else {
+            return;
+        };
+        let Some(&list_idx) = runner.ordered_indices.get(runner.active_idx) else {
+            return;
+        };
+        let job = self.batch_jobs[list_idx].clone();
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.result_rx = Some(rx);
+
+        spawn_search(
+            job.search_dir.clone(),
+            job.pattern.clone(),
+            job.selected_lang,
+            job.search_mode,
+            job.context_lines,
+            job.file_filter.clone(),
+            job.file_encoding_preference,
+            job.max_file_size_mb * 1024 * 1024,
+            job.max_search_hits,
+            job.skip_dirs.clone(),
+            self.ui_lang(),
+            job.id,
+            tx,
+            ctx,
+        );
+    }
+
+    fn finish_batch_search(&mut self) {
+        let Some(runner) = self.batch_runner.take() else {
+            return;
+        };
+        self.result_rx = None;
+        let total_elapsed_ms = runner.started.elapsed().as_millis() as u64;
+        self.batch_report = Some(BatchReport {
+            total_elapsed_ms,
+            runs: runner.runs,
+        });
+        self.search_state = SearchState::Done;
+        self.view_mode = ViewMode::BatchReport;
+    }
+
     /// 検索を停止する（チャンネルをドロップ）
     pub fn stop_search(&mut self) {
         self.result_rx = None;
+        self.batch_runner = None;
         self.search_state = SearchState::Idle;
     }
 
@@ -598,35 +770,136 @@ impl AstGrepApp {
         let messages: Vec<SearchMessage> = rx.try_iter().collect();
 
         for msg in messages {
-            match msg {
-                SearchMessage::FileResult(file_result) => {
-                    let file_idx = self.results.len();
-                    self.stats.total_matches += file_result.matches.len();
-                    self.stats.total_files += 1;
-                    for (match_idx, m) in file_result.matches.iter().enumerate() {
-                        self.push_table_row(TableRowRef { file_idx, match_idx }, m);
+            if self.batch_runner.is_some() {
+                match msg {
+                    SearchMessage::FileResult { job_id, file } => {
+                        let Some(runner) = &mut self.batch_runner else {
+                            continue;
+                        };
+                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                            continue;
+                        };
+                        if run.job_id != job_id {
+                            continue;
+                        }
+                        run.stats.total_matches += file.matches.len();
+                        run.stats.total_files += 1;
+                        run.results.push(file);
                     }
-                    self.results.push(file_result);
+                    SearchMessage::Progress { job_id, scanned } => {
+                        let Some(runner) = &mut self.batch_runner else {
+                            continue;
+                        };
+                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                            continue;
+                        };
+                        if run.job_id == job_id {
+                            run.stats.scanned = scanned;
+                            self.stats.scanned = scanned;
+                        }
+                    }
+                    SearchMessage::Done {
+                        job_id,
+                        elapsed_ms,
+                        hit_limit_reached,
+                    } => {
+                        let Some(runner) = &mut self.batch_runner else {
+                            continue;
+                        };
+                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                            continue;
+                        };
+                        if run.job_id != job_id {
+                            continue;
+                        }
+                        run.stats.elapsed_ms = elapsed_ms;
+                        run.stats.hit_limit_reached = hit_limit_reached;
+                        let list_idx = runner.ordered_indices[runner.active_idx];
+                        let ctx_lines = self.batch_jobs[list_idx].context_lines;
+                        refresh_match_contexts(&mut run.results, ctx_lines);
+
+                        runner.active_idx += 1;
+                        if runner.active_idx < runner.ordered_indices.len() {
+                            let Some(ctx) = self.cached_ctx.clone() else {
+                                self.batch_runner = None;
+                                self.result_rx = None;
+                                self.search_state = SearchState::Idle;
+                                continue;
+                            };
+                            self.spawn_search_for_current_batch_job(ctx);
+                        } else {
+                            self.finish_batch_search();
+                        }
+                    }
+                    SearchMessage::Error { job_id, msg } => {
+                        let Some(runner) = &mut self.batch_runner else {
+                            continue;
+                        };
+                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                            continue;
+                        };
+                        if run.job_id != job_id {
+                            continue;
+                        }
+                        run.error = Some(msg);
+
+                        runner.active_idx += 1;
+                        if runner.active_idx < runner.ordered_indices.len() {
+                            let Some(ctx) = self.cached_ctx.clone() else {
+                                self.batch_runner = None;
+                                self.result_rx = None;
+                                self.search_state = SearchState::Idle;
+                                continue;
+                            };
+                            self.spawn_search_for_current_batch_job(ctx);
+                        } else {
+                            self.finish_batch_search();
+                        }
+                    }
                 }
-                SearchMessage::Progress { scanned } => {
-                    self.stats.scanned = scanned;
-                }
-                SearchMessage::Done {
-                    elapsed_ms,
-                    hit_limit_reached,
-                } => {
-                    self.stats.elapsed_ms = elapsed_ms;
-                    self.stats.hit_limit_reached = hit_limit_reached;
-                    self.search_state = SearchState::Done;
-                    self.result_rx = None;
-                    // 検索中にスライダーが変わった場合も含め、現在の設定でコンテキストを揃える
-                    refresh_match_contexts(&mut self.results, self.context_lines);
-                    self.rebuild_table_row_metrics();
-                    self.last_context_lines_applied = self.context_lines;
-                }
-                SearchMessage::Error(msg) => {
-                    self.search_state = SearchState::Error(msg);
-                    self.result_rx = None;
+            } else {
+                match msg {
+                    SearchMessage::FileResult { job_id, file: file_result } => {
+                        if job_id != SINGLE_SEARCH_JOB_ID {
+                            continue;
+                        }
+                        let file_idx = self.results.len();
+                        self.stats.total_matches += file_result.matches.len();
+                        self.stats.total_files += 1;
+                        for (match_idx, m) in file_result.matches.iter().enumerate() {
+                            self.push_table_row(TableRowRef { file_idx, match_idx }, m);
+                        }
+                        self.results.push(file_result);
+                    }
+                    SearchMessage::Progress { job_id, scanned } => {
+                        if job_id == SINGLE_SEARCH_JOB_ID {
+                            self.stats.scanned = scanned;
+                        }
+                    }
+                    SearchMessage::Done {
+                        job_id,
+                        elapsed_ms,
+                        hit_limit_reached,
+                    } => {
+                        if job_id != SINGLE_SEARCH_JOB_ID {
+                            continue;
+                        }
+                        self.stats.elapsed_ms = elapsed_ms;
+                        self.stats.hit_limit_reached = hit_limit_reached;
+                        self.search_state = SearchState::Done;
+                        self.result_rx = None;
+                        // 検索中にスライダーが変わった場合も含め、現在の設定でコンテキストを揃える
+                        refresh_match_contexts(&mut self.results, self.context_lines);
+                        self.rebuild_table_row_metrics();
+                        self.last_context_lines_applied = self.context_lines;
+                    }
+                    SearchMessage::Error { job_id, msg } => {
+                        if job_id != SINGLE_SEARCH_JOB_ID {
+                            continue;
+                        }
+                        self.search_state = SearchState::Error(msg);
+                        self.result_rx = None;
+                    }
                 }
             }
         }
@@ -786,6 +1059,11 @@ impl eframe::App for AstGrepApp {
             ViewMode::Table => {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     table_panel::show(self, ui);
+                });
+            }
+            ViewMode::BatchReport => {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    batch_report_panel::show(self, ui);
                 });
             }
         }

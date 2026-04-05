@@ -154,6 +154,7 @@ impl TerminalState {
             0,
             ".git;target;node_modules".to_string(),
             UiLanguage::Japanese,
+            crate::batch::SINGLE_SEARCH_JOB_ID,
             tx,
             egui_ctx.clone(),
         );
@@ -225,9 +226,9 @@ fn format_sg_results(
 
     loop {
         match rx.recv() {
-            Ok(SearchMessage::FileResult(fr)) => {
+            Ok(SearchMessage::FileResult { file, .. }) => {
                 file_count += 1;
-                append_file_result(&lines, &fr, &mut match_count);
+                append_file_result(&lines, &file, &mut match_count);
                 egui_ctx.request_repaint();
             }
             Ok(SearchMessage::Done { elapsed_ms, .. }) => {
@@ -243,10 +244,10 @@ fn format_sg_results(
                 egui_ctx.request_repaint();
                 break;
             }
-            Ok(SearchMessage::Error(e)) => {
+            Ok(SearchMessage::Error { msg, .. }) => {
                 if let Ok(mut lock) = lines.lock() {
                     lock.push(TerminalLine {
-                        text: format!("エラー: {}", e),
+                        text: format!("エラー: {}", msg),
                         kind: LineKind::Stderr,
                     });
                 }

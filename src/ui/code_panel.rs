@@ -1,6 +1,7 @@
 use egui::Ui;
 
 use crate::app::AstGrepApp;
+use crate::ui::scroll_keyboard;
 use crate::export::file_to_ast_grep_console;
 use crate::file_encoding::read_text_file_as;
 use crate::highlight::build_layout_job;
@@ -57,7 +58,16 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     if app.search_mode == SearchMode::AstGrepRaw {
         ui.separator();
         let mut console_text = file_to_ast_grep_console(file_result);
-        egui::ScrollArea::both()
+        let sid = scroll_keyboard::scroll_area_persistent_id(ui, "ast_grep_raw_console");
+        let rect = ui.available_rect_before_wrap();
+        scroll_keyboard::apply_keyboard_scroll_before_show(
+            ui.ctx(),
+            ui,
+            sid,
+            rect,
+            egui::Vec2b::from([true, true]),
+        );
+        let scroll_out = egui::ScrollArea::both()
             .id_salt("ast_grep_raw_console")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -68,6 +78,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         .interactive(false),
                 );
             });
+        scroll_keyboard::store_scroll_metrics(ui.ctx(), sid, &scroll_out, rect);
         return;
     }
 
@@ -152,6 +163,16 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         egui::Vec2::new(0.0, target_line * line_height)
     });
 
+    let sid = scroll_keyboard::scroll_area_persistent_id(ui, "code_view");
+    let rect = ui.available_rect_before_wrap();
+    scroll_keyboard::apply_keyboard_scroll_before_show(
+        ui.ctx(),
+        ui,
+        sid,
+        rect,
+        egui::Vec2b::from([true, true]),
+    );
+
     let mut scroll = egui::ScrollArea::both()
         .id_salt("code_view")
         .auto_shrink([false, false]);
@@ -160,8 +181,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         scroll = scroll.scroll_offset(offset);
     }
 
-    scroll.show(ui, |ui| {
+    let scroll_out = scroll.show(ui, |ui| {
         let galley = ui.fonts(|f| f.layout_job(job));
         ui.add(egui::Label::new(galley).selectable(true));
     });
+    scroll_keyboard::store_scroll_metrics(ui.ctx(), sid, &scroll_out, rect);
 }

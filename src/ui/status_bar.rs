@@ -2,8 +2,10 @@ use egui::Ui;
 
 use crate::app::{AstGrepApp, RewritePhase, SearchState};
 use crate::export::{
-    copy_to_clipboard, export_html_to_file, export_json_to_file, export_markdown_to_file,
-    export_text_to_file, export_xlsx_to_file, results_to_text_for_mode,
+    batch_report_to_text, copy_to_clipboard, export_batch_html_to_file, export_batch_json_to_file,
+    export_batch_markdown_to_file, export_batch_text_to_file, export_batch_xlsx_to_file,
+    export_html_to_file, export_json_to_file, export_markdown_to_file, export_text_to_file,
+    export_xlsx_to_file, results_to_text_for_mode,
 };
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
@@ -18,7 +20,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             }
             SearchState::Running => {
                 ui.spinner();
-                ui.label(t.status_searching(app.stats.scanned));
+                if let Some((cur, tot)) = app.batch_job_progress() {
+                    ui.label(t.status_batch_running(cur, tot, app.stats.scanned));
+                } else {
+                    ui.label(t.status_searching(app.stats.scanned));
+                }
             }
             SearchState::Done => {
                 ui.label(
@@ -69,6 +75,109 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let has_results = !app.results.is_empty();
+            let has_batch_report = app.batch_report.is_some();
+
+            // ─ バッチレポートのエクスポート
+            if has_batch_report {
+                if ui
+                    .button(t.export_excel())
+                    .on_hover_text(t.export_batch_xlsx_tooltip())
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("batch_report.xlsx")
+                        .add_filter("Excel", &["xlsx"])
+                        .save_file()
+                    {
+                        if let Some(ref report) = app.batch_report {
+                            if let Err(e) = export_batch_xlsx_to_file(&path, report, ui_lang) {
+                                eprintln!("{} {e}", t.err_export_batch());
+                            }
+                        }
+                    }
+                }
+                if ui
+                    .button(t.export_html())
+                    .on_hover_text(t.export_batch_html_tooltip())
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("batch_report.html")
+                        .add_filter("HTML", &["html"])
+                        .save_file()
+                    {
+                        if let Some(ref report) = app.batch_report {
+                            if let Err(e) = export_batch_html_to_file(&path, report, ui_lang) {
+                                eprintln!("{} {e}", t.err_export_batch());
+                            }
+                        }
+                    }
+                }
+                if ui
+                    .button(t.export_md())
+                    .on_hover_text(t.export_batch_md_tooltip())
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("batch_report.md")
+                        .add_filter("Markdown", &["md"])
+                        .save_file()
+                    {
+                        if let Some(ref report) = app.batch_report {
+                            if let Err(e) = export_batch_markdown_to_file(&path, report, ui_lang) {
+                                eprintln!("{} {e}", t.err_export_batch());
+                            }
+                        }
+                    }
+                }
+                if ui
+                    .button(t.export_json())
+                    .on_hover_text(t.export_batch_json_tooltip())
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("batch_report.json")
+                        .add_filter("JSON", &["json"])
+                        .save_file()
+                    {
+                        if let Some(ref report) = app.batch_report {
+                            if let Err(e) = export_batch_json_to_file(&path, report) {
+                                eprintln!("{} {e}", t.err_export_batch());
+                            }
+                        }
+                    }
+                }
+                if ui
+                    .button(t.export_txt())
+                    .on_hover_text(t.export_batch_txt_tooltip())
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_file_name("batch_report.txt")
+                        .add_filter(t.file_filter_txt(), &["txt"])
+                        .save_file()
+                    {
+                        if let Some(ref report) = app.batch_report {
+                            if let Err(e) = export_batch_text_to_file(&path, report, ui_lang) {
+                                eprintln!("{} {e}", t.err_export_batch());
+                            }
+                        }
+                    }
+                }
+                if ui
+                    .button(t.copy_results())
+                    .on_hover_text(t.copy_batch_report_tooltip())
+                    .clicked()
+                {
+                    if let Some(ref report) = app.batch_report {
+                        let text = batch_report_to_text(report, ui_lang);
+                        if let Err(e) = copy_to_clipboard(&text) {
+                            eprintln!("{} {e}", t.err_clipboard());
+                        }
+                    }
+                }
+                ui.separator();
+            }
 
             // Excel エクスポート
             if ui

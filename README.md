@@ -13,10 +13,10 @@ It is designed to make structural code search easier for users who prefer a visu
 - Batch rewrite (like `--rewrite`): preview, diff, then write back files (AST / ast-grep raw modes)
 - Search modes for `AST`, `ast-grep (raw)`, plain text, and regex
 - Auto language detection by file extension for mixed-language repositories
-- Code view and table view for browsing results
+- Code view, table view, and **batch report** view (run multiple patterns with per-job settings, then review an aggregated report)
 - Best-effort `$RECV` receiver type hints in search results for supported languages
 - Pattern help, presets, and snippet-based pattern assist
-- Export results to `TXT`, `JSON`, `Markdown`, `HTML`, and `Excel (.xlsx)`
+- Export results to `TXT`, `JSON`, `Markdown`, `HTML`, and `Excel (.xlsx)` (including multi-job batch reports after a batch run)
 - UI language switching between Japanese and English
 - Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16 LE`, `UTF-16 BE`, `Shift_JIS`, `EUC-JP`, `JIS`, `GBK`, `Big5`, `EUC-KR`, and `Latin1` family overrides
 - Built-in terminal panel for PowerShell commands and `sg`-style searches

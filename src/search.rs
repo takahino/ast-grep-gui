@@ -36,15 +36,24 @@ impl SearchMode {
 /// バックグラウンド検索から UI へ送るメッセージ
 #[derive(Debug)]
 pub enum SearchMessage {
-    FileResult(FileResult),
-    Progress { scanned: usize },
+    FileResult {
+        job_id: usize,
+        file: FileResult,
+    },
+    Progress {
+        job_id: usize,
+        scanned: usize,
+    },
     Done {
+        job_id: usize,
         elapsed_ms: u64,
         /// `max_search_hits > 0` のとき、収集件数が上限に達した
         hit_limit_reached: bool,
     },
-    #[allow(dead_code)]
-    Error(String),
+    Error {
+        job_id: usize,
+        msg: String,
+    },
 }
 
 /// 1ファイルのマッチ結果
@@ -163,6 +172,7 @@ pub fn spawn_search(
     max_search_hits: usize,
     skip_dirs_str: String,
     ui_lang: UiLanguage,
+    job_id: usize,
     tx: Sender<SearchMessage>,
     egui_ctx: egui::Context,
 ) {
@@ -181,7 +191,10 @@ pub fn spawn_search(
                 Ok(re) => Some(Arc::new(re)),
                 Err(e) => {
                     let msg = Tr(ui_lang).err_regex_compile(e);
-                    let _ = tx.send(SearchMessage::Error(msg));
+                    let _ = tx.send(SearchMessage::Error {
+                        job_id,
+                        msg,
+                    });
                     egui_ctx.request_repaint();
                     return;
                 }
@@ -301,7 +314,10 @@ pub fn spawn_search(
                 let count = scanned.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 // 進捗を適度な頻度で通知（毎ファイルは重すぎる）
                 if count % 50 == 0 {
-                    let _ = tx.send(SearchMessage::Progress { scanned: count });
+                    let _ = tx.send(SearchMessage::Progress {
+                        job_id,
+                        scanned: count,
+                    });
                     egui_ctx.request_repaint();
                 }
 
@@ -421,23 +437,30 @@ pub fn spawn_search(
                 };
 
                 if !matches.is_empty() {
-                    let _ = tx.send(SearchMessage::FileResult(FileResult {
-                        path: path.to_path_buf(),
-                        relative_path,
-                        source_language: file_lang,
-                        text_encoding,
-                        matches,
-                    }));
+                    let _ = tx.send(SearchMessage::FileResult {
+                        job_id,
+                        file: FileResult {
+                            path: path.to_path_buf(),
+                            relative_path,
+                            source_language: file_lang,
+                            text_encoding,
+                            matches,
+                        },
+                    });
                     egui_ctx.request_repaint();
                 }
             });
 
         // 最終進捗を送信
         let final_count = scanned.load(std::sync::atomic::Ordering::Relaxed);
-        let _ = tx.send(SearchMessage::Progress { scanned: final_count });
+        let _ = tx.send(SearchMessage::Progress {
+            job_id,
+            scanned: final_count,
+        });
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let hit_limit_reached = hit_limit_reached.load(Ordering::Relaxed);
         let _ = tx.send(SearchMessage::Done {
+            job_id,
             elapsed_ms,
             hit_limit_reached,
         });
@@ -570,7 +593,7 @@ pub(crate) fn default_max_search_hits() -> usize {
 }
 
 /// 検索統計
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct SearchStats {
     pub total_matches: usize,
     pub total_files: usize,

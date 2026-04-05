@@ -710,6 +710,284 @@ impl Tr {
         }
     }
 
+    pub fn view_batch_report(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "📑 バッチレポート",
+            UiLanguage::English => "📑 Batch report",
+        }
+    }
+    pub fn view_batch_report_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "複数パターンのバッチ検索結果をまとめて表示します",
+            UiLanguage::English => "Aggregated results from multi-pattern batch search",
+        }
+    }
+
+    pub fn batch_jobs_header(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチ検索ジョブ",
+            UiLanguage::English => "Batch search jobs",
+        }
+    }
+    pub fn batch_add_job(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "＋ 現在設定を追加",
+            UiLanguage::English => "+ Add current",
+        }
+    }
+    pub fn batch_add_job_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ツールバーのパターンと検索条件を 1 件として一覧に追加します",
+            UiLanguage::English => "Add current pattern and search settings as one job",
+        }
+    }
+    pub fn batch_run_all(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "▶ バッチ実行",
+            UiLanguage::English => "▶ Run batch",
+        }
+    }
+    pub fn batch_run_all_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "有効なジョブを上から順に実行し、完了後にレポートを表示します",
+            UiLanguage::English => "Run enabled jobs in order, then show the report",
+        }
+    }
+    pub fn batch_save_config(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "設定を保存",
+            UiLanguage::English => "Save jobs",
+        }
+    }
+    pub fn batch_save_config_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "バッチジョブ一覧を YAML ファイルに保存します（テキストエディタで編集しやすい形式です）"
+            }
+            UiLanguage::English => {
+                "Save the batch job list as a YAML file (easy to edit in a text editor)"
+            }
+        }
+    }
+    pub fn batch_load_config(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "設定を読込",
+            UiLanguage::English => "Load jobs",
+        }
+    }
+    pub fn batch_load_config_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "YAML ファイルからバッチジョブ一覧を読み込み、現在の一覧を置き換えます"
+            }
+            UiLanguage::English => {
+                "Load batch jobs from a YAML file, replacing the current list"
+            }
+        }
+    }
+    pub fn err_batch_save(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチ設定の保存に失敗:",
+            UiLanguage::English => "Failed to save batch config:",
+        }
+    }
+    pub fn err_batch_load(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチ設定の読み込みに失敗:",
+            UiLanguage::English => "Failed to load batch config:",
+        }
+    }
+    pub fn batch_jobs_empty_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ジョブがありません。「現在設定を追加」で登録してください。",
+            UiLanguage::English => "No jobs. Use “Add current” to register search jobs.",
+        }
+    }
+    pub fn batch_col_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ラベル",
+            UiLanguage::English => "Label",
+        }
+    }
+    pub fn batch_col_pattern(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "パターン",
+            UiLanguage::English => "Pattern",
+        }
+    }
+    pub fn batch_col_enabled(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "有効",
+            UiLanguage::English => "On",
+        }
+    }
+    pub fn batch_col_actions(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "操作",
+            UiLanguage::English => "Actions",
+        }
+    }
+    pub fn batch_edit(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "編集",
+            UiLanguage::English => "Edit",
+        }
+    }
+    pub fn batch_remove(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "削除",
+            UiLanguage::English => "Del",
+        }
+    }
+    pub fn batch_move_up_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "上へ",
+            UiLanguage::English => "Move up",
+        }
+    }
+    pub fn batch_move_down_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "下へ",
+            UiLanguage::English => "Move down",
+        }
+    }
+    pub fn batch_edit_window_title(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ジョブの編集",
+            UiLanguage::English => "Edit job",
+        }
+    }
+    pub fn batch_job_default_label_prefix(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ジョブ",
+            UiLanguage::English => "Job",
+        }
+    }
+    pub fn batch_no_runnable_jobs(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "実行できるジョブがありません（有効かつパターンとディレクトリが必要です）"
+            }
+            UiLanguage::English => {
+                "No runnable jobs (need enabled jobs with pattern and directory)"
+            }
+        }
+    }
+
+    pub fn batch_report_title(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチ検索レポート",
+            UiLanguage::English => "Batch search report",
+        }
+    }
+    pub fn batch_report_empty(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "レポートがありません。バッチ実行を完了するとここに結果が表示されます。",
+            UiLanguage::English => "No report yet. Run a batch search to see results here.",
+        }
+    }
+    pub fn batch_report_summary(
+        self,
+        total_ms: u64,
+        total_matches: usize,
+        total_files: usize,
+        job_count: usize,
+        failed: usize,
+    ) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!(
+                "合計時間: {total_ms} ms ／ 合計マッチ: {total_matches} ／ 合計ファイル: {total_files} ／ ジョブ数: {job_count} ／ 失敗: {failed}"
+            ),
+            UiLanguage::English => format!(
+                "Total time: {total_ms} ms / Matches: {total_matches} / Files: {total_files} / Jobs: {job_count} / Failed: {failed}"
+            ),
+        }
+    }
+    pub fn batch_report_error(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "エラー",
+            UiLanguage::English => "Error",
+        }
+    }
+    pub fn batch_report_job_stats(
+        self,
+        matches: usize,
+        files: usize,
+        elapsed_ms: u64,
+        hit_limit: bool,
+    ) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!(
+                "マッチ: {matches} ／ ファイル: {files} ／ 時間: {elapsed_ms} ms ／ 上限打切: {hit_limit}"
+            ),
+            UiLanguage::English => format!(
+                "Matches: {matches} / Files: {files} / Time: {elapsed_ms} ms / Hit cap: {hit_limit}"
+            ),
+        }
+    }
+    pub fn batch_report_conditions(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索条件",
+            UiLanguage::English => "Search conditions",
+        }
+    }
+    pub fn batch_report_matches(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "マッチ一覧",
+            UiLanguage::English => "Matches",
+        }
+    }
+
+    pub fn status_batch_running(self, cur: usize, total: usize, scanned: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("バッチ {cur}/{total} ・ 走査 {scanned} ファイル"),
+            UiLanguage::English => format!("Batch {cur}/{total} · scanned {scanned} files"),
+        }
+    }
+
+    pub fn export_batch_json_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチレポートを JSON で保存",
+            UiLanguage::English => "Save batch report as JSON",
+        }
+    }
+    pub fn export_batch_md_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチレポートを Markdown で保存",
+            UiLanguage::English => "Save batch report as Markdown",
+        }
+    }
+    pub fn export_batch_html_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチレポートを HTML で保存",
+            UiLanguage::English => "Save batch report as HTML",
+        }
+    }
+    pub fn export_batch_xlsx_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチレポートを Excel で保存（ジョブごとシート）",
+            UiLanguage::English => "Save batch report as Excel (one sheet per job)",
+        }
+    }
+    pub fn export_batch_txt_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチレポートをテキストで保存",
+            UiLanguage::English => "Save batch report as plain text",
+        }
+    }
+    pub fn err_export_batch(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチエクスポート失敗:",
+            UiLanguage::English => "Batch export failed:",
+        }
+    }
+    pub fn copy_batch_report_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチレポートをテキストとしてコピー",
+            UiLanguage::English => "Copy batch report as text",
+        }
+    }
+
     pub fn advanced_settings(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "⚙ 詳細設定",

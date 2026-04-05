@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use egui::Ui;
 
 use crate::app::{AstGrepApp, RewritePhase, SearchState, ViewMode};
+use crate::ui::batch_panel;
 use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguagePreference;
 use crate::lang::SupportedLanguage;
@@ -349,6 +350,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .on_hover_text(t.view_code_tooltip());
         ui.selectable_value(&mut app.view_mode, ViewMode::Table, t.view_table())
             .on_hover_text(t.view_table_tooltip());
+        ui.selectable_value(&mut app.view_mode, ViewMode::BatchReport, t.view_batch_report())
+            .on_hover_text(t.view_batch_report_tooltip());
 
         ui.separator();
 
@@ -442,6 +445,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .on_hover_text(t.skip_dirs_hover());
         });
     });
+
+    batch_panel::show_job_section(app, ui);
 
     ui.horizontal(|ui| {
         let hint = if app.search_mode.is_ast_mode() {

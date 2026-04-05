@@ -2,6 +2,7 @@
 
 mod ast_pattern;
 mod app;
+mod batch;
 mod export;
 mod file_encoding;
 mod help_html;
