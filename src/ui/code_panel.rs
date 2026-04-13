@@ -4,6 +4,7 @@ use crate::app::{AstGrepApp, CodeViewPaneFocus};
 use crate::ui::scroll_keyboard;
 use crate::file_encoding::read_text_file_as;
 use crate::highlight::build_layout_job;
+use crate::search::type_hint_column_keys;
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let t = app.tr();
@@ -76,11 +77,23 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     .color(egui::Color32::GRAY),
                             );
                             let block = m.text_with_context();
-                            let hover = match m.recv_type_hint.as_ref().filter(|s| !s.is_empty()) {
-                                Some(h) => {
-                                    format!("{}{}\n\n{}", t.code_recv_hint_prefix(), h, block)
+                            let column_keys = type_hint_column_keys(app.pattern.as_str(), &app.results);
+                            let hover = if column_keys.is_empty() {
+                                block.clone()
+                            } else {
+                                let lines: Vec<String> = column_keys
+                                    .iter()
+                                    .filter_map(|key| {
+                                        m.type_hint_for_metavar(key)
+                                            .filter(|s| !s.trim().is_empty())
+                                            .map(|h| format!("${}: {}", key, h))
+                                    })
+                                    .collect();
+                                if lines.is_empty() {
+                                    block.clone()
+                                } else {
+                                    format!("{}\n\n{}", lines.join("\n"), block)
                                 }
-                                None => block.clone(),
                             };
                             let preview = block.lines().next().unwrap_or("").trim();
                             let short = if preview.chars().count() > 60 {

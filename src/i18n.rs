@@ -1819,31 +1819,19 @@ impl Tr {
         }
     }
 
-    /// 表: `$RECV` から推定した型（表示専用）
-    pub fn table_col_recv_hint(self) -> &'static str {
+    /// 表: あるメタ変数列で型が推定できなかったときのツールチップ
+    pub fn table_type_hint_column_empty_tooltip(self, metavar: &str) -> String {
         match self.0 {
-            UiLanguage::Japanese => "推定型 ($RECV)",
-            UiLanguage::English => "Inferred ($RECV)",
+            UiLanguage::Japanese => format!("`${metavar}` の型を推定できませんでした"),
+            UiLanguage::English => format!("Could not infer type for `${metavar}`"),
         }
     }
 
-    /// 表: 推定型が無いときのツールチップ
-    pub fn table_recv_hint_none_tooltip(self) -> &'static str {
+    /// 表: `NAME#arity` 列（`$$$NAME` のキャプチャ個数）で値が無いときのツールチップ
+    pub fn table_type_hint_arity_empty_tooltip(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => {
-                "パターンに $RECV が無いか、構文から型を推定できませんでした"
-            }
-            UiLanguage::English => {
-                "No $RECV in pattern, or type could not be inferred from syntax"
-            }
-        }
-    }
-
-    /// コードビュー: マッチ一覧の推定型ツールチップ用プレフィックス
-    pub fn code_recv_hint_prefix(self) -> &'static str {
-        match self.0 {
-            UiLanguage::Japanese => "推定型: ",
-            UiLanguage::English => "Inferred: ",
+            UiLanguage::Japanese => "複数ノードキャプチャの引数個数を取得できませんでした",
+            UiLanguage::English => "Could not get captured node count for this multi metavar",
         }
     }
 
@@ -1957,16 +1945,21 @@ impl Tr {
         }
     }
 
-    /// Markdown テーブル: `$RECV` 推定型列付き（パターンに `$RECV` があるとき）
-    pub fn export_md_table_header_with_recv(self) -> &'static str {
-        match self.0 {
+    /// Markdown テーブル: ベース列のあとにメタ変数列（`$NAME`）を並べる
+    pub fn export_md_table_header_with_metavars(self, metavars: &[String]) -> String {
+        let mut line = match self.0 {
             UiLanguage::Japanese => {
-                "| ファイル | 行 | 列 | マッチテキスト | 元コード（前後） | 推定型 ($RECV) |\n"
+                String::from("| ファイル | 行 | 列 | マッチテキスト | 元コード（前後） |")
             }
             UiLanguage::English => {
-                "| File | Line | Col | Matched text | Source (context) | Inferred ($RECV) |\n"
+                String::from("| File | Line | Col | Matched text | Source (context) |")
             }
+        };
+        for mv in metavars {
+            line.push_str(&format!(" ${} |", mv));
         }
+        line.push('\n');
+        line
     }
 
     pub fn export_html_lang(self) -> &'static str {
@@ -2027,14 +2020,6 @@ impl Tr {
         }
     }
 
-    /// HTML テーブル: `$RECV` 推定型列（パターンに `$RECV` があるとき）
-    pub fn export_html_th_recv_hint(self) -> &'static str {
-        match self.0 {
-            UiLanguage::Japanese => "推定型 ($RECV)",
-            UiLanguage::English => "Inferred ($RECV)",
-        }
-    }
-
     pub fn export_xlsx_sheet_results(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "検索結果",
@@ -2075,14 +2060,6 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "元コード（前後）",
             UiLanguage::English => "Source (context)",
-        }
-    }
-
-    /// Excel: `$RECV` 推定型列（パターンに `$RECV` があるとき）
-    pub fn export_xlsx_col_recv_hint(self) -> &'static str {
-        match self.0 {
-            UiLanguage::Japanese => "推定型 ($RECV)",
-            UiLanguage::English => "Inferred ($RECV)",
         }
     }
 

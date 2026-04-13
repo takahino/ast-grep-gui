@@ -14,7 +14,7 @@ It is designed to make structural code search easier for users who prefer a visu
 - Search modes for `AST`, `Token`, plain text, and regex
 - Auto language detection by file extension for mixed-language repositories
 - Code view, table view (with double-click preview popup), and **batch report** view (run multiple patterns with per-job settings, then review an aggregated report)
-- Best-effort `$RECV` receiver type hints in search results for supported languages
+- Best-effort type hints in search results for supported languages: one column per single metavariable (`$NAME`), and for multi-node captures (`$$$ARGS`, etc.) a count column (`ARGS#arity`) plus one column per captured node (`ARGS#0`, `ARGS#1`, …)
 - Pattern help, presets, snippet-based pattern assist, and **pattern input history** (up to 30 entries)
 - Optional **incremental search** that automatically reruns after you stop typing for a short delay
 - Built-in **regex visualizer** to inspect and test regular expressions interactively
@@ -77,7 +77,7 @@ cargo build --release --target x86_64-pc-windows-msvc
 ### AST Pattern Tips
 
 - Use meta variables such as `$VAR`, `$$$ARGS`, and `$_`
-- When a pattern includes `$RECV`, the app tries to infer the receiver type and shows it in the result views and exports
+- When a pattern includes metavariables that capture code, the app computes type hints (syntax-based, best-effort): single metavariables (`$RECV`, `$VAR`, …) get one column each; multi-node metavariables (`$$$ARGS`, …) get a `NAME#arity` column (number of captured nodes, e.g. call arity) and `NAME#0`, `NAME#1`, … for each captured node’s inferred type. Anonymous `$$$` / `$$$_` are not listed as columns.
 - Open the built-in help popup for examples and presets
 - Use the pattern assist dialog to generate candidate patterns from a code snippet
 
@@ -105,7 +105,7 @@ console.log($$$ARGS)
 - `Excel (.xlsx)`
 - Copy to clipboard
 
-When the pattern contains `$RECV`, `JSON`, `Markdown`, `HTML`, and `Excel` exports also include the inferred receiver type for each match.
+When the pattern includes metavariables used for type hints, `JSON`, `Markdown`, `HTML`, and `Excel` exports include the same hint columns as the table view (including `NAME#arity` and `NAME#i` for `$$$NAME` captures).
 
 ## Packaging and Release
 

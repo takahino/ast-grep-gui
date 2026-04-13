@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -128,13 +129,17 @@ pub struct MatchItem {
     pub span_lines_text: String,
     pub context_before: Vec<String>,
     pub context_after: Vec<String>,
-    /// `$RECV` から推定した receiver 型（JSON 等では値が無いときはキー省略）
+    /// 単一メタ変数名 → 構文ベースで推定した型（表示専用・best-effort）
     #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recv_type_hint: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub type_hints: BTreeMap<String, String>,
 }
 
 impl MatchItem {
+    /// パターン内メタ変数名順の型ヒント（欠損は空文字列）
+    pub fn type_hint_for_metavar(&self, metavar: &str) -> Option<&str> {
+        self.type_hints.get(metavar).map(|s| s.as_str())
+    }
     /// マッチ範囲を含む行の全文＋前後コンテキスト（表の「元コード」列・エクスポート用）
     pub fn program_with_context(&self) -> String {
         let center = if self.span_lines_text.is_empty() {
@@ -448,7 +453,10 @@ pub fn spawn_search(
 
                         let root = ast_lang.ast_grep(&source);
                         let mut out = Vec::new();
-                        let want_recv_hint = pattern_contains_dollar_recv(pattern_str.as_str());
+                        let metavar_names = pattern_single_metavariables(pattern_str.as_str());
+                        let multi_metavar_names = pattern_multi_metavariables(pattern_str.as_str());
+                        let want_type_hints =
+                            !metavar_names.is_empty() || !multi_metavar_names.is_empty();
                         for compiled_pat in compiled_patterns {
                             for node in root.root().find_all(&compiled_pat) {
                                 if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
@@ -466,20 +474,47 @@ pub fn spawn_search(
                                     .get(node_range.start..matched_end)
                                     .map(str::to_owned)
                                     .unwrap_or_else(|| node.text().to_string());
-                                let recv_type_hint = if want_recv_hint {
+                                let type_hints = if want_type_hints {
                                     let hint_ctx = receiver_hint::RecvHintContext {
                                         file_path: path.as_path(),
                                         source: source.as_str(),
                                     };
-                                    node.get_env().get_match("RECV").and_then(|recv| {
-                                        receiver_hint::infer_recv_type(
-                                            file_lang,
-                                            recv,
-                                            Some(&hint_ctx),
-                                        )
-                                    })
+                                    let mut hints = BTreeMap::new();
+                                    for name in &metavar_names {
+                                        if let Some(capture) = node.get_env().get_match(name) {
+                                            if let Some(h) = receiver_hint::infer_capture_type(
+                                                file_lang,
+                                                name.as_str(),
+                                                capture,
+                                                Some(&hint_ctx),
+                                            ) {
+                                                if !h.is_empty() {
+                                                    hints.insert(name.clone(), h);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    for multi_name in &multi_metavar_names {
+                                        let nodes = node.get_env().get_multiple_matches(multi_name);
+                                        hints.insert(
+                                            format!("{multi_name}#arity"),
+                                            nodes.len().to_string(),
+                                        );
+                                        for (i, cap) in nodes.iter().enumerate() {
+                                            let key = format!("{multi_name}#{i}");
+                                            let h = receiver_hint::infer_capture_type(
+                                                file_lang,
+                                                multi_name.as_str(),
+                                                cap,
+                                                Some(&hint_ctx),
+                                            )
+                                            .unwrap_or_default();
+                                            hints.insert(key, h);
+                                        }
+                                    }
+                                    hints
                                 } else {
-                                    None
+                                    BTreeMap::new()
                                 };
                                 out.push(build_match_item(
                                     line_start,
@@ -489,7 +524,7 @@ pub fn spawn_search(
                                     matched_text,
                                     &lines,
                                     context_lines,
-                                    recv_type_hint,
+                                    type_hints,
                                 ));
                             }
                             if !out.is_empty() {
@@ -525,7 +560,7 @@ pub fn spawn_search(
                                         matched_text,
                                         &lines,
                                         context_lines,
-                                        None,
+                                        BTreeMap::new(),
                                     ));
                                 }
                             }
@@ -551,7 +586,7 @@ pub fn spawn_search(
                                         matched_text,
                                         &lines,
                                         context_lines,
-                                        None,
+                                        BTreeMap::new(),
                                     ));
                                     search_start = col_end;
                                     if search_start >= line.len() {
@@ -578,7 +613,7 @@ pub fn spawn_search(
                                         matched_text,
                                         &lines,
                                         context_lines,
-                                        None,
+                                        BTreeMap::new(),
                                     ));
                                     search_start = col_end;
                                     if search_start >= line.len() {
@@ -604,7 +639,7 @@ pub fn spawn_search(
                             out.push(build_match_item(
                                 line_start, col_start, line_end, col_end,
                                 mat.as_str().to_string(), &lines, context_lines,
-                                None,
+                                BTreeMap::new(),
                             ));
                         }
                         out
@@ -623,7 +658,7 @@ pub fn spawn_search(
                                 line_index.byte_offset_to_line_col(&source, mat.end());
                             out.push(build_match_item(
                                 line_start, col_start, line_end, col_end,
-                                mat.as_str().to_string(), &lines, context_lines, None,
+                                mat.as_str().to_string(), &lines, context_lines, BTreeMap::new(),
                             ));
                         }
                         out
@@ -706,9 +741,111 @@ fn join_span_lines(lines: &[&str], line_start_0: usize, line_end_0: usize) -> St
     lines[line_start_0..=end].join("\n")
 }
 
-/// パターンにメタ変数 `$RECV` が含まれるか（型ヒント計算・UI/エクスポート列のゲート）
+/// AstGrep パターン内の複数ノードキャプチャ `$$$NAME` の名前を出現順に列挙（`$$$`・`$$$_` は含めない）。
+pub fn pattern_multi_metavariables(pattern: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let bytes = pattern.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'$'
+            && i + 2 < bytes.len()
+            && bytes[i + 1] == b'$'
+            && bytes[i + 2] == b'$'
+        {
+            i += 3;
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if start < i {
+                let name = &pattern[start..i];
+                if !name.starts_with('_') && seen.insert(name.to_string()) {
+                    out.push(name.to_string());
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// AstGrep パターン内の単一メタ変数 `$NAME` を列挙する（`$$$MULTI` はスキップ）。
+pub fn pattern_single_metavariables(pattern: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let bytes = pattern.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            if i + 2 < bytes.len() && bytes[i + 1] == b'$' && bytes[i + 2] == b'$' {
+                i += 3;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                continue;
+            }
+            i += 1;
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if start < i {
+                let name = &pattern[start..i];
+                if seen.insert(name.to_string()) {
+                    out.push(name.to_string());
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 型ヒント表・エクスポート用の列キー（単一 `$A` のあと、各 `$$$M` について `M#arity`、`M#0`…`M#(n-1)`）。
+///
+/// スロット列数 `n` は現在の `results` 内で当該メタ変数に付いた `M#i`（数値 `i`）の最大個数。
+pub fn type_hint_column_keys(pattern: &str, results: &[FileResult]) -> Vec<String> {
+    let mut keys = pattern_single_metavariables(pattern);
+    for m in pattern_multi_metavariables(pattern) {
+        keys.push(format!("{m}#arity"));
+        let n = max_multi_slot_count(results, &m);
+        for i in 0..n {
+            keys.push(format!("{m}#{i}"));
+        }
+    }
+    keys
+}
+
+fn max_multi_slot_count(results: &[FileResult], multi_name: &str) -> usize {
+    let prefix = format!("{multi_name}#");
+    let mut max_n = 0usize;
+    for file in results {
+        for item in &file.matches {
+            for k in item.type_hints.keys() {
+                if let Some(rest) = k.strip_prefix(&prefix) {
+                    if let Ok(idx) = rest.parse::<usize>() {
+                        max_n = max_n.max(idx.saturating_add(1));
+                    }
+                }
+            }
+        }
+    }
+    max_n
+}
+
+/// パターンに単一または複数ノードメタ変数があれば型ヒント列・計算を有効にする
+pub fn pattern_wants_type_hints(pattern: &str) -> bool {
+    !pattern_single_metavariables(pattern).is_empty() || !pattern_multi_metavariables(pattern).is_empty()
+}
+
+/// 後方互換: 旧名（任意 `$NAME` で型ヒントが有効）
+#[allow(dead_code)]
+#[inline]
 pub fn pattern_contains_dollar_recv(pattern: &str) -> bool {
-    pattern.contains("$RECV")
+    pattern_wants_type_hints(pattern)
 }
 
 /// MatchItem を生成するヘルパー（0-based の行/列を受け取り 1-based に変換）
@@ -720,7 +857,7 @@ fn build_match_item(
     matched_text: String,
     lines: &[&str],
     context_lines: usize,
-    recv_type_hint: Option<String>,
+    type_hints: BTreeMap<String, String>,
 ) -> MatchItem {
     let (context_before, context_after) = slice_context_lines(lines, line_start, line_end, context_lines);
     let span_lines_text = join_span_lines(lines, line_start, line_end);
@@ -734,7 +871,7 @@ fn build_match_item(
         span_lines_text,
         context_before,
         context_after,
-        recv_type_hint,
+        type_hints,
     }
 }
 
@@ -814,7 +951,59 @@ fn try_accept_hit(hits: &AtomicUsize, max: usize, limit_reached: &AtomicBool) ->
 
 #[cfg(test)]
 mod tests {
-    use super::LineIndex;
+    use super::{pattern_multi_metavariables, pattern_single_metavariables, FileResult, LineIndex, MatchItem};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn pattern_single_metavariables_lists_names_skips_multi() {
+        let p = "$RECV.$METHOD($$$ARGS)";
+        assert_eq!(
+            pattern_single_metavariables(p),
+            vec!["RECV".to_string(), "METHOD".to_string()]
+        );
+    }
+
+    #[test]
+    fn pattern_multi_metavariables_finds_ellipsis_names() {
+        let p = "$RECV.$METHOD($$$ARGS)";
+        assert_eq!(pattern_multi_metavariables(p), vec!["ARGS".to_string()]);
+        assert!(pattern_multi_metavariables("$$$").is_empty());
+        assert!(pattern_multi_metavariables("$$$_").is_empty());
+    }
+
+    #[test]
+    fn pattern_single_metavariables_only_multi_is_empty() {
+        assert!(pattern_single_metavariables("$$$BODY").is_empty());
+    }
+
+    #[test]
+    fn type_hint_column_keys_expands_multi_slots() {
+        let pattern = "$A($$$ARGS)";
+        let mut hints = BTreeMap::new();
+        hints.insert("ARGS#arity".to_string(), "2".to_string());
+        hints.insert("ARGS#0".to_string(), "t0".to_string());
+        hints.insert("ARGS#1".to_string(), "t1".to_string());
+        let results = vec![FileResult {
+            path: PathBuf::from("x"),
+            relative_path: "x".to_string(),
+            matches: vec![MatchItem {
+                line_start: 1,
+                col_start: 0,
+                line_end: 1,
+                col_end: 1,
+                matched_text: String::new(),
+                span_lines_text: String::new(),
+                context_before: vec![],
+                context_after: vec![],
+                type_hints: hints,
+            }],
+            source_language: crate::lang::SupportedLanguage::Rust,
+            text_encoding: crate::file_encoding::FileEncoding::Utf8,
+        }];
+        let keys = super::type_hint_column_keys(pattern, &results);
+        assert_eq!(keys, vec!["A", "ARGS#arity", "ARGS#0", "ARGS#1"]);
+    }
 
     #[test]
     fn line_index_maps_offsets_across_lines() {

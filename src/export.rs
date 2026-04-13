@@ -1,8 +1,6 @@
 use crate::batch::BatchReport;
 use crate::i18n::{Tr, UiLanguage};
-use crate::search::{
-    pattern_contains_dollar_recv, FileResult, SearchConditions, SearchMode, SearchStats,
-};
+use crate::search::{type_hint_column_keys, FileResult, SearchConditions, SearchMode, SearchStats};
 
 /// Markdown 区切り行（列数 n）
 fn markdown_table_sep(n: usize) -> String {
@@ -238,13 +236,13 @@ pub fn results_to_markdown(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
-    let show_recv = pattern_contains_dollar_recv(&cond.pattern);
-    if show_recv {
-        out.push_str(t.export_md_table_header_with_recv());
-        out.push_str(&markdown_table_sep(6));
-    } else {
+    let col_keys = type_hint_column_keys(&cond.pattern, results);
+    if col_keys.is_empty() {
         out.push_str(t.export_md_table_header());
         out.push_str(&markdown_table_sep(5));
+    } else {
+        out.push_str(&t.export_md_table_header_with_metavars(&col_keys));
+        out.push_str(&markdown_table_sep(5 + col_keys.len()));
     }
 
     for file in results {
@@ -253,21 +251,22 @@ pub fn results_to_markdown(
             let matched_cell = md_cell(&m.matched_text);
             let program_cell = md_cell(&m.program_with_context());
             let path = file.relative_path.replace('|', "\\|");
-            if show_recv {
-                let hint = m
-                    .recv_type_hint
-                    .as_deref()
-                    .map(md_cell)
-                    .unwrap_or_else(|| md_cell(""));
-                out.push_str(&format!(
-                    "| `{}` | {} | {} | {} | {} | {} |\n",
-                    path, m.line_start, m.col_start, matched_cell, program_cell, hint
-                ));
-            } else {
+            if col_keys.is_empty() {
                 out.push_str(&format!(
                     "| `{}` | {} | {} | {} | {} |\n",
                     path, m.line_start, m.col_start, matched_cell, program_cell
                 ));
+            } else {
+                let mut row = format!(
+                    "| `{}` | {} | {} | {} | {} |",
+                    path, m.line_start, m.col_start, matched_cell, program_cell
+                );
+                for key in &col_keys {
+                    let h = m.type_hint_for_metavar(key).unwrap_or("");
+                    row.push_str(&format!(" {} |", md_cell(h)));
+                }
+                row.push('\n');
+                out.push_str(&row);
             }
         }
     }
@@ -358,7 +357,7 @@ fn html_conditions_stats_table_fragment(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
-    let show_recv = pattern_contains_dollar_recv(&cond.pattern);
+    let col_keys = type_hint_column_keys(&cond.pattern, results);
     out.push_str("<table>\n<thead>\n<tr>\n");
     out.push_str("<th>");
     out.push_str(t.export_html_th_file());
@@ -371,10 +370,10 @@ fn html_conditions_stats_table_fragment(
     out.push_str("</th><th>");
     out.push_str(t.export_html_th_source_context());
     out.push_str("</th>");
-    if show_recv {
-        out.push_str("<th>");
-        out.push_str(t.export_html_th_recv_hint());
-        out.push_str("</th>");
+    for key in &col_keys {
+        out.push_str("<th><code>");
+        out.push_str(&escape(&format!("${}", key)));
+        out.push_str("</code></th>");
     }
     out.push_str("\n");
     out.push_str("</tr>\n</thead>\n<tbody>\n");
@@ -389,9 +388,9 @@ fn html_conditions_stats_table_fragment(
             out.push_str(&format!("<td>{}</td>\n", m.col_start));
             out.push_str(&format!("<td><code>{}</code></td>\n", matched_html));
             out.push_str(&format!("<td><code>{}</code></td>\n", program_html));
-            if show_recv {
-                let hint = m.recv_type_hint.as_deref().unwrap_or("");
-                out.push_str(&format!("<td><code>{}</code></td>\n", escape(hint)));
+            for key in &col_keys {
+                let h = m.type_hint_for_metavar(key).unwrap_or("");
+                out.push_str(&format!("<td><code>{}</code></td>\n", escape(h)));
             }
             out.push_str("</tr>\n");
         }
@@ -455,7 +454,7 @@ pub fn export_xlsx_to_file(
 
     let t = Tr(lang);
     let mut workbook = Workbook::new();
-    let show_recv = pattern_contains_dollar_recv(&cond.pattern);
+    let col_keys = type_hint_column_keys(&cond.pattern, results);
 
     // ─ 結果シート ─
     let sheet = workbook.add_worksheet();
@@ -469,8 +468,9 @@ pub fn export_xlsx_to_file(
     sheet.write_with_format(0, 2, t.export_xlsx_col_col(), &header_fmt)?;
     sheet.write_with_format(0, 3, t.export_xlsx_col_match(), &header_fmt)?;
     sheet.write_with_format(0, 4, t.export_xlsx_col_source_context(), &header_fmt)?;
-    if show_recv {
-        sheet.write_with_format(0, 5, t.export_xlsx_col_recv_hint(), &header_fmt)?;
+    for (i, key) in col_keys.iter().enumerate() {
+        let col = 5 + i as u16;
+        sheet.write_with_format(0, col, format!("${}", key), &header_fmt)?;
     }
 
     // 列幅の設定
@@ -479,8 +479,8 @@ pub fn export_xlsx_to_file(
     sheet.set_column_width(2, 8)?;
     sheet.set_column_width(3, 40)?;
     sheet.set_column_width(4, 80)?;
-    if show_recv {
-        sheet.set_column_width(5, 36)?;
+    for i in 0..col_keys.len() {
+        sheet.set_column_width(5 + i as u16, 28)?;
     }
 
     let mut row = 1u32;
@@ -492,9 +492,9 @@ pub fn export_xlsx_to_file(
             sheet.write(row, 2, m.col_start as u32)?;
             sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
             sheet.write(row, 4, truncate_for_excel(&program))?;
-            if show_recv {
-                let hint = m.recv_type_hint.as_deref().unwrap_or("");
-                sheet.write(row, 5, truncate_for_excel(hint))?;
+            for (i, key) in col_keys.iter().enumerate() {
+                let h = m.type_hint_for_metavar(key).unwrap_or("");
+                sheet.write(row, 5 + i as u16, truncate_for_excel(h))?;
             }
             row += 1;
         }
@@ -739,13 +739,13 @@ pub fn batch_report_to_markdown(report: &BatchReport, lang: UiLanguage) -> Strin
             run.stats.elapsed_ms,
             run.stats.hit_limit_reached,
         ));
-        let show_recv = pattern_contains_dollar_recv(&run.conditions.pattern);
-        if show_recv {
-            out.push_str(t.export_md_table_header_with_recv());
-            out.push_str(&markdown_table_sep(6));
-        } else {
+        let col_keys = type_hint_column_keys(&run.conditions.pattern, &run.results);
+        if col_keys.is_empty() {
             out.push_str(t.export_md_table_header());
             out.push_str(&markdown_table_sep(5));
+        } else {
+            out.push_str(&t.export_md_table_header_with_metavars(&col_keys));
+            out.push_str(&markdown_table_sep(5 + col_keys.len()));
         }
 
         for file in &run.results {
@@ -754,21 +754,22 @@ pub fn batch_report_to_markdown(report: &BatchReport, lang: UiLanguage) -> Strin
                 let matched_cell = md_cell(&m.matched_text);
                 let program_cell = md_cell(&m.program_with_context());
                 let path = file.relative_path.replace('|', "\\|");
-                if show_recv {
-                    let hint = m
-                        .recv_type_hint
-                        .as_deref()
-                        .map(md_cell)
-                        .unwrap_or_else(|| md_cell(""));
-                    out.push_str(&format!(
-                        "| `{}` | {} | {} | {} | {} | {} |\n",
-                        path, m.line_start, m.col_start, matched_cell, program_cell, hint
-                    ));
-                } else {
+                if col_keys.is_empty() {
                     out.push_str(&format!(
                         "| `{}` | {} | {} | {} | {} |\n",
                         path, m.line_start, m.col_start, matched_cell, program_cell
                     ));
+                } else {
+                    let mut row = format!(
+                        "| `{}` | {} | {} | {} | {} |",
+                        path, m.line_start, m.col_start, matched_cell, program_cell
+                    );
+                    for key in &col_keys {
+                        let h = m.type_hint_for_metavar(key).unwrap_or("");
+                        row.push_str(&format!(" {} |", md_cell(h)));
+                    }
+                    row.push('\n');
+                    out.push_str(&row);
                 }
             }
         }
@@ -877,7 +878,7 @@ pub fn export_batch_xlsx_to_file(
         let cond = &run.conditions;
         let stats = &run.stats;
         let results = &run.results;
-        let show_recv = pattern_contains_dollar_recv(&cond.pattern);
+        let col_keys = type_hint_column_keys(&cond.pattern, results);
 
         let header_fmt = Format::new()
             .set_bold()
@@ -889,8 +890,9 @@ pub fn export_batch_xlsx_to_file(
         sheet.write_with_format(0, 2, t.export_xlsx_col_col(), &header_fmt)?;
         sheet.write_with_format(0, 3, t.export_xlsx_col_match(), &header_fmt)?;
         sheet.write_with_format(0, 4, t.export_xlsx_col_source_context(), &header_fmt)?;
-        if show_recv {
-            sheet.write_with_format(0, 5, t.export_xlsx_col_recv_hint(), &header_fmt)?;
+        for (i, key) in col_keys.iter().enumerate() {
+            let col = 5 + i as u16;
+            sheet.write_with_format(0, col, format!("${}", key), &header_fmt)?;
         }
 
         sheet.set_column_width(0, 50)?;
@@ -898,8 +900,8 @@ pub fn export_batch_xlsx_to_file(
         sheet.set_column_width(2, 8)?;
         sheet.set_column_width(3, 40)?;
         sheet.set_column_width(4, 80)?;
-        if show_recv {
-            sheet.set_column_width(5, 36)?;
+        for i in 0..col_keys.len() {
+            sheet.set_column_width(5 + i as u16, 28)?;
         }
 
         let mut row = 1u32;
@@ -911,9 +913,9 @@ pub fn export_batch_xlsx_to_file(
                 sheet.write(row, 2, m.col_start as u32)?;
                 sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
                 sheet.write(row, 4, truncate_for_excel(&program))?;
-                if show_recv {
-                    let hint = m.recv_type_hint.as_deref().unwrap_or("");
-                    sheet.write(row, 5, truncate_for_excel(hint))?;
+                for (i, key) in col_keys.iter().enumerate() {
+                    let h = m.type_hint_for_metavar(key).unwrap_or("");
+                    sheet.write(row, 5 + i as u16, truncate_for_excel(h))?;
                 }
                 row += 1;
             }

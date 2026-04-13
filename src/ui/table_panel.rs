@@ -4,7 +4,7 @@ use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 use crate::app::{AstGrepApp, TablePreviewState, TableRowRef};
 use crate::ui::scroll_keyboard;
 use crate::highlight::build_layout_job_from_line;
-use crate::search::{pattern_contains_dollar_recv, MatchItem};
+use crate::search::{type_hint_column_keys, MatchItem};
 
 /// 長いパスは先頭を「...」で省略し末尾のみ表示する（UTF-8 の文字境界で切る）。
 fn ellipsis_path_tail(path: &str, max_chars: usize, tail_chars: usize) -> String {
@@ -71,11 +71,12 @@ fn context_match_item(m: &MatchItem) -> MatchItem {
         span_lines_text: m.span_lines_text.clone(),
         context_before: Vec::new(),
         context_after: Vec::new(),
-        recv_type_hint: m.recv_type_hint.clone(),
+        type_hints: m.type_hints.clone(),
     }
 }
 
-fn render_header(ui: &mut Ui, t: crate::i18n::Tr, show_recv_col: bool) {
+fn render_header(ui: &mut Ui, t: crate::i18n::Tr, column_keys: &[String]) {
+    const HINT_COL_W: f32 = 130.0;
     ui.horizontal(|ui| {
         ui.add_sized(
             [240.0, ui.spacing().interact_size.y],
@@ -97,10 +98,10 @@ fn render_header(ui: &mut Ui, t: crate::i18n::Tr, show_recv_col: bool) {
             [520.0, ui.spacing().interact_size.y],
             Label::new(RichText::new(t.table_col_source_context()).strong()),
         );
-        if show_recv_col {
+        for key in column_keys {
             ui.add_sized(
-                [160.0, ui.spacing().interact_size.y],
-                Label::new(RichText::new(t.table_col_recv_hint()).strong()),
+                [HINT_COL_W, ui.spacing().interact_size.y],
+                Label::new(RichText::new(format!("${}", key)).strong()),
             );
         }
         ui.add_sized(
@@ -147,16 +148,16 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     const LINE_W: f32 = 60.0;
     const COL_W: f32 = 60.0;
     const MATCH_W: f32 = 280.0;
-    const RECV_HINT_W: f32 = 160.0;
+    const HINT_COL_W: f32 = 130.0;
     const SOURCE_W: f32 = 520.0;
     const ACTION_W: f32 = 90.0;
-    let show_recv_col = pattern_contains_dollar_recv(app.pattern.as_str());
+    let column_keys = type_hint_column_keys(app.pattern.as_str(), &app.results);
     let total_w = FILE_W
         + LINE_W
         + COL_W
         + MATCH_W
         + SOURCE_W
-        + (if show_recv_col { RECV_HINT_W } else { 0.0 })
+        + column_keys.len() as f32 * HINT_COL_W
         + ACTION_W
         + 48.0;
 
@@ -178,7 +179,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         .auto_shrink([false, false])
         .show_viewport(ui, |ui, viewport| {
             ui.set_min_width(total_w);
-            render_header(ui, t, show_recv_col);
+            render_header(ui, t, &column_keys);
             ui.separator();
 
             let header_height = row_unit_height + ui.spacing().item_spacing.y + 6.0;
@@ -216,22 +217,20 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
             for row_idx in start..end {
                 let TableRowRef { file_idx, match_idx } = app.table_rows[row_idx];
+                let file = &app.results[file_idx];
+                let m = &file.matches[match_idx];
                 let (
                     path,
                     relative_path,
                     line_start,
                     col_start,
                     matched_text,
-                    recv_type_hint,
                     source_context_job,
                     full_context,
                     matches,
                     source_language,
                     text_encoding,
                 ) = {
-                    let file = &app.results[file_idx];
-                    let m = &file.matches[match_idx];
-                    let recv_type_hint = m.recv_type_hint.clone();
                     let full_context = m.program_with_context();
                     // コンテキスト行数が変わると full_context の行数も変わる。ハイライトキャッシュキーに含めないと
                     // 古い syntect 行配列が再利用され、行番号オフセットと表示テキストがずれる。
@@ -256,7 +255,6 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         m.line_start,
                         m.col_start,
                         m.matched_text.clone(),
-                        recv_type_hint,
                         build_layout_job_from_line(
                             snippet_highlighted,
                             &snippet_matches,
@@ -270,12 +268,21 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     )
                 };
 
-                let recv_hint_cell: Option<(String, String)> = if show_recv_col {
-                    Some(
-                        match recv_type_hint.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                let hint_cells: Vec<(String, String)> = column_keys
+                    .iter()
+                    .map(|key| {
+                        match m
+                            .type_hint_for_metavar(key)
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                        {
                             None => (
                                 "—".to_string(),
-                                t.table_recv_hint_none_tooltip().to_string(),
+                                if key.ends_with("#arity") {
+                                    t.table_type_hint_arity_empty_tooltip().to_string()
+                                } else {
+                                    t.table_type_hint_column_empty_tooltip(key)
+                                },
                             ),
                             Some(s) => {
                                 let display = if s.chars().count() > 28 {
@@ -285,11 +292,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                 };
                                 (display, s.to_string())
                             }
-                        },
-                    )
-                } else {
-                    None
-                };
+                        }
+                    })
+                    .collect();
 
                 let file_label = ellipsis_path_tail(&relative_path, 40, 37);
                 let row_height = app
@@ -333,10 +338,13 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         )
                             .on_hover_text(&full_context);
 
-                        let r_recv_hint = recv_hint_cell.as_ref().map(|(disp, hov)| {
-                            label_cell(ui, RECV_HINT_W, disp.as_str(), Sense::click())
-                                .on_hover_text(hov.as_str())
-                        });
+                        let mut r_hint_cols: Vec<egui::Response> = Vec::new();
+                        for (disp, hov) in &hint_cells {
+                            r_hint_cols.push(
+                                label_cell(ui, HINT_COL_W, disp.as_str(), Sense::click())
+                                    .on_hover_text(hov.as_str()),
+                            );
+                        }
 
                         let r_assist = ui
                             .add_sized([ACTION_W, row_unit_height], egui::Button::new(t.to_assist()).small())
@@ -352,7 +360,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                             || r_matched.clicked()
                             || r_src.clicked()
                             || r_assist.clicked();
-                        if let Some(ref r) = r_recv_hint {
+                        for r in &r_hint_cols {
                             any_click |= r.clicked();
                         }
                         if any_click {
@@ -364,7 +372,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                             || r_col.double_clicked()
                             || r_matched.double_clicked()
                             || r_src.double_clicked();
-                        if let Some(ref r) = r_recv_hint {
+                        for r in &r_hint_cols {
                             any_dbl |= r.double_clicked();
                         }
                         if any_dbl {

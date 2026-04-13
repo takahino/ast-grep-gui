@@ -1,4 +1,4 @@
-//! `$RECV` に束縛されたノードから、表示用の receiver 型ヒントを推定する（構文ベース・best-effort）。
+//! パターンのメタ変数に束縛されたノードから、表示用の型ヒントを推定する（構文ベース・best-effort）。
 
 use std::collections::HashSet;
 use std::fs;
@@ -17,24 +17,458 @@ pub struct RecvHintContext<'a> {
 }
 
 /// パターンの `$RECV` に対応するノードから型ヒント文字列を返す。
+#[allow(dead_code)] // 公開 API・テストから利用。内部は `infer_capture_type` に集約。
 pub fn infer_recv_type<D: Doc>(
     lang: SupportedLanguage,
     recv: &Node<'_, D>,
     ctx: Option<&RecvHintContext<'_>>,
 ) -> Option<String> {
-    match lang {
-        SupportedLanguage::Auto => None,
-        SupportedLanguage::Rust => rust_hint(recv),
-        SupportedLanguage::Go => go_hint(recv),
-        SupportedLanguage::Java => java_hint(recv),
-        SupportedLanguage::CSharp => csharp_hint(recv),
-        SupportedLanguage::TypeScript | SupportedLanguage::JavaScript => ts_hint(recv),
-        SupportedLanguage::Cpp => cpp_hint(recv, ctx),
-        SupportedLanguage::C => c_hint(recv),
-        SupportedLanguage::Python => python_hint(recv),
-        SupportedLanguage::Kotlin => kotlin_hint(recv),
-        SupportedLanguage::Scala => scala_hint(recv),
+    infer_capture_type(lang, "RECV", recv, ctx)
+}
+
+/// 単一メタ変数に束縛されたノードから型ヒントを返す（ドット/アローチェインは可能な言語で逐次解決）。
+pub fn infer_capture_type<D: Doc>(
+    lang: SupportedLanguage,
+    _capture_name: &str,
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
+    if lang == SupportedLanguage::Auto {
+        return None;
     }
+    if let Some(t) = chain_expression_result_type(lang, node, ctx) {
+        return Some(t);
+    }
+    match lang {
+        SupportedLanguage::Rust => rust_hint(node),
+        SupportedLanguage::Go => go_hint(node),
+        SupportedLanguage::Java => java_hint(node),
+        SupportedLanguage::CSharp => csharp_hint(node),
+        SupportedLanguage::TypeScript | SupportedLanguage::JavaScript => ts_hint(node),
+        SupportedLanguage::Cpp => cpp_hint(node, ctx),
+        SupportedLanguage::C => c_hint(node),
+        SupportedLanguage::Python => python_hint(node),
+        SupportedLanguage::Kotlin => kotlin_hint(node),
+        SupportedLanguage::Scala => scala_hint(node),
+        SupportedLanguage::Auto => None,
+    }
+}
+
+fn chain_expression_result_type<D: Doc>(
+    lang: SupportedLanguage,
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
+    match lang {
+        SupportedLanguage::Cpp => ctx.and_then(|c| cpp_chain_result_type(node, c)),
+        SupportedLanguage::Java => java_chain_result_type(node),
+        SupportedLanguage::TypeScript | SupportedLanguage::JavaScript => ts_chain_result_type(node),
+        _ => None,
+    }
+}
+
+fn cpp_simplify_type_name(ty: &str) -> String {
+    let mut s = ty.trim();
+    while s.ends_with('*') || s.ends_with('&') {
+        s = s.trim_end_matches(|x: char| x == '*' || x == '&').trim();
+    }
+    for prefix in ["const ", "volatile ", "const volatile ", "volatile const "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim();
+        }
+    }
+    let s = if let Some(i) = s.rfind("::") {
+        s[i + 2..].trim()
+    } else {
+        s
+    };
+    s.split_whitespace().last().unwrap_or(s).to_string()
+}
+
+fn cpp_field_type_for_class_in_sources(
+    ctx: &RecvHintContext<'_>,
+    class_name: &str,
+    field_name: &str,
+) -> Option<String> {
+    let grep = SupportLang::Cpp.ast_grep(ctx.source);
+    let root = grep.root();
+    if let Some(ty) = cpp_field_in_named_translation_unit(&root, class_name, field_name) {
+        return Some(ty);
+    }
+    let base = ctx.file_path.parent()?;
+    let mut visited = HashSet::new();
+    visited.insert(cpp_path_key(ctx.file_path));
+    for inc in cpp_include_paths_from_source(ctx.source) {
+        let p = base.join(&inc);
+        if p.is_file() {
+            if let Some(ty) = cpp_try_header_file_for_field(
+                &p,
+                class_name,
+                field_name,
+                &mut visited,
+                CPP_INCLUDE_MAX_DEPTH,
+            ) {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+fn cpp_declarator_has_method_name<D: Doc>(decl: &Node<'_, D>, method_name: &str) -> bool {
+    let mut found = false;
+    cpp_for_each_descendant(decl, &mut |d| {
+        if matches!(d.kind().as_ref(), "identifier" | "field_identifier" | "destructor_name") {
+            if d.text().trim() == method_name {
+                found = true;
+            }
+        }
+    });
+    found
+}
+
+fn cpp_find_method_return_in_named_class<D: Doc>(
+    node: &Node<'_, D>,
+    class_name: &str,
+    method_name: &str,
+    out: &mut Option<String>,
+) {
+    if out.is_some() {
+        return;
+    }
+    let kind = node.kind();
+    if matches!(
+        kind.as_ref(),
+        "class_specifier" | "struct_specifier" | "union_specifier"
+    ) {
+        if let Some(n) = node.field("name") {
+            if n.text().trim() == class_name {
+                if let Some(body) = node.field("body") {
+                    for c in body.children() {
+                        if c.kind().as_ref() != "function_definition" {
+                            continue;
+                        }
+                        let Some(decl) = c.field("declarator") else {
+                            continue;
+                        };
+                        if !cpp_declarator_has_method_name(&decl, method_name) {
+                            continue;
+                        }
+                        if let Some(ty) = c.field("type") {
+                            *out = Some(ty.text().trim().to_string());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for c in node.children() {
+        cpp_find_method_return_in_named_class(&c, class_name, method_name, out);
+        if out.is_some() {
+            return;
+        }
+    }
+}
+
+fn cpp_method_return_in_named_translation_unit<D: Doc>(
+    root: &Node<'_, D>,
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    let mut out = None;
+    cpp_find_method_return_in_named_class(root, class_name, method_name, &mut out);
+    out
+}
+
+fn cpp_try_header_file_for_method(
+    path: &Path,
+    class_name: &str,
+    method_name: &str,
+    visited: &mut HashSet<PathBuf>,
+    depth: usize,
+) -> Option<String> {
+    if depth == 0 {
+        return None;
+    }
+    let key = cpp_path_key(path);
+    if visited.contains(&key) {
+        return None;
+    }
+    let len = fs::metadata(path).ok()?.len();
+    if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
+        return None;
+    }
+    let text = fs::read_to_string(path).ok()?;
+    let grep = SupportLang::Cpp.ast_grep(&text);
+    let root = grep.root();
+    if let Some(ty) = cpp_method_return_in_named_translation_unit(&root, class_name, method_name) {
+        visited.insert(key);
+        return Some(ty);
+    }
+    visited.insert(key);
+    if depth <= 1 {
+        return None;
+    }
+    let base = path.parent()?;
+    for inc in cpp_include_paths_from_source(&text) {
+        let p = base.join(&inc);
+        if p.is_file() {
+            if let Some(ty) =
+                cpp_try_header_file_for_method(&p, class_name, method_name, visited, depth - 1)
+            {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+fn cpp_method_return_for_class_in_sources(
+    ctx: &RecvHintContext<'_>,
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    let grep = SupportLang::Cpp.ast_grep(ctx.source);
+    let root = grep.root();
+    if let Some(ty) = cpp_method_return_in_named_translation_unit(&root, class_name, method_name) {
+        return Some(ty);
+    }
+    let base = ctx.file_path.parent()?;
+    let mut visited = HashSet::new();
+    visited.insert(cpp_path_key(ctx.file_path));
+    for inc in cpp_include_paths_from_source(ctx.source) {
+        let p = base.join(&inc);
+        if p.is_file() {
+            if let Some(ty) = cpp_try_header_file_for_method(
+                &p,
+                class_name,
+                method_name,
+                &mut visited,
+                CPP_INCLUDE_MAX_DEPTH,
+            ) {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) -> Option<String> {
+    let kind = node.kind();
+    let k = kind.as_ref();
+    if k == "field_expression" {
+        let arg = node.field("argument")?;
+        let field = node.field("field")?;
+        let field_name = field.text().trim().to_string();
+        let arg_ty =
+            cpp_chain_result_type(&arg, ctx).or_else(|| cpp_hint(&arg, Some(ctx)))?;
+        let class_name = cpp_simplify_type_name(&arg_ty);
+        return cpp_field_type_for_class_in_sources(ctx, class_name.as_str(), field_name.as_str());
+    }
+    if k == "call_expression" {
+        let func = node.field("function")?;
+        if func.kind().as_ref() == "field_expression" {
+            let arg = func.field("argument")?;
+            let field = func.field("field")?;
+            let method_name = field.text().trim().to_string();
+            let arg_ty =
+                cpp_chain_result_type(&arg, ctx).or_else(|| cpp_hint(&arg, Some(ctx)))?;
+            let class_name = cpp_simplify_type_name(&arg_ty);
+            return cpp_method_return_for_class_in_sources(ctx, class_name.as_str(), method_name.as_str());
+        }
+    }
+    None
+}
+
+fn java_simplify_type_name(ty: &str) -> String {
+    let s = ty.trim();
+    let s = s.split('<').next().unwrap_or(s).trim();
+    if let Some(i) = s.rfind('.') {
+        s[i + 1..].trim().to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn java_find_member_type_in_tree<D: Doc>(
+    node: &Node<'_, D>,
+    class_name: &str,
+    member: &str,
+) -> Option<String> {
+    let kind = node.kind();
+    let k = kind.as_ref();
+    if matches!(
+        k,
+        "class_declaration" | "interface_declaration" | "record_declaration"
+    ) {
+        if node.field("name")?.text().trim() == class_name {
+            if let Some(body) = node.field("body") {
+                return java_member_type_in_class_body(&body, member);
+            }
+        }
+    }
+    for c in node.children() {
+        if let Some(t) = java_find_member_type_in_tree(&c, class_name, member) {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn java_member_type_in_class_body<D: Doc>(body: &Node<'_, D>, member: &str) -> Option<String> {
+    for child in body.children() {
+        if child.kind().as_ref() == "field_declaration" {
+            let ty = child.field("type")?;
+            for c in child.children() {
+                if c.kind().as_ref() == "variable_declarator" {
+                    let id = c
+                        .field("name")
+                        .or_else(|| c.children().find(|x| x.kind().as_ref() == "identifier"))?;
+                    if id.text().trim() == member {
+                        return Some(ty.text().trim().to_string());
+                    }
+                }
+            }
+        }
+        if child.kind().as_ref() == "method_declaration" {
+            let name = child.field("name")?;
+            if name.text().trim() != member {
+                continue;
+            }
+            return child.field("type").map(|t| t.text().trim().to_string());
+        }
+    }
+    None
+}
+
+fn java_chain_result_type<D: Doc>(node: &Node<'_, D>) -> Option<String> {
+    let kind = node.kind();
+    let k = kind.as_ref();
+    if k == "field_access" {
+        let obj = node.field("object")?;
+        let field = node.field("field")?;
+        let field_name = field.text().trim().to_string();
+        let obj_ty = java_hint(&obj)?;
+        let cn = java_simplify_type_name(&obj_ty);
+        let mut root = node.clone();
+        while let Some(p) = root.parent() {
+            root = p;
+        }
+        return java_find_member_type_in_tree(&root, cn.as_str(), field_name.as_str());
+    }
+    if k == "method_invocation" {
+        let obj = node.field("object")?;
+        let name_node = node.field("name")?;
+        let name = name_node.text().trim().to_string();
+        let obj_ty = java_hint(&obj)?;
+        let cn = java_simplify_type_name(&obj_ty);
+        let mut root = node.clone();
+        while let Some(p) = root.parent() {
+            root = p;
+        }
+        return java_find_member_type_in_tree(&root, cn.as_str(), name.as_str());
+    }
+    None
+}
+
+fn ts_simplify_type_name(ty: &str) -> String {
+    let s = ty.trim();
+    let s = s.split('<').next().unwrap_or(s).trim();
+    if let Some(i) = s.rfind('.') {
+        s[i + 1..].trim().to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn ts_find_member_type_in_tree<D: Doc>(
+    node: &Node<'_, D>,
+    class_name: &str,
+    member: &str,
+) -> Option<String> {
+    if node.kind().as_ref() == "class_declaration" {
+        if node.field("name")?.text().trim() == class_name {
+            if let Some(body) = node.field("body") {
+                return ts_member_type_in_class_body(&body, member);
+            }
+        }
+    }
+    for c in node.children() {
+        if let Some(t) = ts_find_member_type_in_tree(&c, class_name, member) {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn ts_member_type_in_class_body<D: Doc>(body: &Node<'_, D>, member: &str) -> Option<String> {
+    for child in body.children() {
+        let kind = child.kind();
+        let k = kind.as_ref();
+        if matches!(
+            k,
+            "public_field_definition"
+                | "private_field_definition"
+                | "protected_field_definition"
+                | "field_definition"
+        ) {
+            let name_node = child.field("name")?;
+            if name_node.text().trim() != member {
+                continue;
+            }
+            if let Some(tanno) = child.field("type") {
+                let raw = tanno.text();
+                let t = raw.trim();
+                let t = t.strip_prefix(':').unwrap_or(t).trim();
+                return Some(t.to_string());
+            }
+        }
+        if k == "method_definition" {
+            let name_node = child.field("name")?;
+            if name_node.text().trim() != member {
+                continue;
+            }
+            if let Some(tanno) = child.field("return_type").or_else(|| child.field("type")) {
+                let tt = tanno.text();
+                return Some(tt.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn ts_chain_result_type<D: Doc>(node: &Node<'_, D>) -> Option<String> {
+    let kind = node.kind();
+    let k = kind.as_ref();
+    if k == "member_expression" {
+        let obj = node.field("object")?;
+        let prop = node.field("property")?;
+        let prop_name = prop.text().trim().to_string();
+        let obj_ty = ts_hint(&obj)?;
+        let cn = ts_simplify_type_name(&obj_ty);
+        let mut root = node.clone();
+        while let Some(p) = root.parent() {
+            root = p;
+        }
+        return ts_find_member_type_in_tree(&root, cn.as_str(), prop_name.as_str());
+    }
+    if k == "call_expression" {
+        let func = node.field("function")?;
+        if func.kind().as_ref() == "member_expression" {
+            let obj = func.field("object")?;
+            let prop = func.field("property")?;
+            let method_name = prop.text().trim().to_string();
+            let obj_ty = ts_hint(&obj)?;
+            let cn = ts_simplify_type_name(&obj_ty);
+            let mut root = node.clone();
+            while let Some(p) = root.parent() {
+                root = p;
+            }
+            return ts_find_member_type_in_tree(&root, cn.as_str(), method_name.as_str());
+        }
+    }
+    None
 }
 
 fn rust_strip_receiver_text(s: &str) -> String {
@@ -1084,24 +1518,7 @@ fn cpp_field_from_included_headers<D: Doc>(
     field_name: &str,
 ) -> Option<String> {
     let class_name = cpp_scope_class_name(recv)?;
-    let base = ctx.file_path.parent()?;
-    let mut visited = HashSet::new();
-    visited.insert(cpp_path_key(ctx.file_path));
-    for inc in cpp_include_paths_from_source(ctx.source) {
-        let p = base.join(&inc);
-        if p.is_file() {
-            if let Some(ty) = cpp_try_header_file_for_field(
-                &p,
-                class_name.as_str(),
-                field_name,
-                &mut visited,
-                CPP_INCLUDE_MAX_DEPTH,
-            ) {
-                return Some(ty);
-            }
-        }
-    }
-    None
+    cpp_field_type_for_class_in_sources(ctx, class_name.as_str(), field_name)
 }
 
 fn cpp_hint<D: Doc>(recv: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Option<String> {
@@ -1487,5 +1904,57 @@ void Pattern1_DirectFormatNest4()
             r##"$RECV.Format("LOG: %s", $$$ARGS)"##,
         );
         assert_eq!(hint.as_deref(), Some("CString"));
+    }
+
+    #[test]
+    fn cpp_infer_capture_chain_field_expression_type() {
+        let src = r#"
+struct Inner { int z; };
+struct Foo { Inner inner; };
+void f() {
+  Foo foo{};
+  foo.inner;
+}
+"#;
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let root = grep.root();
+        let m = root
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "foo.inner")
+            .expect("match foo.inner");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+        };
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("Inner"));
+    }
+
+    #[test]
+    fn java_infer_capture_chain_field_access_type() {
+        let src = r#"
+class Inner {
+  int y;
+}
+class Foo {
+  Inner inner;
+  void m() {
+    Foo f = new Foo();
+    f.inner;
+  }
+}
+"#;
+        let grep = SupportLang::Java.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Java).unwrap();
+        let root = grep.root();
+        let m = root
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "f.inner")
+            .expect("match f.inner");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Java, "CHAIN", cap, None);
+        assert_eq!(hint.as_deref(), Some("Inner"));
     }
 }
