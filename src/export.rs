@@ -1,6 +1,16 @@
 use crate::batch::BatchReport;
 use crate::i18n::{Tr, UiLanguage};
-use crate::search::{type_hint_column_keys, FileResult, SearchConditions, SearchMode, SearchStats};
+use crate::search::{
+    type_hint_column_keys, FileResult, MatchItem, SearchConditions, SearchMode, SearchStats, TypeHintCell,
+};
+
+/// 型ヒントセルを Markdown / HTML / Excel 用の文字列に（`·` / `?` はエスケープ不要）
+fn type_hint_cell_export(m: &MatchItem, key: &str) -> String {
+    match m.type_hint_cell(key) {
+        TypeHintCell::Inferred(s) => s,
+        cell => cell.as_export_str().to_string(),
+    }
+}
 
 /// Markdown 区切り行（列数 n）
 fn markdown_table_sep(n: usize) -> String {
@@ -262,8 +272,11 @@ pub fn results_to_markdown(
                     path, m.line_start, m.col_start, matched_cell, program_cell
                 );
                 for key in &col_keys {
-                    let h = m.type_hint_for_metavar(key).unwrap_or("");
-                    row.push_str(&format!(" {} |", md_cell(h)));
+                    let cell = match m.type_hint_cell(key) {
+                        TypeHintCell::Inferred(s) => md_cell(&s),
+                        cell => cell.as_export_str().to_string(),
+                    };
+                    row.push_str(&format!(" {} |", cell));
                 }
                 row.push('\n');
                 out.push_str(&row);
@@ -389,8 +402,8 @@ fn html_conditions_stats_table_fragment(
             out.push_str(&format!("<td><code>{}</code></td>\n", matched_html));
             out.push_str(&format!("<td><code>{}</code></td>\n", program_html));
             for key in &col_keys {
-                let h = m.type_hint_for_metavar(key).unwrap_or("");
-                out.push_str(&format!("<td><code>{}</code></td>\n", escape(h)));
+                let h = type_hint_cell_export(m, key);
+                out.push_str(&format!("<td><code>{}</code></td>\n", escape(&h)));
             }
             out.push_str("</tr>\n");
         }
@@ -493,8 +506,8 @@ pub fn export_xlsx_to_file(
             sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
             sheet.write(row, 4, truncate_for_excel(&program))?;
             for (i, key) in col_keys.iter().enumerate() {
-                let h = m.type_hint_for_metavar(key).unwrap_or("");
-                sheet.write(row, 5 + i as u16, truncate_for_excel(h))?;
+                let h = type_hint_cell_export(m, key);
+                sheet.write(row, 5 + i as u16, truncate_for_excel(&h))?;
             }
             row += 1;
         }
@@ -765,8 +778,11 @@ pub fn batch_report_to_markdown(report: &BatchReport, lang: UiLanguage) -> Strin
                         path, m.line_start, m.col_start, matched_cell, program_cell
                     );
                     for key in &col_keys {
-                        let h = m.type_hint_for_metavar(key).unwrap_or("");
-                        row.push_str(&format!(" {} |", md_cell(h)));
+                        let cell = match m.type_hint_cell(key) {
+                            TypeHintCell::Inferred(s) => md_cell(&s),
+                            cell => cell.as_export_str().to_string(),
+                        };
+                        row.push_str(&format!(" {} |", cell));
                     }
                     row.push('\n');
                     out.push_str(&row);
@@ -914,8 +930,8 @@ pub fn export_batch_xlsx_to_file(
                 sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
                 sheet.write(row, 4, truncate_for_excel(&program))?;
                 for (i, key) in col_keys.iter().enumerate() {
-                    let h = m.type_hint_for_metavar(key).unwrap_or("");
-                    sheet.write(row, 5 + i as u16, truncate_for_excel(h))?;
+                    let h = type_hint_cell_export(m, key);
+                    sheet.write(row, 5 + i as u16, truncate_for_excel(&h))?;
                 }
                 row += 1;
             }

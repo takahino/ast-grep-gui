@@ -4,7 +4,7 @@ use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 use crate::app::{AstGrepApp, TablePreviewState, TableRowRef};
 use crate::ui::scroll_keyboard;
 use crate::highlight::build_layout_job_from_line;
-use crate::search::{type_hint_column_keys, MatchItem};
+use crate::search::{type_hint_column_keys, MatchItem, TypeHintCell};
 
 /// 長いパスは先頭を「...」で省略し末尾のみ表示する（UTF-8 の文字境界で切る）。
 fn ellipsis_path_tail(path: &str, max_chars: usize, tail_chars: usize) -> String {
@@ -268,30 +268,39 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     )
                 };
 
-                let hint_cells: Vec<(String, String)> = column_keys
+                let hint_cells: Vec<(RichText, String)> = column_keys
                     .iter()
                     .map(|key| {
-                        match m
-                            .type_hint_for_metavar(key)
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                        {
-                            None => (
-                                "—".to_string(),
+                        match m.type_hint_cell(key) {
+                            TypeHintCell::Inferred(s) => {
+                                let display = if s.chars().count() > 28 {
+                                    format!("{}…", s.chars().take(25).collect::<String>())
+                                } else {
+                                    s.clone()
+                                };
+                                (
+                                    RichText::new(display)
+                                        .monospace()
+                                        .color(Color32::from_rgb(220, 200, 100)),
+                                    s,
+                                )
+                            }
+                            TypeHintCell::NoSlot => (
+                                RichText::new("·")
+                                    .monospace()
+                                    .color(Color32::from_rgb(130, 135, 150)),
+                                t.table_type_hint_no_slot_tooltip(key),
+                            ),
+                            TypeHintCell::Unknown => (
+                                RichText::new("?")
+                                    .monospace()
+                                    .color(Color32::from_rgb(200, 145, 90)),
                                 if key.ends_with("#arity") {
                                     t.table_type_hint_arity_empty_tooltip().to_string()
                                 } else {
                                     t.table_type_hint_column_empty_tooltip(key)
                                 },
                             ),
-                            Some(s) => {
-                                let display = if s.chars().count() > 28 {
-                                    format!("{}…", s.chars().take(25).collect::<String>())
-                                } else {
-                                    s.to_string()
-                                };
-                                (display, s.to_string())
-                            }
                         }
                     })
                     .collect();
@@ -341,7 +350,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         let mut r_hint_cols: Vec<egui::Response> = Vec::new();
                         for (disp, hov) in &hint_cells {
                             r_hint_cols.push(
-                                label_cell(ui, HINT_COL_W, disp.as_str(), Sense::click())
+                                label_cell(ui, HINT_COL_W, disp.clone(), Sense::click())
                                     .on_hover_text(hov.as_str()),
                             );
                         }

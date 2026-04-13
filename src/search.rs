@@ -116,6 +116,28 @@ impl LineIndex {
     }
 }
 
+/// 型ヒントセル（表・エクスポート）の表示区分。`—` 一種類だと「スロットなし」と「推定失敗」が区別しづらいため分ける。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeHintCell {
+    /// 推定できた型文字列
+    Inferred(String),
+    /// このマッチでは該当キャプチャがない（列は他行の最大に合わせたパディング）
+    NoSlot,
+    /// スロットはあるが型を推定できなかった
+    Unknown,
+}
+
+impl TypeHintCell {
+    /// Markdown / HTML / Excel 向けの短い記号（`·` = スロットなし、`?` = 推定失敗）
+    pub fn as_export_str(&self) -> &str {
+        match self {
+            TypeHintCell::Inferred(s) => s.as_str(),
+            TypeHintCell::NoSlot => "·",
+            TypeHintCell::Unknown => "?",
+        }
+    }
+}
+
 /// 1マッチの情報
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MatchItem {
@@ -139,6 +161,52 @@ impl MatchItem {
     /// パターン内メタ変数名順の型ヒント（欠損は空文字列）
     pub fn type_hint_for_metavar(&self, metavar: &str) -> Option<&str> {
         self.type_hints.get(metavar).map(|s| s.as_str())
+    }
+
+    /// 表・エクスポート用: 列キーごとに「型あり / スロットなし / 推定失敗」を判定する。
+    pub fn type_hint_cell(&self, key: &str) -> TypeHintCell {
+        if key.ends_with("#arity") {
+            let raw = self.type_hint_for_metavar(key).unwrap_or("");
+            if raw.trim().is_empty() {
+                return TypeHintCell::Unknown;
+            }
+            return TypeHintCell::Inferred(raw.trim().to_string());
+        }
+        if let Some((base, slot_idx)) = multi_slot_index(key) {
+            let arity = self.multi_capture_arity(base);
+            if slot_idx >= arity {
+                return TypeHintCell::NoSlot;
+            }
+            let raw = self.type_hint_for_metavar(key).unwrap_or("");
+            if raw.trim().is_empty() {
+                return TypeHintCell::Unknown;
+            }
+            return TypeHintCell::Inferred(raw.trim().to_string());
+        }
+        let raw = self.type_hint_for_metavar(key).unwrap_or("");
+        if raw.trim().is_empty() {
+            TypeHintCell::Unknown
+        } else {
+            TypeHintCell::Inferred(raw.trim().to_string())
+        }
+    }
+
+    fn multi_capture_arity(&self, base: &str) -> usize {
+        let k = format!("{base}#arity");
+        if let Some(s) = self.type_hints.get(&k) {
+            if let Ok(n) = s.parse::<usize>() {
+                return n;
+            }
+        }
+        self.type_hints
+            .keys()
+            .filter_map(|key| {
+                key.strip_prefix(&format!("{base}#"))
+                    .and_then(|rest| rest.parse::<usize>().ok())
+            })
+            .max()
+            .map(|m| m.saturating_add(1))
+            .unwrap_or(0)
     }
     /// マッチ範囲を含む行の全文＋前後コンテキスト（表の「元コード」列・エクスポート用）
     pub fn program_with_context(&self) -> String {
@@ -169,6 +237,16 @@ impl MatchItem {
     pub fn text_with_context(&self) -> String {
         self.program_with_context()
     }
+}
+
+/// `ARGS#0` のような複数ノードスロット列キーを `Some(("ARGS", 0))` に。`ARGS#arity` は `None`。
+fn multi_slot_index(key: &str) -> Option<(&str, usize)> {
+    let (base, rest) = key.rsplit_once('#')?;
+    if rest == "arity" {
+        return None;
+    }
+    let idx = rest.parse::<usize>().ok()?;
+    Some((base, idx))
 }
 
 /// ファイルフィルタ文字列をパースして正規表現のリストを返す
@@ -951,7 +1029,10 @@ fn try_accept_hit(hits: &AtomicUsize, max: usize, limit_reached: &AtomicBool) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{pattern_multi_metavariables, pattern_single_metavariables, FileResult, LineIndex, MatchItem};
+    use super::{
+        pattern_multi_metavariables, pattern_single_metavariables, FileResult, LineIndex, MatchItem,
+        TypeHintCell,
+    };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -1003,6 +1084,30 @@ mod tests {
         }];
         let keys = super::type_hint_column_keys(pattern, &results);
         assert_eq!(keys, vec!["A", "ARGS#arity", "ARGS#0", "ARGS#1"]);
+    }
+
+    #[test]
+    fn type_hint_cell_no_slot_vs_unknown() {
+        let mut m = MatchItem {
+            line_start: 1,
+            col_start: 0,
+            line_end: 1,
+            col_end: 1,
+            matched_text: String::new(),
+            span_lines_text: String::new(),
+            context_before: vec![],
+            context_after: vec![],
+            type_hints: BTreeMap::new(),
+        };
+        m.type_hints.insert("ARGS#arity".to_string(), "2".to_string());
+        m.type_hints.insert("ARGS#0".to_string(), "int".to_string());
+        m.type_hints.insert("ARGS#1".to_string(), String::new());
+        assert_eq!(m.type_hint_cell("ARGS#2"), TypeHintCell::NoSlot);
+        assert_eq!(m.type_hint_cell("ARGS#1"), TypeHintCell::Unknown);
+        assert_eq!(
+            m.type_hint_cell("ARGS#0"),
+            TypeHintCell::Inferred("int".to_string())
+        );
     }
 
     #[test]

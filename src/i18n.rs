@@ -1835,6 +1835,18 @@ impl Tr {
         }
     }
 
+    /// 表: このマッチでは該当スロットがないとき（列は他行の最大キャプチャ数に合わせた空き）のツールチップ
+    pub fn table_type_hint_no_slot_tooltip(self, column_key: &str) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!(
+                "このマッチでは列 `{column_key}` に相当するキャプチャがありません（列幅は他の検索結果の最大に合わせています）"
+            ),
+            UiLanguage::English => format!(
+                "This match has no capture for `{column_key}` (the column exists to align with wider matches elsewhere)"
+            ),
+        }
+    }
+
     /// 表: ダブルクリックで開くコードプレビューウィンドウのタイトル
     pub fn table_preview_window_title(self) -> &'static str {
         match self.0 {
