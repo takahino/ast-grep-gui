@@ -116,6 +116,28 @@ impl LineIndex {
     }
 }
 
+/// 推論失敗セル: ノード種別の表示名と、ソース上の該当断片（`?:` 保存形式は `種別\u{1f}断片`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownHintDetail {
+    pub kind_label: String,
+    pub source_snippet: String,
+}
+
+fn parse_unknown_hint_payload(rest: &str) -> UnknownHintDetail {
+    const SEP: char = '\u{1f}';
+    if let Some(pos) = rest.find(SEP) {
+        UnknownHintDetail {
+            kind_label: rest[..pos].to_string(),
+            source_snippet: rest[pos + SEP.len_utf8()..].to_string(),
+        }
+    } else {
+        UnknownHintDetail {
+            kind_label: rest.to_string(),
+            source_snippet: String::new(),
+        }
+    }
+}
+
 /// 型ヒントセル（表・エクスポート）の表示区分。`—` 一種類だと「スロットなし」と「推定失敗」が区別しづらいため分ける。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeHintCell {
@@ -124,16 +146,23 @@ pub enum TypeHintCell {
     /// このマッチでは該当キャプチャがない（列は他行の最大に合わせたパディング）
     NoSlot,
     /// スロットはあるが型を推定できなかった
-    Unknown,
+    Unknown(Option<UnknownHintDetail>),
 }
 
 impl TypeHintCell {
-    /// Markdown / HTML / Excel 向けの短い記号（`·` = スロットなし、`?` = 推定失敗）
-    pub fn as_export_str(&self) -> &str {
+    /// Markdown / HTML / Excel 用のセル文字列
+    pub fn to_export_string(&self) -> String {
         match self {
-            TypeHintCell::Inferred(s) => s.as_str(),
-            TypeHintCell::NoSlot => "·",
-            TypeHintCell::Unknown => "?",
+            TypeHintCell::Inferred(s) => s.clone(),
+            TypeHintCell::NoSlot => "·".to_string(),
+            TypeHintCell::Unknown(None) => "?".to_string(),
+            TypeHintCell::Unknown(Some(d)) => {
+                if d.source_snippet.is_empty() {
+                    format!("? ({})", d.kind_label)
+                } else {
+                    format!("? ({}) ({})", d.kind_label, d.source_snippet)
+                }
+            }
         }
     }
 }
@@ -164,11 +193,13 @@ impl MatchItem {
     }
 
     /// 表・エクスポート用: 列キーごとに「型あり / スロットなし / 推定失敗」を判定する。
+    ///
+    /// 推定失敗でノード種別が分かる場合は `type_hints` に `?:種別` または `?:種別\u{1f}ソース断片` で保存する。
     pub fn type_hint_cell(&self, key: &str) -> TypeHintCell {
         if key.ends_with("#arity") {
             let raw = self.type_hint_for_metavar(key).unwrap_or("");
             if raw.trim().is_empty() {
-                return TypeHintCell::Unknown;
+                return TypeHintCell::Unknown(None);
             }
             return TypeHintCell::Inferred(raw.trim().to_string());
         }
@@ -177,17 +208,29 @@ impl MatchItem {
             if slot_idx >= arity {
                 return TypeHintCell::NoSlot;
             }
-            let raw = self.type_hint_for_metavar(key).unwrap_or("");
-            if raw.trim().is_empty() {
-                return TypeHintCell::Unknown;
+            let raw = self.type_hint_for_metavar(key).unwrap_or("").trim().to_string();
+            if raw.is_empty() {
+                return TypeHintCell::Unknown(None);
             }
-            return TypeHintCell::Inferred(raw.trim().to_string());
+            if let Some(rest) = raw.strip_prefix("?:") {
+                if !rest.is_empty() {
+                    return TypeHintCell::Unknown(Some(parse_unknown_hint_payload(rest)));
+                }
+                return TypeHintCell::Unknown(None);
+            }
+            return TypeHintCell::Inferred(raw);
         }
-        let raw = self.type_hint_for_metavar(key).unwrap_or("");
-        if raw.trim().is_empty() {
-            TypeHintCell::Unknown
+        let raw = self.type_hint_for_metavar(key).unwrap_or("").trim().to_string();
+        if raw.is_empty() {
+            TypeHintCell::Unknown(None)
+        } else if let Some(rest) = raw.strip_prefix("?:") {
+            if !rest.is_empty() {
+                TypeHintCell::Unknown(Some(parse_unknown_hint_payload(rest)))
+            } else {
+                TypeHintCell::Unknown(None)
+            }
         } else {
-            TypeHintCell::Inferred(raw.trim().to_string())
+            TypeHintCell::Inferred(raw)
         }
     }
 
@@ -560,33 +603,51 @@ pub fn spawn_search(
                                     let mut hints = BTreeMap::new();
                                     for name in &metavar_names {
                                         if let Some(capture) = node.get_env().get_match(name) {
-                                            if let Some(h) = receiver_hint::infer_capture_type(
+                                            let mut h = receiver_hint::infer_capture_type(
                                                 file_lang,
                                                 name.as_str(),
                                                 capture,
                                                 Some(&hint_ctx),
-                                            ) {
-                                                if !h.is_empty() {
-                                                    hints.insert(name.clone(), h);
-                                                }
+                                            )
+                                            .unwrap_or_default();
+                                            if h.is_empty() {
+                                                h = format!(
+                                                    "?:{}",
+                                                    receiver_hint::format_stored_unknown_hint(capture),
+                                                );
                                             }
+                                            hints.insert(name.clone(), h);
                                         }
                                     }
                                     for multi_name in &multi_metavar_names {
-                                        let nodes = node.get_env().get_multiple_matches(multi_name);
+                                        // `$$$A` は引数リストの「子ノード」すべてを取る。tree-sitter ではカンマ `,` が
+                                        // 無名ノードとして挟まるため、素の len は「論理引数 + カンマ」になりうる。
+                                        // 表の arity・スロットは名前付きノードだけに揃える。
+                                        let nodes: Vec<_> = node
+                                            .get_env()
+                                            .get_multiple_matches(multi_name)
+                                            .into_iter()
+                                            .filter(|n| n.is_named())
+                                            .collect();
                                         hints.insert(
                                             format!("{multi_name}#arity"),
                                             nodes.len().to_string(),
                                         );
                                         for (i, cap) in nodes.iter().enumerate() {
                                             let key = format!("{multi_name}#{i}");
-                                            let h = receiver_hint::infer_capture_type(
+                                            let mut h = receiver_hint::infer_capture_type(
                                                 file_lang,
                                                 multi_name.as_str(),
                                                 cap,
                                                 Some(&hint_ctx),
                                             )
                                             .unwrap_or_default();
+                                            if h.is_empty() {
+                                                h = format!(
+                                                    "?:{}",
+                                                    receiver_hint::format_stored_unknown_hint(cap),
+                                                );
+                                            }
                                             hints.insert(key, h);
                                         }
                                     }
@@ -1031,7 +1092,7 @@ fn try_accept_hit(hits: &AtomicUsize, max: usize, limit_reached: &AtomicBool) ->
 mod tests {
     use super::{
         pattern_multi_metavariables, pattern_single_metavariables, FileResult, LineIndex, MatchItem,
-        TypeHintCell,
+        TypeHintCell, UnknownHintDetail,
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1103,10 +1164,66 @@ mod tests {
         m.type_hints.insert("ARGS#0".to_string(), "int".to_string());
         m.type_hints.insert("ARGS#1".to_string(), String::new());
         assert_eq!(m.type_hint_cell("ARGS#2"), TypeHintCell::NoSlot);
-        assert_eq!(m.type_hint_cell("ARGS#1"), TypeHintCell::Unknown);
+        assert_eq!(m.type_hint_cell("ARGS#1"), TypeHintCell::Unknown(None));
         assert_eq!(
             m.type_hint_cell("ARGS#0"),
             TypeHintCell::Inferred("int".to_string())
+        );
+    }
+
+    #[test]
+    fn type_hint_cell_unknown_with_kind_prefix() {
+        let mut m = MatchItem {
+            line_start: 1,
+            col_start: 0,
+            line_end: 1,
+            col_end: 1,
+            matched_text: String::new(),
+            span_lines_text: String::new(),
+            context_before: vec![],
+            context_after: vec![],
+            type_hints: BTreeMap::new(),
+        };
+        m.type_hints.insert("ARGS#arity".to_string(), "2".to_string());
+        m.type_hints
+            .insert("ARGS#0".to_string(), "?:StringLiteral".to_string());
+        assert_eq!(
+            m.type_hint_cell("ARGS#0"),
+            TypeHintCell::Unknown(Some(UnknownHintDetail {
+                kind_label: "StringLiteral".to_string(),
+                source_snippet: String::new(),
+            }))
+        );
+    }
+
+    #[test]
+    fn type_hint_cell_unknown_with_kind_and_snippet() {
+        let mut m = MatchItem {
+            line_start: 1,
+            col_start: 0,
+            line_end: 1,
+            col_end: 1,
+            matched_text: String::new(),
+            span_lines_text: String::new(),
+            context_before: vec![],
+            context_after: vec![],
+            type_hints: BTreeMap::new(),
+        };
+        m.type_hints.insert("ARGS#arity".to_string(), "2".to_string());
+        m.type_hints.insert(
+            "ARGS#0".to_string(),
+            "?:Identifier\u{1f}foo.bar()".to_string(),
+        );
+        assert_eq!(
+            m.type_hint_cell("ARGS#0"),
+            TypeHintCell::Unknown(Some(UnknownHintDetail {
+                kind_label: "Identifier".to_string(),
+                source_snippet: "foo.bar()".to_string(),
+            }))
+        );
+        assert_eq!(
+            m.type_hint_cell("ARGS#0").to_export_string(),
+            "? (Identifier) (foo.bar())"
         );
     }
 

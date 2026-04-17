@@ -138,10 +138,47 @@ struct PersistedAppState {
     /// 新規ジョブ ID（1 から）
     #[serde(default = "default_next_pattern_job_id")]
     next_pattern_job_id: usize,
+    /// 表モードの列幅
+    #[serde(default)]
+    table_column_widths: TableColumnWidths,
 }
 
 fn default_next_pattern_job_id() -> usize {
     1
+}
+
+/// 表モードの列幅（永続化）。リサイズハンドルは列間に別途確保する。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TableColumnWidths {
+    pub file: f32,
+    pub line: f32,
+    pub col: f32,
+    pub matched: f32,
+    pub source: f32,
+    /// 動的な型ヒント列（`$key`）ごとの幅
+    pub hint_cols: Vec<f32>,
+    pub action: f32,
+}
+
+impl Default for TableColumnWidths {
+    fn default() -> Self {
+        Self {
+            file: 240.0,
+            line: 60.0,
+            col: 60.0,
+            matched: 280.0,
+            source: 520.0,
+            hint_cols: Vec::new(),
+            action: 90.0,
+        }
+    }
+}
+
+impl TableColumnWidths {
+    /// ヒント列の本数に合わせて `hint_cols` を伸縮する（新規列は既定幅）。
+    pub fn sync_hint_cols(&mut self, n: usize) {
+        self.hint_cols.resize(n, 130.0);
+    }
 }
 
 impl Default for PersistedAppState {
@@ -166,6 +203,7 @@ impl Default for PersistedAppState {
             incremental_search: false,
             batch_jobs: Vec::new(),
             next_pattern_job_id: 1,
+            table_column_widths: TableColumnWidths::default(),
         }
     }
 }
@@ -286,6 +324,8 @@ pub struct AstGrepApp {
     pub batch_report: Option<BatchReport>,
     /// `batch_jobs` のインデックス: ジョブ編集ウィンドウを開く
     pub batch_edit_list_index: Option<usize>,
+    /// 表モードの列幅（永続化と同期）
+    pub table_column_widths: TableColumnWidths,
 }
 
 impl AstGrepApp {
@@ -357,6 +397,7 @@ impl AstGrepApp {
             batch_runner: None,
             batch_report: None,
             batch_edit_list_index: None,
+            table_column_widths: persisted.table_column_widths,
         }
     }
 
@@ -425,6 +466,7 @@ impl AstGrepApp {
             incremental_search: self.incremental_search,
             batch_jobs: self.batch_jobs.clone(),
             next_pattern_job_id: self.next_pattern_job_id,
+            table_column_widths: self.table_column_widths.clone(),
         }
     }
 

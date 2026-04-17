@@ -4,7 +4,7 @@ use crate::app::{AstGrepApp, CodeViewPaneFocus};
 use crate::ui::scroll_keyboard;
 use crate::file_encoding::read_text_file_as;
 use crate::highlight::build_layout_job;
-use crate::search::{type_hint_column_keys, TypeHintCell};
+use crate::search::type_hint_column_keys;
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let t = app.tr();
@@ -84,10 +84,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                 let lines: Vec<String> = column_keys
                                     .iter()
                                     .map(|key| {
-                                        let v = match m.type_hint_cell(key) {
-                                            TypeHintCell::Inferred(s) => s,
-                                            cell => cell.as_export_str().to_string(),
-                                        };
+                                        let v = m.type_hint_cell(key).to_export_string();
                                         format!("${}: {}", key, v)
                                     })
                                     .collect();

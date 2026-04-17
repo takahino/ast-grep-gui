@@ -6,10 +6,7 @@ use crate::search::{
 
 /// 型ヒントセルを Markdown / HTML / Excel 用の文字列に（`·` / `?` はエスケープ不要）
 fn type_hint_cell_export(m: &MatchItem, key: &str) -> String {
-    match m.type_hint_cell(key) {
-        TypeHintCell::Inferred(s) => s,
-        cell => cell.as_export_str().to_string(),
-    }
+    m.type_hint_cell(key).to_export_string()
 }
 
 /// Markdown 区切り行（列数 n）
@@ -274,7 +271,7 @@ pub fn results_to_markdown(
                 for key in &col_keys {
                     let cell = match m.type_hint_cell(key) {
                         TypeHintCell::Inferred(s) => md_cell(&s),
-                        cell => cell.as_export_str().to_string(),
+                        cell => cell.to_export_string(),
                     };
                     row.push_str(&format!(" {} |", cell));
                 }
@@ -780,7 +777,7 @@ pub fn batch_report_to_markdown(report: &BatchReport, lang: UiLanguage) -> Strin
                     for key in &col_keys {
                         let cell = match m.type_hint_cell(key) {
                             TypeHintCell::Inferred(s) => md_cell(&s),
-                            cell => cell.as_export_str().to_string(),
+                            cell => cell.to_export_string(),
                         };
                         row.push_str(&format!(" {} |", cell));
                     }

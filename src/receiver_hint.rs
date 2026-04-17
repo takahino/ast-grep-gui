@@ -26,6 +26,91 @@ pub fn infer_recv_type<D: Doc>(
     infer_capture_type(lang, "RECV", recv, ctx)
 }
 
+/// tree-sitter のノード種別（`string_literal` など）を `StringLiteral` 形式に整形する（表示用）。
+pub fn humanize_tree_sitter_kind(kind: &str) -> String {
+    kind.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect()
+}
+
+/// 型名としては推定できないが、ノード種別だけは確定しているときの表示ラベル（`string_literal` → `StringLiteral`）。
+fn syntax_kind_literal_hint<D: Doc>(node: &Node<'_, D>) -> Option<String> {
+    let k = node.kind();
+    let k = k.as_ref();
+    if matches!(
+        k,
+        "string_literal"
+            | "char_literal"
+            | "raw_string_literal"
+            | "integer_literal"
+            | "floating_point_literal"
+            | "number_literal"
+            | "decimal_literal"
+            | "hexadecimal_literal"
+            | "binary_literal"
+            | "octal_literal"
+            | "true"
+            | "false"
+            | "null"
+            | "nullptr"
+            | "interpreted_string_literal"
+            | "rune_literal"
+    ) {
+        return Some(humanize_tree_sitter_kind(k));
+    }
+    // C++ など: `argument` が `string_literal` を包む
+    if matches!(k, "argument" | "parenthesized_expression") {
+        for c in node.children() {
+            if let Some(h) = syntax_kind_literal_hint(&c) {
+                return Some(h);
+            }
+        }
+    }
+    None
+}
+
+/// 型推定が空のとき、`?:` 列に入れる表示名（リテラルは内側の種別、それ以外はノード種別を整形）。
+pub fn hint_fallback_label<D: Doc>(node: &Node<'_, D>) -> String {
+    syntax_kind_literal_hint(node)
+        .unwrap_or_else(|| humanize_tree_sitter_kind(node.kind().as_ref()))
+}
+
+/// `type_hints` に保存する `?:` 以降の文字列（`種別\u{1f}ソース断片`）。断片は長さを抑える。
+pub fn format_stored_unknown_hint<D: Doc>(node: &Node<'_, D>) -> String {
+    let kind = hint_fallback_label(node);
+    let snippet = truncate_hint_snippet(&node.text());
+    if snippet.is_empty() {
+        kind
+    } else {
+        format!("{kind}\u{1f}{snippet}")
+    }
+}
+
+const HINT_SNIPPET_MAX_CHARS: usize = 120;
+
+/// 推論失敗時のソース断片（表示・保存用）：区切り文字を除き、空白を圧縮し最大文字数で切る。
+pub fn truncate_hint_snippet(s: &str) -> String {
+    let cleaned: String = s.chars().filter(|c| *c != '\u{1f}' && *c != '\r').collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= HINT_SNIPPET_MAX_CHARS {
+        collapsed
+    } else {
+        format!(
+            "{}…",
+            collapsed
+                .chars()
+                .take(HINT_SNIPPET_MAX_CHARS.saturating_sub(1))
+                .collect::<String>()
+        )
+    }
+}
+
 /// 単一メタ変数に束縛されたノードから型ヒントを返す（ドット/アローチェインは可能な言語で逐次解決）。
 pub fn infer_capture_type<D: Doc>(
     lang: SupportedLanguage,
@@ -36,10 +121,16 @@ pub fn infer_capture_type<D: Doc>(
     if lang == SupportedLanguage::Auto {
         return None;
     }
+    // `$RECV` が `time.Format(...)` のような `call_expression` のときは、左端の `CTime` ではなく `CTime.Format` を優先
+    if lang == SupportedLanguage::Cpp && _capture_name == "RECV" {
+        if let Some(l) = cpp_recv_receiver_method_label(node, ctx) {
+            return Some(l);
+        }
+    }
     if let Some(t) = chain_expression_result_type(lang, node, ctx) {
         return Some(t);
     }
-    match lang {
+    let out = match lang {
         SupportedLanguage::Rust => rust_hint(node),
         SupportedLanguage::Go => go_hint(node),
         SupportedLanguage::Java => java_hint(node),
@@ -51,7 +142,8 @@ pub fn infer_capture_type<D: Doc>(
         SupportedLanguage::Kotlin => kotlin_hint(node),
         SupportedLanguage::Scala => scala_hint(node),
         SupportedLanguage::Auto => None,
-    }
+    };
+    out.or_else(|| syntax_kind_literal_hint(node))
 }
 
 fn chain_expression_result_type<D: Doc>(
@@ -1047,6 +1139,45 @@ fn cpp_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
         .and_then(|n| n.field("name").map(|x| x.text().trim().to_string()))
 }
 
+/// `$RECV` が `call_expression` のとき、`time.Format("%Y")` のような式に対して
+/// `CTime.Format` 形式の表示用ラベルを返す（左端の `time` だけの `CTime` ではなく、
+/// **この呼び出し**のレシーバ型とメソッド名を結合する）。
+fn cpp_recv_receiver_method_label<D: Doc>(node: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Option<String> {
+    if node.kind().as_ref() != "call_expression" {
+        return None;
+    }
+    let func = node.field("function")?;
+    if func.kind().as_ref() != "field_expression" {
+        return None;
+    }
+    let arg = func.field("argument")?;
+    let field = func.field("field")?;
+    let method = field.text().trim().to_string();
+    let class_ty = cpp_type_of_direct_receiver_expr(&arg, ctx)?;
+    let class_name = cpp_simplify_type_name(&class_ty);
+    Some(format!("{class_name}.{method}"))
+}
+
+/// `call_expression` / `field_expression` の **直接の** レシーバ式について型文字列を得る（チェーンは左へ辿る）。
+fn cpp_type_of_direct_receiver_expr<D: Doc>(node: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Option<String> {
+    match node.kind().as_ref() {
+        "identifier" => cpp_hint(node, ctx),
+        "call_expression" => {
+            let func = node.field("function")?;
+            if func.kind().as_ref() != "field_expression" {
+                return cpp_hint(node, ctx);
+            }
+            let inner_arg = func.field("argument")?;
+            cpp_type_of_direct_receiver_expr(&inner_arg, ctx)
+        }
+        "field_expression" => {
+            let a = node.field("argument")?;
+            cpp_type_of_direct_receiver_expr(&a, ctx)
+        }
+        _ => cpp_hint(node, ctx),
+    }
+}
+
 /// メソッドチェーンの2番目以降では `$RECV` が `a.b()` のような `call_expression` になる。
 /// ローカル変数・フィールド・ヘッダ探索は左端のベース式（通常は識別子）に対して行う。
 fn cpp_recv_base_name<D: Doc>(recv: &Node<'_, D>) -> String {
@@ -1882,7 +2013,7 @@ void f() {
             .expect("expected a chain match where $RECV is a call_expression");
         assert_eq!(cpp_recv_base_name(recv_call).as_str(), "time");
         let hint = infer_recv_type(SupportedLanguage::Cpp, recv_call, None);
-        assert_eq!(hint.as_deref(), Some("CTime"));
+        assert_eq!(hint.as_deref(), Some("CTime.Format"));
     }
 
     #[test]
@@ -1956,5 +2087,27 @@ class Foo {
         let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
         let hint = infer_capture_type(SupportedLanguage::Java, "CHAIN", cap, None);
         assert_eq!(hint.as_deref(), Some("Inner"));
+    }
+
+    #[test]
+    fn humanize_string_literal_kind() {
+        assert_eq!(humanize_tree_sitter_kind("string_literal"), "StringLiteral");
+    }
+
+    #[test]
+    fn cpp_infer_capture_string_literal_under_argument() {
+        let src = r#"void f() { x.Format("[%c]", y); }"#;
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.$METHOD($$$ARGS)", SupportLang::Cpp).unwrap();
+        let m = grep.root().find_all(&pat).next().expect("match");
+        let caps: Vec<_> = m
+            .get_env()
+            .get_multiple_matches("ARGS")
+            .into_iter()
+            .filter(|n| n.is_named())
+            .collect();
+        let first = caps.first().expect("first arg");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "ARGS", first, None);
+        assert_eq!(hint.as_deref(), Some("StringLiteral"));
     }
 }
