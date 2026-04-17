@@ -375,6 +375,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .on_hover_text(t.view_table_tooltip());
         ui.selectable_value(&mut app.view_mode, ViewMode::BatchReport, t.view_batch_report())
             .on_hover_text(t.view_batch_report_tooltip());
+        ui.selectable_value(&mut app.view_mode, ViewMode::Summary, t.view_summary())
+            .on_hover_text(t.view_summary_tooltip());
 
         ui.separator();
 

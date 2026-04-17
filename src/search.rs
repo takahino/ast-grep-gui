@@ -234,7 +234,13 @@ impl MatchItem {
         }
     }
 
-    fn multi_capture_arity(&self, base: &str) -> usize {
+    /// 表・サマリー用: 列キーに対する表示文字列（`TypeHintCell::to_export_string` と同じ）
+    pub fn type_hint_display_value(&self, key: &str) -> String {
+        self.type_hint_cell(key).to_export_string()
+    }
+
+    /// `$$$BASE` に対応する実引数個数（`BASE#arity` または `BASE#i` キーから推定）
+    pub fn multi_capture_arity(&self, base: &str) -> usize {
         let k = format!("{base}#arity");
         if let Some(s) = self.type_hints.get(&k) {
             if let Ok(n) = s.parse::<usize>() {
@@ -980,6 +986,304 @@ pub fn pattern_wants_type_hints(pattern: &str) -> bool {
     !pattern_single_metavariables(pattern).is_empty() || !pattern_multi_metavariables(pattern).is_empty()
 }
 
+/// grep 結果を「受信側・メソッド側・引数数・各引数の型」の組み合わせで集計した 1 行
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MatchVariationRow {
+    pub count: usize,
+    pub receiver_display: String,
+    pub method_display: String,
+    pub arity: usize,
+    pub arg_displays: Vec<String>,
+}
+
+/// [`build_match_variation_report`] が使うメタ変数名と集計行
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MatchVariationReport {
+    /// パターン先頭の単一メタ（受信側の型ヒント）
+    pub receiver_metavar: String,
+    /// 2 番目の単一メタ（メソッド側）。無い場合は `None`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method_metavar: Option<String>,
+    /// 最初の `$$$NAME`（`NAME#arity` / `NAME#i`）。単一メタのみの引数のときは `None`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args_multi_metavar: Option<String>,
+    /// `$$$` が無いときの引数用単一メタ（`$RECV.Format($A)` の `A` など）。先頭からの並び
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arg_single_metavars: Vec<String>,
+    pub rows: Vec<MatchVariationRow>,
+}
+
+/// 引数列の解釈（内部用）
+enum ArgsBinding {
+    /// `$RECV.Format()` など
+    None,
+    /// `$$$M` あり
+    Multi(String),
+    /// `$A` や `$A,$B` の単一メタ列
+    Singles(Vec<String>),
+}
+
+fn skip_ascii_ws(pattern: &str, mut i: usize) -> usize {
+    let bytes = pattern.as_bytes();
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// パターン先頭の単一 `$NAME`（`$$$NAME` はスキップ）と、`NAME` 直後のバイト位置。
+fn parse_first_single_metavar(pattern: &str) -> Option<(String, usize)> {
+    let bytes = pattern.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            if i + 2 < bytes.len() && bytes[i + 1] == b'$' && bytes[i + 2] == b'$' {
+                i += 3;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                {
+                    i += 1;
+                }
+                continue;
+            }
+            i += 1;
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if start < i {
+                return Some((pattern[start..i].to_string(), i));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// `open_paren` の `(` に対応する閉じ括弧まで走査し、その間に現れる単一 `$NAME` を出現順で返す（`$$$` は除く）。
+fn parse_balanced_paren_arg_metas(pattern: &str, open_paren: usize) -> Option<Vec<String>> {
+    let bytes = pattern.as_bytes();
+    if open_paren >= bytes.len() || bytes[open_paren] != b'(' {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = open_paren + 1;
+    let mut out = Vec::new();
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            if i + 2 < bytes.len() && bytes[i + 1] == b'$' && bytes[i + 2] == b'$' {
+                i += 3;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                {
+                    i += 1;
+                }
+                continue;
+            }
+            i += 1;
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if start < i {
+                out.push(pattern[start..i].to_string());
+            }
+            continue;
+        }
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(out);
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// `$RECV` の直後からメンバ呼び出しを解釈する（`$$$` 無しのとき）。
+///
+/// - `$RECV($A)` → メソッド列なし、引数は括弧内の単一メタ
+/// - `$RECV.Format($A,$B)` → メソッドはリテラル、引数は括弧内の `$A,$B`
+/// - `$RECV.$METHOD($A)` → メソッドは `$METHOD`、引数は括弧内
+fn parse_summary_call_binding(pattern: &str) -> Option<(Option<String>, ArgsBinding)> {
+    let singles = pattern_single_metavariables(pattern);
+    let (recv_name, recv_end) = parse_first_single_metavar(pattern)?;
+    if recv_name != singles[0] {
+        return None;
+    }
+    let bytes = pattern.as_bytes();
+    let mut p = skip_ascii_ws(pattern, recv_end);
+    if p >= bytes.len() {
+        return None;
+    }
+
+    if bytes[p] == b'(' {
+        let args = parse_balanced_paren_arg_metas(pattern, p)?;
+        return Some((None, ArgsBinding::Singles(args)));
+    }
+
+    if bytes[p] != b'.' {
+        return None;
+    }
+    p += 1;
+    p = skip_ascii_ws(pattern, p);
+    if p >= bytes.len() {
+        return None;
+    }
+
+    let method_metavar = if bytes[p] == b'$' {
+        if p + 2 < bytes.len() && bytes[p + 1] == b'$' && bytes[p + 2] == b'$' {
+            return None;
+        }
+        p += 1;
+        let start = p;
+        while p < bytes.len() && (bytes[p].is_ascii_alphanumeric() || bytes[p] == b'_') {
+            p += 1;
+        }
+        if start == p {
+            return None;
+        }
+        Some(pattern[start..p].to_string())
+    } else {
+        while p < bytes.len() && (bytes[p].is_ascii_alphanumeric() || bytes[p] == b'_') {
+            p += 1;
+        }
+        None
+    };
+
+    p = skip_ascii_ws(pattern, p);
+    if p >= bytes.len() || bytes[p] != b'(' {
+        return None;
+    }
+    let args = parse_balanced_paren_arg_metas(pattern, p)?;
+    Some((method_metavar, ArgsBinding::Singles(args)))
+}
+
+fn parse_summary_args(pattern: &str) -> Option<(Option<String>, ArgsBinding)> {
+    let singles = pattern_single_metavariables(pattern);
+    let multis = pattern_multi_metavariables(pattern);
+    if singles.is_empty() {
+        return None;
+    }
+
+    if !multis.is_empty() {
+        let method = singles.get(1).cloned();
+        return Some((method, ArgsBinding::Multi(multis[0].clone())));
+    }
+
+    if let Some(parsed) = parse_summary_call_binding(pattern) {
+        return Some(parsed);
+    }
+
+    match singles.len() {
+        1 => Some((None, ArgsBinding::None)),
+        2 => Some((None, ArgsBinding::Singles(vec![singles[1].clone()]))),
+        n if n >= 3 => {
+            let method = singles[1].clone();
+            let rest: Vec<String> = singles[2..].to_vec();
+            Some((Some(method), ArgsBinding::Singles(rest)))
+        }
+        _ => None,
+    }
+}
+
+/// 現在のパターンと検索結果から型バリエーションのサマリーを構築する。
+///
+/// 単一メタが先頭に少なくとも 1 つ（受信）必要。引数は次のいずれか:
+/// - 複数ノード `$$$M`（`M#arity` / `M#i`）
+/// - `$$$` が無く単一メタが 2 つ: 受信 + 第 2 が 1 引数（例: `$RECV.Format($A)`）
+/// - 単一メタ 1 つのみ: 引数なし（例: `$RECV.Format()`）
+/// - `$$$` が無く、`.` のあとがリテラル識別子のときはメソッド列なし、括弧内の単一メタがすべて引数（例: `$RECV.Format($A,$B)`）
+/// - フォールバック: 単一メタが 3 つ以上で構造解析できないとき、受信・2 番目・残りをメソッド・引数とみなす（例: `$RECV.$METHOD($A)`）
+pub fn build_match_variation_report(pattern: &str, results: &[FileResult]) -> Option<MatchVariationReport> {
+    let singles = pattern_single_metavariables(pattern);
+    if singles.is_empty() {
+        return None;
+    }
+
+    let receiver_metavar = singles[0].clone();
+    let (method_metavar, args_binding) = parse_summary_args(pattern)?;
+
+    let args_multi_metavar = match &args_binding {
+        ArgsBinding::Multi(name) => Some(name.clone()),
+        _ => None,
+    };
+    let arg_single_metavars = match &args_binding {
+        ArgsBinding::Singles(v) => v.clone(),
+        _ => Vec::new(),
+    };
+
+    let mut counts: BTreeMap<(String, String, usize, Vec<String>), usize> = BTreeMap::new();
+
+    for file in results {
+        for item in &file.matches {
+            let receiver_display = item.type_hint_display_value(&receiver_metavar);
+            let method_display = match &method_metavar {
+                Some(m) => item.type_hint_display_value(m),
+                None => String::new(),
+            };
+            let (arity, arg_displays) = match &args_binding {
+                ArgsBinding::None => (0usize, Vec::new()),
+                ArgsBinding::Multi(name) => {
+                    let arity = item.multi_capture_arity(name);
+                    let mut v = Vec::with_capacity(arity);
+                    for i in 0..arity {
+                        v.push(item.type_hint_display_value(&format!("{name}#{i}")));
+                    }
+                    (arity, v)
+                }
+                ArgsBinding::Singles(names) => {
+                    let arity = names.len();
+                    let v = names
+                        .iter()
+                        .map(|n| item.type_hint_display_value(n.as_str()))
+                        .collect();
+                    (arity, v)
+                }
+            };
+            let key = (receiver_display, method_display, arity, arg_displays);
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+
+    let mut rows: Vec<MatchVariationRow> = counts
+        .into_iter()
+        .map(|((receiver_display, method_display, arity, arg_displays), count)| MatchVariationRow {
+            count,
+            receiver_display,
+            method_display,
+            arity,
+            arg_displays,
+        })
+        .collect();
+
+    rows.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.receiver_display.cmp(&b.receiver_display))
+            .then_with(|| a.method_display.cmp(&b.method_display))
+            .then_with(|| a.arity.cmp(&b.arity))
+            .then_with(|| a.arg_displays.cmp(&b.arg_displays))
+    });
+
+    Some(MatchVariationReport {
+        receiver_metavar,
+        method_metavar,
+        args_multi_metavar,
+        arg_single_metavars,
+        rows,
+    })
+}
+
 /// 後方互換: 旧名（任意 `$NAME` で型ヒントが有効）
 #[allow(dead_code)]
 #[inline]
@@ -1096,6 +1400,15 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    #[test]
+    fn pattern_single_metavariables_recv_format_a() {
+        assert_eq!(
+            pattern_single_metavariables("$RECV.Format($A)"),
+            vec!["RECV".to_string(), "A".to_string()]
+        );
+        assert!(pattern_multi_metavariables("$RECV.Format($A)").is_empty());
+    }
 
     #[test]
     fn pattern_single_metavariables_lists_names_skips_multi() {
@@ -1248,5 +1561,151 @@ mod tests {
         assert_eq!(index.byte_offset_to_line_col(source, 0), (0, 0));
         assert_eq!(index.byte_offset_to_line_col(source, 1), (0, 1));
         assert_eq!(index.byte_offset_to_line_col(source, 2), (1, 0));
+    }
+
+    fn file_result_one(matches: Vec<MatchItem>) -> FileResult {
+        FileResult {
+            path: PathBuf::from("x"),
+            relative_path: "x".to_string(),
+            matches,
+            source_language: crate::lang::SupportedLanguage::Rust,
+            text_encoding: crate::file_encoding::FileEncoding::Utf8,
+        }
+    }
+
+    fn match_with_hints(hints: BTreeMap<String, String>) -> MatchItem {
+        MatchItem {
+            line_start: 1,
+            col_start: 0,
+            line_end: 1,
+            col_end: 1,
+            matched_text: String::new(),
+            span_lines_text: String::new(),
+            context_before: vec![],
+            context_after: vec![],
+            type_hints: hints,
+        }
+    }
+
+    #[test]
+    fn match_variation_report_none_when_pattern_ineligible() {
+        assert!(super::build_match_variation_report("$$$ONLY", &[]).is_none());
+        assert!(super::build_match_variation_report("", &[]).is_none());
+    }
+
+    #[test]
+    fn match_variation_report_recv_only_pattern() {
+        let pattern = "$RECV.Format($$$A)";
+        assert_eq!(super::pattern_single_metavariables(pattern), vec!["RECV".to_string()]);
+        assert_eq!(super::pattern_multi_metavariables(pattern), vec!["A".to_string()]);
+        let mut hints = BTreeMap::new();
+        hints.insert("A#arity".to_string(), "1".to_string());
+        hints.insert("RECV".to_string(), "Time".to_string());
+        hints.insert("A#0".to_string(), "string".to_string());
+        let results = vec![file_result_one(vec![match_with_hints(hints)])];
+        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        assert_eq!(report.receiver_metavar, "RECV");
+        assert_eq!(report.method_metavar, None);
+        assert_eq!(report.args_multi_metavar.as_deref(), Some("A"));
+        assert!(report.arg_single_metavars.is_empty());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].receiver_display, "Time");
+        assert!(report.rows[0].method_display.is_empty());
+    }
+
+    #[test]
+    fn match_variation_report_aggregates_and_sorts_by_count() {
+        let pattern = "$RECV.$METHOD($$$ARGS)";
+        let mut sig_a = BTreeMap::new();
+        sig_a.insert("ARGS#arity".to_string(), "2".to_string());
+        sig_a.insert("RECV".to_string(), "R1".to_string());
+        sig_a.insert("METHOD".to_string(), "m".to_string());
+        sig_a.insert("ARGS#0".to_string(), "i32".to_string());
+        sig_a.insert("ARGS#1".to_string(), "str".to_string());
+
+        let mut sig_b = BTreeMap::new();
+        sig_b.insert("ARGS#arity".to_string(), "1".to_string());
+        sig_b.insert("RECV".to_string(), "R2".to_string());
+        sig_b.insert("METHOD".to_string(), "m".to_string());
+        sig_b.insert("ARGS#0".to_string(), "bool".to_string());
+
+        let results = vec![file_result_one(vec![
+            match_with_hints(sig_a.clone()),
+            match_with_hints(sig_a),
+        ]),
+        file_result_one(vec![match_with_hints(sig_b)])];
+
+        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        assert_eq!(report.receiver_metavar, "RECV");
+        assert_eq!(report.method_metavar.as_deref(), Some("METHOD"));
+        assert_eq!(report.args_multi_metavar.as_deref(), Some("ARGS"));
+        assert!(report.arg_single_metavars.is_empty());
+        assert_eq!(report.rows.len(), 2);
+        assert_eq!(report.rows[0].count, 2);
+        assert_eq!(report.rows[0].receiver_display, "R1");
+        assert_eq!(report.rows[1].count, 1);
+        assert_eq!(report.rows[1].receiver_display, "R2");
+    }
+
+    #[test]
+    fn match_variation_report_single_arg_metavar_format() {
+        let pattern = "$RECV.Format($A)";
+        let mut hints = BTreeMap::new();
+        hints.insert("RECV".to_string(), "Time".to_string());
+        hints.insert("A".to_string(), "string".to_string());
+        let results = vec![file_result_one(vec![match_with_hints(hints)])];
+        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        assert_eq!(report.receiver_metavar, "RECV");
+        assert_eq!(report.method_metavar, None);
+        assert_eq!(report.args_multi_metavar, None);
+        assert_eq!(report.arg_single_metavars, vec!["A".to_string()]);
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].arity, 1);
+        assert_eq!(report.rows[0].arg_displays, vec!["string".to_string()]);
+    }
+
+    #[test]
+    fn match_variation_report_literal_method_two_arg_metas() {
+        let pattern = "$RECV.Format($A,$B)";
+        let mut hints = BTreeMap::new();
+        hints.insert("RECV".to_string(), "CString".to_string());
+        hints.insert("A".to_string(), "int".to_string());
+        hints.insert("B".to_string(), "double".to_string());
+        let results = vec![file_result_one(vec![match_with_hints(hints)])];
+        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        assert_eq!(report.receiver_metavar, "RECV");
+        assert_eq!(report.method_metavar, None);
+        assert_eq!(report.arg_single_metavars, vec!["A", "B"]);
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].arity, 2);
+        assert_eq!(report.rows[0].arg_displays, vec!["int", "double"]);
+    }
+
+    #[test]
+    fn match_variation_report_call_two_args_no_member() {
+        let pattern = "$RECV($A,$B)";
+        let mut hints = BTreeMap::new();
+        hints.insert("RECV".to_string(), "Fn".to_string());
+        hints.insert("A".to_string(), "u8".to_string());
+        hints.insert("B".to_string(), "u16".to_string());
+        let results = vec![file_result_one(vec![match_with_hints(hints)])];
+        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        assert_eq!(report.method_metavar, None);
+        assert_eq!(report.arg_single_metavars, vec!["A", "B"]);
+        assert_eq!(report.rows[0].arity, 2);
+    }
+
+    #[test]
+    fn match_variation_report_no_args_empty_parens() {
+        let pattern = "$RECV.Format()";
+        let mut hints = BTreeMap::new();
+        hints.insert("RECV".to_string(), "Time".to_string());
+        let results = vec![file_result_one(vec![match_with_hints(hints)])];
+        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        assert_eq!(report.args_multi_metavar, None);
+        assert!(report.arg_single_metavars.is_empty());
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].arity, 0);
+        assert!(report.rows[0].arg_displays.is_empty());
     }
 }

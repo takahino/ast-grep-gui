@@ -1,11 +1,11 @@
 use egui::Ui;
 
-use crate::app::{AstGrepApp, RewritePhase, SearchState};
+use crate::app::{AstGrepApp, RewritePhase, SearchState, ViewMode};
 use crate::export::{
     batch_report_to_text, copy_to_clipboard, export_batch_html_to_file, export_batch_json_to_file,
     export_batch_markdown_to_file, export_batch_text_to_file, export_batch_xlsx_to_file,
     export_html_to_file, export_json_to_file, export_markdown_to_file, export_text_to_file,
-    export_xlsx_to_file, results_to_text_for_mode,
+    export_xlsx_to_file, results_to_text_for_mode, ResultsExportLayout,
 };
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
@@ -76,6 +76,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let has_results = !app.results.is_empty();
             let has_batch_report = app.batch_report.is_some();
+            let export_layout = if app.view_mode == ViewMode::Summary {
+                ResultsExportLayout::MatchVariationSummary
+            } else {
+                ResultsExportLayout::FullTable
+            };
 
             // ─ バッチレポートのエクスポート
             if has_batch_report {
@@ -196,6 +201,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         &app.stats,
                         &app.search_conditions_for_export(),
                         ui_lang,
+                        export_layout,
                     ) {
                         eprintln!("{} {e}", t.err_export_excel());
                     }
@@ -219,6 +225,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         &app.stats,
                         &app.search_conditions_for_export(),
                         ui_lang,
+                        export_layout,
                     ) {
                         eprintln!("{} {e}", t.err_export_html());
                     }
@@ -242,6 +249,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         &app.stats,
                         &app.search_conditions_for_export(),
                         ui_lang,
+                        export_layout,
                     ) {
                         eprintln!("{} {e}", t.err_export_md());
                     }
@@ -264,6 +272,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         &app.results,
                         &app.stats,
                         &app.search_conditions_for_export(),
+                        export_layout,
                     ) {
                         eprintln!("{} {e}", t.err_export_json());
                     }
@@ -288,6 +297,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         &app.search_conditions_for_export(),
                         app.search_mode,
                         ui_lang,
+                        export_layout,
                     ) {
                         eprintln!("{} {e}", t.err_export_txt());
                     }
@@ -308,6 +318,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     &app.search_conditions_for_export(),
                     app.search_mode,
                     ui_lang,
+                    export_layout,
                 );
                 if let Err(e) = copy_to_clipboard(&text) {
                     eprintln!("{} {e}", t.err_clipboard());

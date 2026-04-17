@@ -130,6 +130,14 @@ pub fn infer_capture_type<D: Doc>(
     if let Some(t) = chain_expression_result_type(lang, node, ctx) {
         return Some(t);
     }
+    // `$A` / `$B` / `$$$` スロットでも `time.Format(...)` を `CTime`（レシーバ変数の型）だけにしない。
+    // `cpp_hint` は `call_expression` を左端識別子に潰すため、戻り型がソースから取れなかった
+    // メソッド呼び出しは `CTime.Format` のように表示する（`$RECV` は上で既に同様に処理）。
+    if lang == SupportedLanguage::Cpp {
+        if let Some(l) = cpp_recv_receiver_method_label(node, ctx) {
+            return Some(l);
+        }
+    }
     let out = match lang {
         SupportedLanguage::Rust => rust_hint(node),
         SupportedLanguage::Go => go_hint(node),
@@ -2109,5 +2117,62 @@ class Foo {
         let first = caps.first().expect("first arg");
         let hint = infer_capture_type(SupportedLanguage::Cpp, "ARGS", first, None);
         assert_eq!(hint.as_deref(), Some("StringLiteral"));
+    }
+
+    #[test]
+    fn cpp_infer_capture_second_arg_nested_format_shows_class_dot_method_not_receiver_type() {
+        let src = r#"
+void f() {
+  CString str;
+  CTime time(2024, 3, 15, 10, 30, 0);
+  str.Format("[%s]", time.Format("%Y/%m/%d"));
+}
+"#;
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.Format($A, $B)", SupportLang::Cpp).unwrap();
+        let root = grep.root();
+        let m = root.find_all(&pat).next().expect("match");
+        let b = m.get_env().get_match("B").expect("B");
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+        };
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "B", b, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CTime.Format"));
+    }
+
+    #[test]
+    fn cpp_infer_capture_multi_arg_nested_format_shows_class_dot_method() {
+        let src = r#"
+void f() {
+  CString tmp;
+  CTime time(2024, 3, 15, 10, 30, 0);
+  CTime dt(2024, 3, 15, 10, 30, 0);
+  tmp.Format("%s,%s", time.Format("%Y/%m/%d"), dt.Format("%H:%M:%S"));
+}
+"#;
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.Format($$$A)", SupportLang::Cpp).unwrap();
+        let root = grep.root();
+        let m = root.find_all(&pat).next().expect("match");
+        let caps: Vec<_> = m
+            .get_env()
+            .get_multiple_matches("A")
+            .into_iter()
+            .filter(|n| n.is_named())
+            .collect();
+        assert!(
+            caps.len() >= 3,
+            "expected format + 2 nested Format calls, got {}",
+            caps.len()
+        );
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+        };
+        let hint1 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[1], Some(&ctx));
+        let hint2 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[2], Some(&ctx));
+        assert_eq!(hint1.as_deref(), Some("CTime.Format"));
+        assert_eq!(hint2.as_deref(), Some("CTime.Format"));
     }
 }

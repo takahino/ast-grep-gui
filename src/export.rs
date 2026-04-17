@@ -1,8 +1,17 @@
 use crate::batch::BatchReport;
 use crate::i18n::{Tr, UiLanguage};
 use crate::search::{
-    type_hint_column_keys, FileResult, MatchItem, SearchConditions, SearchMode, SearchStats, TypeHintCell,
+    build_match_variation_report, type_hint_column_keys, FileResult, MatchItem, MatchVariationReport,
+    SearchConditions, SearchMode, SearchStats, TypeHintCell,
 };
+
+/// ステータスバーからの検索結果エクスポート形式（表の全行／型サマリーの集計表）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResultsExportLayout {
+    #[default]
+    FullTable,
+    MatchVariationSummary,
+}
 
 /// 型ヒントセルを Markdown / HTML / Excel 用の文字列に（`·` / `?` はエスケープ不要）
 fn type_hint_cell_export(m: &MatchItem, key: &str) -> String {
@@ -218,8 +227,195 @@ pub fn results_to_text_for_mode(
     cond: &SearchConditions,
     _search_mode: SearchMode,
     lang: UiLanguage,
+    layout: ResultsExportLayout,
 ) -> String {
-    results_to_text(results, stats, cond, lang)
+    match layout {
+        ResultsExportLayout::FullTable => results_to_text(results, stats, cond, lang),
+        ResultsExportLayout::MatchVariationSummary => {
+            summary_variation_to_plain_text(results, stats, cond, lang)
+        }
+    }
+}
+
+fn md_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace('\n', "<br>")
+}
+
+fn summary_variation_to_plain_text(
+    results: &[FileResult],
+    stats: &SearchStats,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> String {
+    let t = Tr(lang);
+    let mut out = String::new();
+    out.push_str("# ");
+    out.push_str(t.summary_title());
+    out.push('\n');
+    out.push_str(&format_search_conditions_plain(t, cond, lang));
+    out.push_str(&t.export_text_total(
+        stats.total_matches,
+        stats.total_files,
+        stats.elapsed_ms,
+        stats.hit_limit_reached,
+    ));
+    out.push('\n');
+    match build_match_variation_report(&cond.pattern, results) {
+        None => {
+            out.push_str(t.summary_pattern_ineligible());
+            out.push('\n');
+        }
+        Some(report) => {
+            out.push_str(&t.summary_keys_explanation(
+                &report.receiver_metavar,
+                report.method_metavar.as_deref(),
+                report.args_multi_metavar.as_deref(),
+                &report.arg_single_metavars,
+            ));
+            out.push_str("\n\n");
+            if report.rows.is_empty() {
+                out.push_str(t.summary_no_match_rows());
+                out.push('\n');
+            } else {
+                let has_method = report.method_metavar.is_some();
+                let max_arg = report.rows.iter().map(|r| r.arity).max().unwrap_or(0);
+                if has_method {
+                    out.push_str(&format!(
+                        "{} | {} | {} | {}",
+                        t.summary_col_count(),
+                        t.summary_col_receiver(),
+                        t.summary_col_method(),
+                        t.summary_col_arity()
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{} | {} | {}",
+                        t.summary_col_count(),
+                        t.summary_col_receiver(),
+                        t.summary_col_arity()
+                    ));
+                }
+                for i in 0..max_arg {
+                    out.push_str(" | ");
+                    out.push_str(&t.summary_col_arg(i));
+                }
+                out.push('\n');
+                for row in &report.rows {
+                    if has_method {
+                        out.push_str(&format!(
+                            "{} | {} | {} | {}",
+                            row.count, row.receiver_display, row.method_display, row.arity
+                        ));
+                    } else {
+                        out.push_str(&format!("{} | {} | {}", row.count, row.receiver_display, row.arity));
+                    }
+                    for i in 0..max_arg {
+                        out.push_str(" | ");
+                        let cell = if i < row.arity {
+                            row.arg_displays[i].as_str()
+                        } else {
+                            ""
+                        };
+                        out.push_str(cell);
+                    }
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn summary_variation_to_markdown(
+    results: &[FileResult],
+    stats: &SearchStats,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> String {
+    let t = Tr(lang);
+    let mut out = String::new();
+    out.push_str("# ");
+    out.push_str(t.summary_title());
+    out.push('\n');
+    out.push_str(&format_search_conditions_markdown(t, cond, lang));
+    out.push_str(&t.export_md_stats(
+        stats.total_matches,
+        stats.total_files,
+        stats.elapsed_ms,
+        stats.hit_limit_reached,
+    ));
+    match build_match_variation_report(&cond.pattern, results) {
+        None => {
+            out.push_str(t.summary_pattern_ineligible());
+            out.push('\n');
+        }
+        Some(report) => {
+            out.push_str("## ");
+            out.push_str(&t.summary_keys_explanation(
+                &report.receiver_metavar,
+                report.method_metavar.as_deref(),
+                report.args_multi_metavar.as_deref(),
+                &report.arg_single_metavars,
+            ));
+            out.push_str("\n\n");
+            if report.rows.is_empty() {
+                out.push_str(t.summary_no_match_rows());
+                out.push('\n');
+            } else {
+                out.push_str(&summary_report_to_markdown_table(&report, t));
+            }
+        }
+    }
+    out
+}
+
+fn summary_report_to_markdown_table(report: &MatchVariationReport, t: Tr) -> String {
+    let has_method = report.method_metavar.is_some();
+    let max_arg = report.rows.iter().map(|r| r.arity).max().unwrap_or(0);
+    let ncols = if has_method { 4 + max_arg } else { 3 + max_arg };
+    let mut header = String::from("| ");
+    header.push_str(&md_cell(t.summary_col_count()));
+    header.push_str(" | ");
+    header.push_str(&md_cell(t.summary_col_receiver()));
+    header.push_str(" | ");
+    if has_method {
+        header.push_str(&md_cell(t.summary_col_method()));
+        header.push_str(" | ");
+    }
+    header.push_str(&md_cell(t.summary_col_arity()));
+    header.push_str(" |");
+    for i in 0..max_arg {
+        header.push_str(" ");
+        header.push_str(&md_cell(&t.summary_col_arg(i)));
+        header.push_str(" |");
+    }
+    header.push('\n');
+    let mut body = String::new();
+    for row in &report.rows {
+        body.push_str("| ");
+        body.push_str(&md_cell(&row.count.to_string()));
+        body.push_str(" | ");
+        body.push_str(&md_cell(&row.receiver_display));
+        body.push_str(" | ");
+        if has_method {
+            body.push_str(&md_cell(&row.method_display));
+            body.push_str(" | ");
+        }
+        body.push_str(&md_cell(&row.arity.to_string()));
+        body.push_str(" |");
+        for i in 0..max_arg {
+            body.push_str(" ");
+            let cell = if i < row.arity {
+                md_cell(&row.arg_displays[i])
+            } else {
+                String::new()
+            };
+            body.push_str(&cell);
+            body.push_str(" |");
+        }
+        body.push('\n');
+    }
+    format!("{}{}{}", header, markdown_table_sep(ncols), body)
 }
 
 // ─── Markdown テーブル ────────────────────────────────────────────────────
@@ -230,7 +426,11 @@ pub fn results_to_markdown(
     stats: &SearchStats,
     cond: &SearchConditions,
     lang: UiLanguage,
+    layout: ResultsExportLayout,
 ) -> String {
+    if layout == ResultsExportLayout::MatchVariationSummary {
+        return summary_variation_to_markdown(results, stats, cond, lang);
+    }
     let t = Tr(lang);
     let mut out = String::new();
     out.push_str("# ");
@@ -286,9 +486,8 @@ pub fn results_to_markdown(
 
 // ─── HTML テーブル ────────────────────────────────────────────────────────
 
-/// 条件ブロック＋統計＋結果テーブル（`<body>` 内フラグメント）
-fn html_conditions_stats_table_fragment(
-    results: &[FileResult],
+/// 条件 DL ＋統計（結果テーブルより前の共通部）
+fn html_conditions_and_stats_fragment(
     stats: &SearchStats,
     cond: &SearchConditions,
     lang: UiLanguage,
@@ -367,6 +566,112 @@ fn html_conditions_stats_table_fragment(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
+    out
+}
+
+fn html_summary_variation_fragment(
+    results: &[FileResult],
+    stats: &SearchStats,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> String {
+    let t = Tr(lang);
+    let escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+
+    let mut out = html_conditions_and_stats_fragment(stats, cond, lang);
+    out.push_str("<h2>");
+    out.push_str(t.summary_title());
+    out.push_str("</h2>\n");
+
+    match build_match_variation_report(&cond.pattern, results) {
+        None => {
+            out.push_str("<p>");
+            out.push_str(t.summary_pattern_ineligible());
+            out.push_str("</p>\n");
+        }
+        Some(report) => {
+            out.push_str("<p><strong>");
+            out.push_str(&escape(&t.summary_keys_explanation(
+                &report.receiver_metavar,
+                report.method_metavar.as_deref(),
+                report.args_multi_metavar.as_deref(),
+                &report.arg_single_metavars,
+            )));
+            out.push_str("</strong></p>\n");
+
+            if report.rows.is_empty() {
+                out.push_str("<p>");
+                out.push_str(t.summary_no_match_rows());
+                out.push_str("</p>\n");
+            } else {
+                let has_method = report.method_metavar.is_some();
+                let max_arg = report.rows.iter().map(|r| r.arity).max().unwrap_or(0);
+                out.push_str("<table>\n<thead>\n<tr>\n");
+                out.push_str("<th>");
+                out.push_str(t.summary_col_count());
+                out.push_str("</th><th>");
+                out.push_str(t.summary_col_receiver());
+                out.push_str("</th>");
+                if has_method {
+                    out.push_str("<th>");
+                    out.push_str(t.summary_col_method());
+                    out.push_str("</th>");
+                }
+                out.push_str("<th>");
+                out.push_str(t.summary_col_arity());
+                out.push_str("</th>");
+                for i in 0..max_arg {
+                    out.push_str("<th>");
+                    out.push_str(&escape(&t.summary_col_arg(i)));
+                    out.push_str("</th>");
+                }
+                out.push_str("\n</tr>\n</thead>\n<tbody>\n");
+                for row in &report.rows {
+                    out.push_str("<tr>\n");
+                    out.push_str(&format!("<td>{}</td>\n", row.count));
+                    out.push_str(&format!("<td><code>{}</code></td>\n", escape(&row.receiver_display)));
+                    if has_method {
+                        out.push_str(&format!("<td><code>{}</code></td>\n", escape(&row.method_display)));
+                    }
+                    out.push_str(&format!("<td>{}</td>\n", row.arity));
+                    for i in 0..max_arg {
+                        let cell = if i < row.arity {
+                            escape(&row.arg_displays[i])
+                        } else {
+                            String::new()
+                        };
+                        out.push_str(&format!("<td><code>{}</code></td>\n", cell));
+                    }
+                    out.push_str("</tr>\n");
+                }
+                out.push_str("</tbody>\n</table>\n");
+            }
+        }
+    }
+    out
+}
+
+/// 条件ブロック＋統計＋結果テーブル（`<body>` 内フラグメント）
+fn html_conditions_stats_table_fragment(
+    results: &[FileResult],
+    stats: &SearchStats,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> String {
+    let t = Tr(lang);
+    let escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+
+    let mut out = html_conditions_and_stats_fragment(stats, cond, lang);
     let col_keys = type_hint_column_keys(&cond.pattern, results);
     out.push_str("<table>\n<thead>\n<tr>\n");
     out.push_str("<th>");
@@ -416,6 +721,7 @@ pub fn results_to_html(
     stats: &SearchStats,
     cond: &SearchConditions,
     lang: UiLanguage,
+    layout: ResultsExportLayout,
 ) -> String {
     let t = Tr(lang);
     let mut out = String::new();
@@ -443,74 +749,28 @@ pub fn results_to_html(
     out.push_str("<h1>");
     out.push_str(t.export_html_h1());
     out.push_str("</h1>\n");
-    out.push_str(&html_conditions_stats_table_fragment(results, stats, cond, lang));
+    match layout {
+        ResultsExportLayout::FullTable => {
+            out.push_str(&html_conditions_stats_table_fragment(results, stats, cond, lang));
+        }
+        ResultsExportLayout::MatchVariationSummary => {
+            out.push_str(&html_summary_variation_fragment(results, stats, cond, lang));
+        }
+    }
     out.push_str("</body>\n</html>\n");
     out
 }
 
 // ─── Excel (xlsx) ─────────────────────────────────────────────────────────
 
-/// 検索結果を Excel ファイル (.xlsx) として書き出す
-///
-/// セル1件の文字数が xlsx 仕様上限 32,767 文字を超えないよう切り詰める。
-pub fn export_xlsx_to_file(
-    path: &std::path::Path,
-    results: &[FileResult],
+fn write_xlsx_stats_sheet(
+    workbook: &mut rust_xlsxwriter::Workbook,
     stats: &SearchStats,
     cond: &SearchConditions,
     lang: UiLanguage,
+    t: Tr,
 ) -> anyhow::Result<()> {
-    use rust_xlsxwriter::{Format, Workbook};
-
-    let t = Tr(lang);
-    let mut workbook = Workbook::new();
-    let col_keys = type_hint_column_keys(&cond.pattern, results);
-
-    // ─ 結果シート ─
-    let sheet = workbook.add_worksheet();
-    sheet.set_name(t.export_xlsx_sheet_results())?;
-
-    // ヘッダー行のフォーマット
-    let header_fmt = Format::new().set_bold().set_background_color(0x333333u32).set_font_color(0xFFFFFFu32);
-
-    sheet.write_with_format(0, 0, t.export_xlsx_col_file(), &header_fmt)?;
-    sheet.write_with_format(0, 1, t.export_xlsx_col_line(), &header_fmt)?;
-    sheet.write_with_format(0, 2, t.export_xlsx_col_col(), &header_fmt)?;
-    sheet.write_with_format(0, 3, t.export_xlsx_col_match(), &header_fmt)?;
-    sheet.write_with_format(0, 4, t.export_xlsx_col_source_context(), &header_fmt)?;
-    for (i, key) in col_keys.iter().enumerate() {
-        let col = 5 + i as u16;
-        sheet.write_with_format(0, col, format!("${}", key), &header_fmt)?;
-    }
-
-    // 列幅の設定
-    sheet.set_column_width(0, 50)?;
-    sheet.set_column_width(1, 8)?;
-    sheet.set_column_width(2, 8)?;
-    sheet.set_column_width(3, 40)?;
-    sheet.set_column_width(4, 80)?;
-    for i in 0..col_keys.len() {
-        sheet.set_column_width(5 + i as u16, 28)?;
-    }
-
-    let mut row = 1u32;
-    for file in results {
-        for m in &file.matches {
-            let program = m.program_with_context();
-            sheet.write(row, 0, truncate_for_excel(&file.relative_path))?;
-            sheet.write(row, 1, m.line_start as u32)?;
-            sheet.write(row, 2, m.col_start as u32)?;
-            sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
-            sheet.write(row, 4, truncate_for_excel(&program))?;
-            for (i, key) in col_keys.iter().enumerate() {
-                let h = type_hint_cell_export(m, key);
-                sheet.write(row, 5 + i as u16, truncate_for_excel(&h))?;
-            }
-            row += 1;
-        }
-    }
-
-    // ─ 統計・検索条件シート ─
+    use rust_xlsxwriter::Format;
     let stats_sheet = workbook.add_worksheet();
     stats_sheet.set_name(t.export_xlsx_sheet_stats())?;
     let sub_fmt = Format::new().set_bold();
@@ -549,7 +809,155 @@ pub fn export_xlsx_to_file(
     stats_sheet.write(15, 1, truncate_for_excel(&plain_text_options_export_value(t, cond)))?;
     stats_sheet.set_column_width(0, 28)?;
     stats_sheet.set_column_width(1, 72)?;
+    Ok(())
+}
 
+/// 検索結果を Excel ファイル (.xlsx) として書き出す
+///
+/// セル1件の文字数が xlsx 仕様上限 32,767 文字を超えないよう切り詰める。
+pub fn export_xlsx_to_file(
+    path: &std::path::Path,
+    results: &[FileResult],
+    stats: &SearchStats,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+    layout: ResultsExportLayout,
+) -> anyhow::Result<()> {
+    use rust_xlsxwriter::{Format, Workbook};
+
+    let t = Tr(lang);
+    let mut workbook = Workbook::new();
+
+    match layout {
+        ResultsExportLayout::FullTable => {
+            let col_keys = type_hint_column_keys(&cond.pattern, results);
+
+            let sheet = workbook.add_worksheet();
+            sheet.set_name(t.export_xlsx_sheet_results())?;
+
+            let header_fmt =
+                Format::new().set_bold().set_background_color(0x333333u32).set_font_color(0xFFFFFFu32);
+
+            sheet.write_with_format(0, 0, t.export_xlsx_col_file(), &header_fmt)?;
+            sheet.write_with_format(0, 1, t.export_xlsx_col_line(), &header_fmt)?;
+            sheet.write_with_format(0, 2, t.export_xlsx_col_col(), &header_fmt)?;
+            sheet.write_with_format(0, 3, t.export_xlsx_col_match(), &header_fmt)?;
+            sheet.write_with_format(0, 4, t.export_xlsx_col_source_context(), &header_fmt)?;
+            for (i, key) in col_keys.iter().enumerate() {
+                let col = 5 + i as u16;
+                sheet.write_with_format(0, col, format!("${}", key), &header_fmt)?;
+            }
+
+            sheet.set_column_width(0, 50)?;
+            sheet.set_column_width(1, 8)?;
+            sheet.set_column_width(2, 8)?;
+            sheet.set_column_width(3, 40)?;
+            sheet.set_column_width(4, 80)?;
+            for i in 0..col_keys.len() {
+                sheet.set_column_width(5 + i as u16, 28)?;
+            }
+
+            let mut row = 1u32;
+            for file in results {
+                for m in &file.matches {
+                    let program = m.program_with_context();
+                    sheet.write(row, 0, truncate_for_excel(&file.relative_path))?;
+                    sheet.write(row, 1, m.line_start as u32)?;
+                    sheet.write(row, 2, m.col_start as u32)?;
+                    sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
+                    sheet.write(row, 4, truncate_for_excel(&program))?;
+                    for (i, key) in col_keys.iter().enumerate() {
+                        let h = type_hint_cell_export(m, key);
+                        sheet.write(row, 5 + i as u16, truncate_for_excel(&h))?;
+                    }
+                    row += 1;
+                }
+            }
+        }
+        ResultsExportLayout::MatchVariationSummary => {
+            let sheet = workbook.add_worksheet();
+            sheet.set_name(t.export_xlsx_sheet_summary())?;
+            let header_fmt =
+                Format::new().set_bold().set_background_color(0x333333u32).set_font_color(0xFFFFFFu32);
+
+            match build_match_variation_report(&cond.pattern, results) {
+                None => {
+                    sheet.write(0, 0, truncate_for_excel(t.summary_pattern_ineligible()))?;
+                }
+                Some(report) => {
+                    sheet.write(0, 0, truncate_for_excel(&t.summary_keys_explanation(
+                        &report.receiver_metavar,
+                        report.method_metavar.as_deref(),
+                        report.args_multi_metavar.as_deref(),
+                        &report.arg_single_metavars,
+                    )))?;
+                    if report.rows.is_empty() {
+                        sheet.write(1, 0, truncate_for_excel(t.summary_no_match_rows()))?;
+                    } else {
+                        let has_method = report.method_metavar.is_some();
+                        let max_arg = report.rows.iter().map(|r| r.arity).max().unwrap_or(0);
+                        sheet.write_with_format(1, 0, t.summary_col_count(), &header_fmt)?;
+                        sheet.write_with_format(1, 1, t.summary_col_receiver(), &header_fmt)?;
+                        let arity_col: u16 = if has_method {
+                            sheet.write_with_format(1, 2, t.summary_col_method(), &header_fmt)?;
+                            sheet.write_with_format(1, 3, t.summary_col_arity(), &header_fmt)?;
+                            4
+                        } else {
+                            sheet.write_with_format(1, 2, t.summary_col_arity(), &header_fmt)?;
+                            3
+                        };
+                        for i in 0..max_arg {
+                            sheet.write_with_format(1, arity_col + i as u16, t.summary_col_arg(i), &header_fmt)?;
+                        }
+                        sheet.set_column_width(0, 10)?;
+                        sheet.set_column_width(1, 36)?;
+                        if has_method {
+                            sheet.set_column_width(2, 36)?;
+                            sheet.set_column_width(3, 10)?;
+                            for i in 0..max_arg {
+                                sheet.set_column_width(arity_col + i as u16, 28)?;
+                            }
+                        } else {
+                            sheet.set_column_width(2, 10)?;
+                            for i in 0..max_arg {
+                                sheet.set_column_width(arity_col + i as u16, 28)?;
+                            }
+                        }
+                        let mut row = 2u32;
+                        for vr in &report.rows {
+                            sheet.write(row, 0, vr.count as u32)?;
+                            sheet.write(row, 1, truncate_for_excel(&vr.receiver_display))?;
+                            if has_method {
+                                sheet.write(row, 2, truncate_for_excel(&vr.method_display))?;
+                                sheet.write(row, 3, vr.arity as u32)?;
+                                for i in 0..max_arg {
+                                    let cell = if i < vr.arity {
+                                        truncate_for_excel(&vr.arg_displays[i])
+                                    } else {
+                                        ""
+                                    };
+                                    sheet.write(row, 4 + i as u16, cell)?;
+                                }
+                            } else {
+                                sheet.write(row, 2, vr.arity as u32)?;
+                                for i in 0..max_arg {
+                                    let cell = if i < vr.arity {
+                                        truncate_for_excel(&vr.arg_displays[i])
+                                    } else {
+                                        ""
+                                    };
+                                    sheet.write(row, 3 + i as u16, cell)?;
+                                }
+                            }
+                            row += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    write_xlsx_stats_sheet(&mut workbook, stats, cond, lang, t)?;
     workbook.save(path)?;
     Ok(())
 }
@@ -561,13 +969,8 @@ pub fn results_to_json(
     results: &[FileResult],
     stats: &SearchStats,
     cond: &SearchConditions,
+    layout: ResultsExportLayout,
 ) -> anyhow::Result<String> {
-    #[derive(serde::Serialize)]
-    struct Output<'a> {
-        search: &'a SearchConditions,
-        stats: StatsOutput,
-        results: &'a [FileResult],
-    }
     #[derive(serde::Serialize)]
     struct StatsOutput {
         total_matches: usize,
@@ -576,17 +979,48 @@ pub fn results_to_json(
         hit_limit_reached: bool,
     }
 
-    let output = Output {
-        search: cond,
-        stats: StatsOutput {
-            total_matches: stats.total_matches,
-            total_files: stats.total_files,
-            elapsed_ms: stats.elapsed_ms,
-            hit_limit_reached: stats.hit_limit_reached,
-        },
-        results,
+    let stats_out = || StatsOutput {
+        total_matches: stats.total_matches,
+        total_files: stats.total_files,
+        elapsed_ms: stats.elapsed_ms,
+        hit_limit_reached: stats.hit_limit_reached,
     };
-    Ok(serde_json::to_string_pretty(&output)?)
+
+    match layout {
+        ResultsExportLayout::FullTable => {
+            #[derive(serde::Serialize)]
+            struct Output<'a> {
+                export_layout: &'static str,
+                search: &'a SearchConditions,
+                stats: StatsOutput,
+                results: &'a [FileResult],
+            }
+            let output = Output {
+                export_layout: "full_table",
+                search: cond,
+                stats: stats_out(),
+                results,
+            };
+            Ok(serde_json::to_string_pretty(&output)?)
+        }
+        ResultsExportLayout::MatchVariationSummary => {
+            #[derive(serde::Serialize)]
+            struct Output<'a> {
+                export_layout: &'static str,
+                search: &'a SearchConditions,
+                stats: StatsOutput,
+                match_variation_summary: Option<crate::search::MatchVariationReport>,
+            }
+            let report = build_match_variation_report(&cond.pattern, results);
+            let output = Output {
+                export_layout: "match_variation_summary",
+                search: cond,
+                stats: stats_out(),
+                match_variation_summary: report,
+            };
+            Ok(serde_json::to_string_pretty(&output)?)
+        }
+    }
 }
 
 // ─── クリップボード ───────────────────────────────────────────────────────
@@ -605,8 +1039,9 @@ pub fn export_json_to_file(
     results: &[FileResult],
     stats: &SearchStats,
     cond: &SearchConditions,
+    layout: ResultsExportLayout,
 ) -> anyhow::Result<()> {
-    let json = results_to_json(results, stats, cond)?;
+    let json = results_to_json(results, stats, cond, layout)?;
     std::fs::write(path, json)?;
     Ok(())
 }
@@ -618,8 +1053,9 @@ pub fn export_text_to_file(
     cond: &SearchConditions,
     search_mode: SearchMode,
     lang: UiLanguage,
+    layout: ResultsExportLayout,
 ) -> anyhow::Result<()> {
-    let text = results_to_text_for_mode(results, stats, cond, search_mode, lang);
+    let text = results_to_text_for_mode(results, stats, cond, search_mode, lang, layout);
     std::fs::write(path, text)?;
     Ok(())
 }
@@ -630,8 +1066,9 @@ pub fn export_markdown_to_file(
     stats: &SearchStats,
     cond: &SearchConditions,
     lang: UiLanguage,
+    layout: ResultsExportLayout,
 ) -> anyhow::Result<()> {
-    let md = results_to_markdown(results, stats, cond, lang);
+    let md = results_to_markdown(results, stats, cond, lang, layout);
     std::fs::write(path, md)?;
     Ok(())
 }
@@ -642,8 +1079,9 @@ pub fn export_html_to_file(
     stats: &SearchStats,
     cond: &SearchConditions,
     lang: UiLanguage,
+    layout: ResultsExportLayout,
 ) -> anyhow::Result<()> {
-    let html = results_to_html(results, stats, cond, lang);
+    let html = results_to_html(results, stats, cond, lang, layout);
     std::fs::write(path, html)?;
     Ok(())
 }
@@ -715,6 +1153,7 @@ pub fn batch_report_to_text(report: &BatchReport, lang: UiLanguage) -> String {
             &run.conditions,
             run.conditions.search_mode,
             lang,
+            ResultsExportLayout::FullTable,
         ));
     }
     out

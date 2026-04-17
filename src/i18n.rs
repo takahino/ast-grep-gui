@@ -787,6 +787,190 @@ impl Tr {
         }
     }
 
+    pub fn view_summary(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "📈 サマリー",
+            UiLanguage::English => "📈 Summary",
+        }
+    }
+    pub fn view_summary_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "受信側の型と、引数個数・各引数の型の組み合わせを集計します（パターンにメソッド用の単一メタがある場合はその列も表示）"
+            }
+            UiLanguage::English => {
+                "Count hits by receiver type, arity, and per-argument types (adds a method column if the pattern has a second single metavar)"
+            }
+        }
+    }
+
+    pub fn summary_title(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "型バリエーションのサマリー",
+            UiLanguage::English => "Type variation summary",
+        }
+    }
+
+    /// `args_multi` が `Some` のときは `$$$` 引数列。`None` のときは `arg_singles`（`$RECV.Format($A)` や `$RECV.Format()`）
+    pub fn summary_keys_explanation(
+        self,
+        recv: &str,
+        method: Option<&str>,
+        args_multi: Option<&str>,
+        arg_singles: &[String],
+    ) -> String {
+        if let Some(multi) = args_multi {
+            return match (self.0, method) {
+                (UiLanguage::Japanese, None) => format!(
+                    "単一メタ ${}（受信側）と $$$ {} の #arity / #i（各引数の型）を集計しています。",
+                    recv, multi
+                ),
+                (UiLanguage::English, None) => format!(
+                    "Single ${} is the receiver; $$$ {} uses #arity / #i for each argument type.",
+                    recv, multi
+                ),
+                (UiLanguage::Japanese, Some(m)) => format!(
+                    "単一メタ ${} / ${} を受信・メソッド、$$${} の #arity / #i を引数として集計しています。",
+                    recv, m, multi
+                ),
+                (UiLanguage::English, Some(m)) => format!(
+                    "Singles ${} / ${} are receiver and method; $$$ {} uses #arity / #i for arguments.",
+                    recv, m, multi
+                ),
+            };
+        }
+
+        match self.0 {
+            UiLanguage::Japanese => {
+                if arg_singles.is_empty() {
+                    format!("単一メタ ${}（受信側）のみ。引数メタはありません。", recv)
+                } else if method.is_none() && arg_singles.len() == 1 {
+                    format!(
+                        "単一メタ ${}（受信）と ${}（1引数）の型を集計しています。",
+                        recv, arg_singles[0]
+                    )
+                } else if method.is_none() && arg_singles.len() > 1 {
+                    let joined = arg_singles
+                        .iter()
+                        .map(|s| format!("${}", s))
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    format!(
+                        "単一メタ ${}（受信）と {} の型を集計しています。",
+                        recv, joined
+                    )
+                } else if let Some(met) = method {
+                    let joined = arg_singles
+                        .iter()
+                        .map(|s| format!("${}", s))
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    format!(
+                        "単一メタ ${} / ${} を受信・メソッド、{} の型を集計しています。",
+                        recv, met, joined
+                    )
+                } else {
+                    format!("単一メタ ${}（受信側）の型を集計しています。", recv)
+                }
+            }
+            UiLanguage::English => {
+                if arg_singles.is_empty() {
+                    format!(
+                        "Only single metavar ${} (receiver); no argument metavariables.",
+                        recv
+                    )
+                } else if method.is_none() && arg_singles.len() == 1 {
+                    format!(
+                        "Single metavars ${} (receiver) and ${} (one argument).",
+                        recv, arg_singles[0]
+                    )
+                } else if method.is_none() && arg_singles.len() > 1 {
+                    let joined = arg_singles
+                        .iter()
+                        .map(|s| format!("${}", s))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "Single metavar ${} (receiver); argument types: {}.",
+                        recv, joined
+                    )
+                } else if let Some(met) = method {
+                    let joined = arg_singles
+                        .iter()
+                        .map(|s| format!("${}", s))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "Singles ${} / ${} (receiver / method), argument types: {}.",
+                        recv, met, joined
+                    )
+                } else {
+                    format!("Aggregating types for single metavar ${} (receiver).", recv)
+                }
+            }
+        }
+    }
+
+    pub fn summary_empty_results(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索結果がありません。先に検索を実行してください。",
+            UiLanguage::English => "No search results. Run a search first.",
+        }
+    }
+
+    pub fn summary_no_match_rows(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "マッチ行がありません。",
+            UiLanguage::English => "No match rows.",
+        }
+    }
+
+    pub fn summary_pattern_ineligible(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "このサマリーには、パターンに単一メタ変数が1つ以上（受信側）必要です（例: $RECV、$RECV.Format($A)、$RECV.Format()）。"
+            }
+            UiLanguage::English => {
+                "This summary needs at least one single metavar for the receiver (e.g. $RECV, $RECV.Format($A), $RECV.Format())."
+            }
+        }
+    }
+
+    pub fn summary_col_count(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "件数",
+            UiLanguage::English => "Count",
+        }
+    }
+
+    pub fn summary_col_receiver(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "受信側",
+            UiLanguage::English => "Receiver",
+        }
+    }
+
+    pub fn summary_col_method(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "メソッド側",
+            UiLanguage::English => "Method",
+        }
+    }
+
+    pub fn summary_col_arity(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "引数数",
+            UiLanguage::English => "Arity",
+        }
+    }
+
+    pub fn summary_col_arg(self, index: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("引数{index}"),
+            UiLanguage::English => format!("Arg {index}"),
+        }
+    }
+
     pub fn batch_jobs_header(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "バッチ検索ジョブ",
@@ -2036,6 +2220,12 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "検索結果",
             UiLanguage::English => "Results",
+        }
+    }
+    pub fn export_xlsx_sheet_summary(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "サマリー",
+            UiLanguage::English => "Summary",
         }
     }
     pub fn export_xlsx_sheet_stats(self) -> &'static str {

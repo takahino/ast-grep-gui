@@ -19,8 +19,8 @@ use crate::rewrite::{RewriteMessage, RewritePreview};
 use crate::terminal::TerminalState;
 use crate::ui::{
     batch_report_panel, code_panel, file_panel, help_popup, pattern_assist_popup,
-    regex_visualizer_popup, rewrite_popup, status_bar, table_panel, table_preview_popup,
-    terminal_panel, toolbar,
+    regex_visualizer_popup, rewrite_popup, status_bar, summary_panel, table_panel,
+    table_preview_popup, terminal_panel, toolbar,
 };
 
 /// 表モードでダブルクリックしたファイルをコードビューと同じ表示で開く
@@ -54,6 +54,8 @@ pub enum ViewMode {
     Table, // 表形式
     /// バッチ検索の集約レポート
     BatchReport,
+    /// 型ヒントのバリエーション集計
+    Summary,
 }
 
 /// コードビュー時のキーボード対象ペイン（←/→ で切り替え）
@@ -1198,6 +1200,11 @@ impl eframe::App for AstGrepApp {
             ViewMode::BatchReport => {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     batch_report_panel::show(self, ui);
+                });
+            }
+            ViewMode::Summary => {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    summary_panel::show(self, ui);
                 });
             }
         }
