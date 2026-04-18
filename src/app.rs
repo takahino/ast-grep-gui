@@ -336,6 +336,12 @@ pub struct AstGrepApp {
     pub table_column_widths: TableColumnWidths,
     /// コード／表／プレビュー内検索（Ctrl+F）
     pub in_view_find: InViewFindState,
+    /// 検索結果を置き換えたときに増やし、インクルード診断キャッシュを無効化する
+    pub results_generation: u64,
+    pub(crate) cpp_include_diagnostic_cache: Option<(
+        (u64, u64, u64, usize, usize),
+        crate::search::CppIncludePathDiagnostics,
+    )>,
 }
 
 impl AstGrepApp {
@@ -410,6 +416,8 @@ impl AstGrepApp {
             batch_edit_list_index: None,
             table_column_widths: persisted.table_column_widths,
             in_view_find: InViewFindState::default(),
+            results_generation: 0,
+            cpp_include_diagnostic_cache: None,
         }
     }
 
@@ -512,6 +520,8 @@ impl AstGrepApp {
         }
 
         self.results.clear();
+        self.results_generation = self.results_generation.wrapping_add(1);
+        self.cpp_include_diagnostic_cache = None;
         self.stats = SearchStats::default();
         self.selected_file_idx = None;
         self.table_preview = None;
@@ -617,6 +627,8 @@ impl AstGrepApp {
         });
 
         self.results.clear();
+        self.results_generation = self.results_generation.wrapping_add(1);
+        self.cpp_include_diagnostic_cache = None;
         self.stats = SearchStats::default();
         self.selected_file_idx = None;
         self.table_preview = None;
@@ -690,6 +702,8 @@ impl AstGrepApp {
     /// 結果をクリアする
     pub fn clear_results(&mut self) {
         self.results.clear();
+        self.results_generation = self.results_generation.wrapping_add(1);
+        self.cpp_include_diagnostic_cache = None;
         self.stats = SearchStats::default();
         self.selected_file_idx = None;
         self.table_preview = None;

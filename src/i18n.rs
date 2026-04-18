@@ -1367,6 +1367,102 @@ impl Tr {
         }
     }
 
+    pub fn cpp_include_diagnostic_header(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "インクルードパス診断（C/C++）",
+            UiLanguage::English => "Include path diagnostics (C/C++)",
+        }
+    }
+    pub fn cpp_include_diagnostic_intro(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "現在の検索結果に含まれる C/C++ ソースについて、#include がディスク上で解決できたか集計します。"
+            }
+            UiLanguage::English => {
+                "For C/C++ sources in the current search results, summarizes which #include paths could not be resolved on disk."
+            }
+        }
+    }
+    pub fn cpp_include_diagnostic_no_results(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索結果がありません。C/C++ ファイルがヒットしてから開いてください。",
+            UiLanguage::English => "No search results yet. Run a search that hits C/C++ files first.",
+        }
+    }
+    pub fn cpp_include_diagnostic_cpp_files(self, n: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("診断対象の C/C++ ファイル種類（重複除く）: {n}"),
+            UiLanguage::English => format!("Distinct C/C++ result files scanned: {n}"),
+        }
+    }
+    pub fn cpp_include_diagnostic_read_errors(self, n: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("ソース読み取り失敗: {n} ファイル（文字コードや権限を確認してください）"),
+            UiLanguage::English => format!("Failed to read {n} file(s) (check encoding or permissions)."),
+        }
+    }
+    pub fn cpp_include_diagnostic_unresolved_section(
+        self,
+        total_hits: usize,
+        distinct: usize,
+    ) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!(
+                "解決できなかった #include: {total_hits} 回（{distinct} 種類）"
+            ),
+            UiLanguage::English => format!(
+                "Unresolved #include: {total_hits} occurrence(s), {distinct} distinct path(s)"
+            ),
+        }
+    }
+    pub fn cpp_include_diagnostic_all_resolved(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "上記の試行ではすべてローカルに解決できました（または #include がありません）。",
+            UiLanguage::English => "All #includes above resolved locally (or none present), under current -I paths.",
+        }
+    }
+    pub fn cpp_include_diagnostic_examples(self, paths: &str) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("例: {paths}"),
+            UiLanguage::English => format!("e.g. {paths}"),
+        }
+    }
+    pub fn cpp_include_diagnostic_add_i_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "見つからないパスがある場合は、上の「C++ インクルード (-I)」にヘッダのルートを追加し、再検索してください。"
+            }
+            UiLanguage::English => {
+                "If a path is missing, add header roots to \"C++ include dirs (-I)\" above and search again."
+            }
+        }
+    }
+    pub fn cpp_include_diagnostic_hint_stats(
+        self,
+        unknown: usize,
+        total: usize,
+        pct: f64,
+    ) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!(
+                "C/C++ の型ヒント: 「?」相当 {unknown} / {total} セル（約 {pct:.1}%）。インクルード解消で改善することがあります。"
+            ),
+            UiLanguage::English => format!(
+                "C/C++ type hints: unknown in {unknown} / {total} cells (~{pct:.1}%). Extra -I paths may improve this."
+            ),
+        }
+    }
+    pub fn cpp_include_diagnostic_no_hint_columns(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "型ヒント列はありません（メタ変数を含む AST パターンで検索すると集計されます）。"
+            }
+            UiLanguage::English => {
+                "No type-hint columns (use an AST pattern with metavariables to aggregate)."
+            }
+        }
+    }
+
     pub fn in_view_find_label(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "検索:",

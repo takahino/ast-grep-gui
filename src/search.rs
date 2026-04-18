@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -1345,6 +1347,165 @@ pub fn refresh_match_contexts(results: &mut [FileResult], context_lines: usize) 
             m.context_after = after;
             m.span_lines_text = join_span_lines(&lines, line_start_0, line_end_0);
         }
+    }
+}
+
+/// C++ / C の `#include` がディスク上で解決できなかったエントリ（集計用）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedIncludeEntry {
+    pub include_spec: String,
+    pub occurrence_count: usize,
+    pub example_relative_paths: Vec<String>,
+}
+
+/// 検索結果に含まれる C/C++ ソースのインクルード解決と、型ヒントの不明セル数
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CppIncludePathDiagnostics {
+    /// 診断対象とした結果ファイル数（重複を除いた .c/.cc/.cpp…）
+    pub distinct_cpp_result_files: usize,
+    /// ソース読み取りに失敗したファイル数
+    pub source_read_errors: usize,
+    /// 解決しなかった `#include` の総数（同一ファイル内で複数回あれば重複カウント）
+    pub unresolved_include_total_hits: usize,
+    /// 解決しなかったインクルードパスの種類数
+    pub unresolved_include_distinct: usize,
+    pub top_unresolved_includes: Vec<UnresolvedIncludeEntry>,
+    /// C/C++ マッチのみ、型ヒント列で `?` 相当（Unknown）のセル数
+    pub cpp_type_hint_unknown_cells: usize,
+    /// C/C++ マッチのみ、型ヒント列で NoSlot 以外のセル数
+    pub cpp_type_hint_total_cells: usize,
+}
+
+/// ツールバー「インクルードパス診断」キャッシュキー（同一なら再計算しない）
+pub fn cpp_include_diagnostic_cache_key(
+    results_generation: u64,
+    cpp_include_dirs: &str,
+    pattern: &str,
+    result_files: usize,
+    total_matches: usize,
+) -> (u64, u64, u64, usize, usize) {
+    let mut ha = DefaultHasher::new();
+    cpp_include_dirs.hash(&mut ha);
+    let mut hb = DefaultHasher::new();
+    pattern.hash(&mut hb);
+    (
+        results_generation,
+        ha.finish(),
+        hb.finish(),
+        result_files,
+        total_matches,
+    )
+}
+
+/// `;` 区切りのインクルードディレクトリ一覧（検索スレッドと同じ規則）
+pub fn parse_cpp_include_dir_list(s: &str) -> Vec<PathBuf> {
+    s.split(';')
+        .map(|x| x.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// 現在の検索結果とディレクトリ設定からインクルードパス診断を計算する（UI スレッドで呼んでもよい）
+pub fn compute_cpp_include_path_diagnostics(
+    results: &[FileResult],
+    cpp_include_dirs_str: &str,
+    pattern: &str,
+) -> CppIncludePathDiagnostics {
+    let extra = parse_cpp_include_dir_list(cpp_include_dirs_str);
+    let mut seen_files: HashSet<PathBuf> = HashSet::new();
+    let mut distinct_cpp = 0usize;
+    let mut read_errors = 0usize;
+    let mut unresolved_total = 0usize;
+    // include_spec -> (count, examples)
+    let mut unresolved_map: HashMap<String, (usize, Vec<String>)> = HashMap::new();
+
+    for fr in results.iter().filter(|f| {
+        matches!(
+            f.source_language,
+            SupportedLanguage::Cpp | SupportedLanguage::C
+        )
+    }) {
+        if !seen_files.insert(fr.path.clone()) {
+            continue;
+        }
+        distinct_cpp += 1;
+        let base_dir = match fr.path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => continue,
+        };
+        let Ok(text) = read_text_file_as(&fr.path, fr.text_encoding.clone()) else {
+            read_errors += 1;
+            continue;
+        };
+        for inc in receiver_hint::cpp_scan_include_directives(&text) {
+            if receiver_hint::cpp_resolve_include_path(&base_dir, &inc, &extra)
+                .is_none()
+            {
+                unresolved_total += 1;
+                let rel = fr.relative_path.clone();
+                let e = unresolved_map.entry(inc).or_insert((0, Vec::new()));
+                e.0 += 1;
+                if e.1.len() < 3 && !e.1.iter().any(|p| p == &rel) {
+                    e.1.push(rel);
+                }
+            }
+        }
+    }
+
+    let unresolved_distinct = unresolved_map.len();
+    let mut top: Vec<UnresolvedIncludeEntry> = unresolved_map
+        .into_iter()
+        .map(
+            |(include_spec, (occurrence_count, example_relative_paths))| UnresolvedIncludeEntry {
+                include_spec,
+                occurrence_count,
+                example_relative_paths,
+            },
+        )
+        .collect();
+    top.sort_by(|a, b| b.occurrence_count.cmp(&a.occurrence_count));
+    top.truncate(1000);
+
+    let (cpp_type_hint_unknown_cells, cpp_type_hint_total_cells) = if pattern_wants_type_hints(pattern)
+    {
+        let keys = type_hint_column_keys(pattern, results);
+        let mut unknown = 0usize;
+        let mut total = 0usize;
+        for fr in results.iter().filter(|f| {
+            matches!(
+                f.source_language,
+                SupportedLanguage::Cpp | SupportedLanguage::C
+            )
+        }) {
+            for m in &fr.matches {
+                for k in &keys {
+                    let cell = m.type_hint_cell(k);
+                    match cell {
+                        TypeHintCell::NoSlot => {}
+                        _ => {
+                            total += 1;
+                            if matches!(cell, TypeHintCell::Unknown(_)) {
+                                unknown += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (unknown, total)
+    } else {
+        (0, 0)
+    };
+
+    CppIncludePathDiagnostics {
+        distinct_cpp_result_files: distinct_cpp,
+        source_read_errors: read_errors,
+        unresolved_include_total_hits: unresolved_total,
+        unresolved_include_distinct: unresolved_distinct,
+        top_unresolved_includes: top,
+        cpp_type_hint_unknown_cells,
+        cpp_type_hint_total_cells,
     }
 }
 

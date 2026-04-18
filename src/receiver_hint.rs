@@ -1589,6 +1589,11 @@ fn cpp_out_of_line_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
     Some(last.to_string())
 }
 
+/// `#include` 行からパス文字列を列挙（型ヒント・インクルード診断用）。
+pub fn cpp_scan_include_directives(source: &str) -> Vec<String> {
+    cpp_include_paths_from_source(source)
+}
+
 fn cpp_include_paths_from_source(source: &str) -> Vec<String> {
     let mut v = Vec::new();
     for line in source.lines() {
@@ -1612,6 +1617,15 @@ fn cpp_include_paths_from_source(source: &str) -> Vec<String> {
 
 fn cpp_path_key(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// `#include` の相対パスを、含み元ディレクトリの直下と `-I` 相当ディレクトリから解決する（診断 UI 用に公開）。
+pub fn cpp_resolve_include_path(
+    base_dir: &Path,
+    inc: &str,
+    extra_include_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    cpp_resolve_include_file(base_dir, inc, extra_include_dirs)
 }
 
 /// `#include` の相対パスを、含み元ディレクトリの直下と `-I` 相当ディレクトリから解決する。

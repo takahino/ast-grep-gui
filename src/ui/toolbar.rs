@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use egui::Ui;
 
 use crate::app::{AstGrepApp, CodeViewPaneFocus, RewritePhase, SearchState, ViewMode};
-use crate::ui::batch_panel;
+use crate::ui::{batch_panel, cpp_include_diagnostic};
 use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguagePreference;
 use crate::lang::SupportedLanguage;
@@ -480,6 +480,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 )
                 .on_hover_text(t.cpp_include_dirs_tooltip());
             });
+            cpp_include_diagnostic::show_collapsing(app, ui);
         }
     });
 

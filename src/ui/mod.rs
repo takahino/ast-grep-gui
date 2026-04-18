@@ -1,3 +1,4 @@
+pub mod cpp_include_diagnostic;
 pub mod batch_panel;
 pub mod batch_report_panel;
 pub mod summary_panel;

@@ -24,6 +24,7 @@ It is designed to make structural code search easier for users who prefer a visu
 - Configurable **max hit count** to cap large result sets (default: 100,000)
 - Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16 LE`, `UTF-16 BE`, `Shift_JIS`, `EUC-JP`, `JIS`, `GBK`, `Big5`, `EUC-KR`, and `Latin1` family overrides
 - Built-in terminal panel for PowerShell commands and `sg run`-style searches
+- **In-document find** (**Ctrl+F**) in the code view, table view, and file preview popup: literal substring search (with optional case sensitivity), previous/next match, scroll sync, and **highlighting** of all hits (the active hit is emphasized)
 
 ## Supported Languages
 
@@ -73,6 +74,10 @@ cargo build --release --target x86_64-pc-windows-msvc
 5. Adjust context lines, file filter, encoding, skip directories, mode-specific options, and (in AST-related modes) **Advanced settings**—including **C++ include directories** for type-hint resolution—as needed.
 6. Run the search and inspect the results in code view, table view, or **Summary** view.
 7. Export or copy the results if needed.
+
+### In-document find (Ctrl+F)
+
+With the code panel, table view, or file preview focused, press **Ctrl+F** to open the find bar. Type a substring, optionally toggle **case sensitivity**, and use **↑ / ↓** (or the equivalent buttons) to jump between matches. Matches are **highlighted** in the source (code view and preview); the table view scrolls to each matching row.
 
 ### AST Pattern Tips
 
@@ -147,3 +152,4 @@ User-facing changes from recent development (see `git log` for the full history)
 - **C++ type hints:** optional **include directories** (`-I`-style, semicolon-separated) in Advanced settings so `#include` resolution can reach system or SDK headers.
 - **Summary view:** aggregates inferred receiver types, arity, and per-argument types (and a method column when the pattern exposes one).
 - **Table view:** resizable type-hint columns, sticky header, keyboard horizontal scroll, and clearer empty vs unknown hint cells.
+- **In-document find (Ctrl+F):** search within the current code, table, or preview; hit highlighting and navigation between matches.
