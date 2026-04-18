@@ -172,6 +172,7 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
             egui::Window::new(t.batch_edit_window_title())
                 .open(&mut open)
                 .default_width(520.0)
+                .constrain_to(ui.ctx().screen_rect())
                 .show(ui.ctx(), |ui| {
                     let job = &mut app.batch_jobs[idx];
                     ui.horizontal(|ui| {

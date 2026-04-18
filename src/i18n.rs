@@ -1367,6 +1367,55 @@ impl Tr {
         }
     }
 
+    pub fn in_view_find_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索:",
+            UiLanguage::English => "Find:",
+        }
+    }
+    pub fn in_view_find_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "この表示内の文字列",
+            UiLanguage::English => "Find in this view",
+        }
+    }
+    pub fn in_view_find_case_sensitive(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "大小",
+            UiLanguage::English => "Aa",
+        }
+    }
+    pub fn in_view_find_count(self, current: usize, total: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("{current} / {total} 件"),
+            UiLanguage::English => format!("{current} / {total}"),
+        }
+    }
+    pub fn in_view_find_count_zero(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "一致なし",
+            UiLanguage::English => "No matches",
+        }
+    }
+    pub fn in_view_find_prev_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "前へ",
+            UiLanguage::English => "Previous match",
+        }
+    }
+    pub fn in_view_find_next_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "次へ",
+            UiLanguage::English => "Next match",
+        }
+    }
+    pub fn in_view_find_close_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索バーを閉じる (Esc)",
+            UiLanguage::English => "Close find bar (Esc)",
+        }
+    }
+
     pub fn footer_hint_ast(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {

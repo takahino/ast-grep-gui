@@ -23,6 +23,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
         .open(&mut open)
         .resizable(true)
         .default_size([900.0, 600.0])
+        .constrain_to(ctx.screen_rect())
         .show(ctx, |ui| {
             ui.label(
                 egui::RichText::new(t.rewrite_preview_summary(

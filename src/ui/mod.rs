@@ -1,6 +1,7 @@
 pub mod batch_panel;
 pub mod batch_report_panel;
 pub mod summary_panel;
+pub mod in_view_find;
 pub mod scroll_keyboard;
 pub mod toolbar;
 pub mod file_panel;

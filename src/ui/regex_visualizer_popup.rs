@@ -23,6 +23,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
         .open(&mut show)
         .resizable(true)
         .default_size([760.0, 560.0])
+        .constrain_to(ctx.screen_rect())
         .show(ctx, |ui| {
             regex_visualizer_content(ui, app);
         });

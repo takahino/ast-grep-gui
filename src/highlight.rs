@@ -71,8 +71,34 @@ fn syntect_to_egui_color(color: syntect::highlighting::Color) -> egui::Color32 {
 const LINE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 80, 0, 40);
 /// マッチテキスト部分の強い背景色
 const MATCH_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(200, 160, 0, 180);
+/// ビュー内検索のヒット（非カレント）
+const FIND_HIT_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(50, 90, 150, 110);
+/// ビュー内検索の現在のヒット
+const FIND_CURRENT_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(255, 150, 50, 200);
 /// 表示時のタブ幅
 const TAB_WIDTH: usize = 4;
+
+/// `LinesWithEndings` / `highlight_source` と同じ行分割での、各行コンテンツのソース上バイト範囲 `[start, end)`（改行は含まない）
+pub(crate) fn line_content_byte_ranges(source: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut rest = source;
+    let mut offset = 0usize;
+    while !rest.is_empty() {
+        let split = rest
+            .find('\n')
+            .map(|i| i + 1)
+            .unwrap_or_else(|| rest.len());
+        let line = &rest[..split];
+        let content = line.trim_end_matches('\n').trim_end_matches('\r');
+        let content_len = content.len();
+        let start = offset;
+        let end = offset + content_len;
+        out.push((start, end));
+        offset += split;
+        rest = &rest[split..];
+    }
+    out
+}
 
 fn expand_tabs(text: &str, visual_col: &mut usize) -> String {
     let mut out = String::with_capacity(text.len());
@@ -104,21 +130,147 @@ fn append_text_with_format(
     job.append(&expanded, 0.0, format);
 }
 
+#[derive(Clone, Copy)]
+enum HlSegmentKind {
+    Normal,
+    AstLineOnly,
+    AstMatch,
+    FindHit,
+    FindCurrent,
+}
+
+impl HlSegmentKind {
+    fn bg_fg(self, fg: egui::Color32) -> (egui::Color32, egui::Color32) {
+        match self {
+            HlSegmentKind::Normal => (egui::Color32::TRANSPARENT, fg),
+            HlSegmentKind::AstLineOnly => (LINE_BG, fg),
+            HlSegmentKind::AstMatch => (MATCH_BG, egui::Color32::BLACK),
+            HlSegmentKind::FindHit => (FIND_HIT_BG, egui::Color32::BLACK),
+            HlSegmentKind::FindCurrent => (FIND_CURRENT_BG, egui::Color32::BLACK),
+        }
+    }
+}
+
+fn hl_classify_segment(
+    a: usize,
+    b: usize,
+    col_highlight: Option<&std::ops::Range<usize>>,
+    token_start: usize,
+    token_end: usize,
+    find_in_line: &[(usize, usize, bool)],
+) -> HlSegmentKind {
+    for &(fs, fe, cur) in find_in_line {
+        if cur && fs < b && fe > a {
+            return HlSegmentKind::FindCurrent;
+        }
+    }
+    for &(fs, fe, cur) in find_in_line {
+        if !cur && fs < b && fe > a {
+            return HlSegmentKind::FindHit;
+        }
+    }
+
+    if let Some(r) = col_highlight {
+        let hl_s = r.start.max(token_start);
+        let hl_e = if r.end == usize::MAX {
+            token_end
+        } else {
+            r.end.min(token_end)
+        };
+        if hl_s < hl_e && a >= hl_s && b <= hl_e {
+            return HlSegmentKind::AstMatch;
+        }
+        return HlSegmentKind::AstLineOnly;
+    }
+    HlSegmentKind::Normal
+}
+
+/// トークンを ast 列ハイライト・ビュー内検索の区間で分割して追記する
+fn append_token_ast_and_find(
+    job: &mut LayoutJob,
+    text: &str,
+    token_start: usize,
+    token_end: usize,
+    col_highlight: Option<std::ops::Range<usize>>,
+    find_in_line: &[(usize, usize, bool)],
+    fg: egui::Color32,
+    font_id: &egui::FontId,
+    visual_col: &mut usize,
+) {
+    let mut cuts = vec![token_start, token_end];
+    if let Some(ref r) = col_highlight {
+        let hl_s = r.start.max(token_start).min(token_end);
+        let hl_e = if r.end == usize::MAX {
+            token_end
+        } else {
+            r.end.min(token_end).max(token_start)
+        };
+        if hl_s < hl_e {
+            cuts.push(hl_s);
+            cuts.push(hl_e);
+        }
+    }
+    for &(fs, fe, _) in find_in_line {
+        let s = fs.max(token_start).min(token_end);
+        let e = fe.min(token_end).max(token_start);
+        if s < e {
+            cuts.push(s);
+            cuts.push(e);
+        }
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    for w in cuts.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        if a >= b {
+            continue;
+        }
+        let kind = hl_classify_segment(
+            a,
+            b,
+            col_highlight.as_ref(),
+            token_start,
+            token_end,
+            find_in_line,
+        );
+        let la = a - token_start;
+        let lb = b - token_start;
+        if let Some(slice) = text.get(la..lb) {
+            let (bg, color) = kind.bg_fg(fg);
+            append_text_with_format(
+                job,
+                slice,
+                egui::TextFormat {
+                    font_id: font_id.clone(),
+                    color,
+                    background: bg,
+                    ..Default::default()
+                },
+                visual_col,
+            );
+        }
+    }
+}
+
 /// 1行分のハイライトデータを egui LayoutJob のセクションとして追加する
 ///
 /// - `col_highlight`: この行内でテキスト強調する byteオフセット範囲
 ///   - `None`  → 通常行
 ///   - `Some(0..usize::MAX)` → 行全体を薄くハイライト（マッチ行だが列不明）
 ///   - `Some(start..end)` → 列レベルで強調
+/// - `find_in_line`: ソース行先頭からのバイトオフセット `(start, end, 現在ヒット)`。空ならビュー内検索なし
 fn append_highlighted_line(
     job: &mut LayoutJob,
     line_tokens: &[(Style, String)],
     col_highlight: Option<std::ops::Range<usize>>,
     line_number: usize,
     font_size: f32,
+    find_in_line: &[(usize, usize, bool)],
 ) {
     let font_id = egui::FontId::monospace(font_size);
-    let is_match_line = col_highlight.is_some();
+    let is_match_line = col_highlight.is_some() || !find_in_line.is_empty();
 
     // 行番号
     {
@@ -150,33 +302,45 @@ fn append_highlighted_line(
         let token_end = byte_pos + text.len();
         let fg = syntect_to_egui_color(style.foreground);
 
-        match &col_highlight {
-            None => {
-                // 通常行
-                append_text_with_format(
-                    job,
-                    text,
-                    egui::TextFormat {
-                        font_id: font_id.clone(),
-                        color: fg,
-                        ..Default::default()
-                    },
-                    &mut visual_col,
-                );
+        if find_in_line.is_empty() {
+            match &col_highlight {
+                None => {
+                    append_text_with_format(
+                        job,
+                        text,
+                        egui::TextFormat {
+                            font_id: font_id.clone(),
+                            color: fg,
+                            ..Default::default()
+                        },
+                        &mut visual_col,
+                    );
+                }
+                Some(range) => {
+                    append_token_with_highlight(
+                        job,
+                        text,
+                        token_start,
+                        token_end,
+                        range.clone(),
+                        fg,
+                        &font_id,
+                        &mut visual_col,
+                    );
+                }
             }
-            Some(range) => {
-                // マッチ行：トークン内で範囲が重なる部分だけ強調
-                append_token_with_highlight(
-                    job,
-                    text,
-                    token_start,
-                    token_end,
-                    range.clone(),
-                    fg,
-                    &font_id,
-                    &mut visual_col,
-                );
-            }
+        } else {
+            append_token_ast_and_find(
+                job,
+                text,
+                token_start,
+                token_end,
+                col_highlight.clone(),
+                find_in_line,
+                fg,
+                &font_id,
+                &mut visual_col,
+            );
         }
 
         byte_pos = token_end;
@@ -302,11 +466,76 @@ pub fn build_layout_job_from_line(
 
     for (idx, line_tokens) in highlighted.iter().enumerate() {
         let line_number = start_line_number + idx;
+        let col_highlight = col_highlight_for_line(line_number, matches);
+        append_highlighted_line(
+            &mut job,
+            line_tokens,
+            col_highlight,
+            line_number,
+            font_size,
+            &[],
+        );
+    }
+
+    job
+}
+
+/// ビュー内検索（Ctrl+F）の一致範囲を行内で着色する。`find_spans` はソース全体の `[start, end)` バイト列。
+pub fn build_layout_job_with_in_view_find(
+    highlighted: &[Vec<(Style, String)>],
+    matches: &[MatchItem],
+    font_size: f32,
+    start_line_number: usize,
+    source: &str,
+    find_spans: &[(usize, usize)],
+    current_find_index: usize,
+) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = f32::INFINITY;
+
+    let line_ranges = line_content_byte_ranges(source);
+    debug_assert_eq!(
+        highlighted.len(),
+        line_ranges.len(),
+        "highlighted lines vs source line map mismatch"
+    );
+
+    for (idx, line_tokens) in highlighted.iter().enumerate() {
+        let line_number = start_line_number + idx;
 
         // この行に対するハイライト範囲を決定
         let col_highlight = col_highlight_for_line(line_number, matches);
 
-        append_highlighted_line(&mut job, line_tokens, col_highlight, line_number, font_size);
+        let find_in_line: Vec<(usize, usize, bool)> = line_ranges
+            .get(idx)
+            .map(|&(ls, le)| {
+                if find_spans.is_empty() {
+                    return Vec::new();
+                }
+                find_spans
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &(gs, ge))| {
+                        let a = gs.max(ls);
+                        let b = ge.min(le);
+                        if a < b {
+                            Some((a - ls, b - ls, i == current_find_index))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        append_highlighted_line(
+            &mut job,
+            line_tokens,
+            col_highlight,
+            line_number,
+            font_size,
+            &find_in_line,
+        );
     }
 
     job

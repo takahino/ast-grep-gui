@@ -1,12 +1,12 @@
 use crate::app::AstGrepApp;
 use crate::file_encoding::read_text_file_as;
-use crate::highlight::build_layout_job;
+use crate::highlight::{build_layout_job, build_layout_job_with_in_view_find};
+use crate::ui::in_view_find;
 
 pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
-    let scroll_line = match &mut app.table_preview {
-        Some(s) => s.pending_scroll_line.take(),
-        None => return,
-    };
+    if app.table_preview.is_none() {
+        return;
+    }
 
     let (path, relative_path, matches, lang, text_encoding, line, col) = {
         let s = match &app.table_preview {
@@ -31,6 +31,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
         .open(&mut open)
         .resizable(true)
         .default_size([720.0, 520.0])
+        .constrain_to(ctx.screen_rect())
         .show(ctx, |ui| {
             ui.label(
                 egui::RichText::new(t.table_preview_subtitle(&relative_path, line, col)).strong(),
@@ -50,12 +51,41 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                 }
             };
 
+            let mut find_scroll: Option<usize> = None;
+            in_view_find::show_bar_preview(app, ui, source.as_str(), &mut |ln| {
+                find_scroll = Some(ln);
+            });
+            ui.add_space(4.0);
+
+            let dbl_scroll = app
+                .table_preview
+                .as_mut()
+                .and_then(|s| s.pending_scroll_line.take());
+            let scroll_line = find_scroll.or(dbl_scroll);
+
             const FONT_SIZE: f32 = 13.0;
             let line_height = ui.fonts(|f| f.row_height(&egui::FontId::monospace(FONT_SIZE)));
             let highlighted = app
                 .highlighter
                 .highlight_source(&relative_path, &source, lang);
-            let job = build_layout_job(highlighted, &matches, FONT_SIZE);
+            let job = if app.in_view_find.open && !app.in_view_find.query.is_empty() {
+                let spans = in_view_find::find_byte_spans(
+                    source.as_str(),
+                    &app.in_view_find.query,
+                    app.in_view_find.case_sensitive,
+                );
+                build_layout_job_with_in_view_find(
+                    highlighted,
+                    &matches,
+                    FONT_SIZE,
+                    1,
+                    source.as_str(),
+                    &spans,
+                    app.in_view_find.current,
+                )
+            } else {
+                build_layout_job(highlighted, &matches, FONT_SIZE)
+            };
 
             let mut scroll = egui::ScrollArea::both()
                 .id_salt("table_preview_code")

@@ -4,7 +4,7 @@ use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 use crate::app::{AstGrepApp, TableColumnWidths, TablePreviewState, TableRowRef};
 use crate::highlight::build_layout_job_from_line;
 use crate::search::{type_hint_column_keys, MatchItem, TypeHintCell, UnknownHintDetail};
-use crate::ui::scroll_keyboard;
+use crate::ui::{in_view_find, scroll_keyboard};
 
 /// 列間のドラッグ用（Excel の境界に相当）
 const RESIZE_HANDLE_W: f32 = 6.0;
@@ -206,6 +206,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .color(egui::Color32::GRAY),
     );
     ui.add_space(4.0);
+
+    if app.table_preview.is_none() {
+        in_view_find::show_bar_table(app, ui);
+        ui.add_space(4.0);
+    }
 
     let column_keys = type_hint_column_keys(app.pattern.as_str(), &app.results);
     let n_hints = column_keys.len();

@@ -18,6 +18,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
         .open(&mut show)
         .resizable(true)
         .default_width(520.0)
+        .constrain_to(ctx.screen_rect())
         .show(ctx, |ui| {
             pattern_help_content(ui, app, &mut selected_pattern);
         });

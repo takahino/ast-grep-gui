@@ -1,9 +1,9 @@
 use egui::Ui;
 
 use crate::app::{AstGrepApp, CodeViewPaneFocus};
-use crate::ui::scroll_keyboard;
+use crate::ui::{in_view_find, scroll_keyboard};
 use crate::file_encoding::read_text_file_as;
-use crate::highlight::build_layout_job;
+use crate::highlight::{build_layout_job, build_layout_job_with_in_view_find};
 use crate::search::type_hint_column_keys;
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
@@ -122,6 +122,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     ui.separator();
 
+    if app.table_preview.is_none() {
+        in_view_find::show_bar_code(app, ui, source.as_str());
+        ui.add_space(4.0);
+    }
+
     // フォントサイズとそこから算出した1行の高さ
     const FONT_SIZE: f32 = 13.0;
     let line_height = ui.fonts(|f| f.row_height(&egui::FontId::monospace(FONT_SIZE)));
@@ -133,7 +138,24 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         .highlight_source(&cache_key, &source, lang)
         .clone();
 
-    let job = build_layout_job(&highlighted, &matches, FONT_SIZE);
+    let job = if app.in_view_find.open && !app.in_view_find.query.is_empty() {
+        let spans = in_view_find::find_byte_spans(
+            source.as_str(),
+            &app.in_view_find.query,
+            app.in_view_find.case_sensitive,
+        );
+        build_layout_job_with_in_view_find(
+            &highlighted,
+            &matches,
+            FONT_SIZE,
+            1,
+            source.as_str(),
+            &spans,
+            app.in_view_find.current,
+        )
+    } else {
+        build_layout_job(&highlighted, &matches, FONT_SIZE)
+    };
 
     // ジャンプ先のスクロールオフセットを計算（クリック時に一度だけ適用）
     let scroll_offset = app.pending_scroll_line.take().map(|line| {

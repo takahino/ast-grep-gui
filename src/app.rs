@@ -18,9 +18,9 @@ use crate::pattern_assist::PatternSuggestion;
 use crate::rewrite::{RewriteMessage, RewritePreview};
 use crate::terminal::TerminalState;
 use crate::ui::{
-    batch_report_panel, code_panel, file_panel, help_popup, pattern_assist_popup,
-    regex_visualizer_popup, rewrite_popup, status_bar, summary_panel, table_panel,
-    table_preview_popup, terminal_panel, toolbar,
+    batch_report_panel, code_panel, file_panel, help_popup, in_view_find::InViewFindState,
+    pattern_assist_popup, regex_visualizer_popup, rewrite_popup, status_bar, summary_panel,
+    table_panel, table_preview_popup, terminal_panel, toolbar,
 };
 
 /// 表モードでダブルクリックしたファイルをコードビューと同じ表示で開く
@@ -334,6 +334,8 @@ pub struct AstGrepApp {
     pub batch_edit_list_index: Option<usize>,
     /// 表モードの列幅（永続化と同期）
     pub table_column_widths: TableColumnWidths,
+    /// コード／表／プレビュー内検索（Ctrl+F）
+    pub in_view_find: InViewFindState,
 }
 
 impl AstGrepApp {
@@ -407,6 +409,7 @@ impl AstGrepApp {
             batch_report: None,
             batch_edit_list_index: None,
             table_column_widths: persisted.table_column_widths,
+            in_view_find: InViewFindState::default(),
         }
     }
 
@@ -1053,6 +1056,30 @@ impl eframe::App for AstGrepApp {
                 self.context_lines = self.context_lines.saturating_sub(1);
             }
         });
+
+        // コード／表／表プレビュー内検索（Ctrl+F / Esc）
+        let find_eligible = self.table_preview.is_some()
+            || matches!(
+                self.view_mode,
+                ViewMode::Code | ViewMode::Table
+            );
+        if find_eligible
+            && !self.show_pattern_assist
+            && !self.show_help
+            && !self.show_regex_visualizer
+            && !self.show_rewrite_popup
+        {
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::CTRL, egui::Key::F)
+                    || i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)
+                {
+                    self.in_view_find.begin_open();
+                }
+                if self.in_view_find.open && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                    self.in_view_find.close();
+                }
+            });
+        }
 
         // コードビュー: ← ファイル一覧 / → コード
         // ・ツールバーより先に処理する（右矢印が TextEdit 等に取られるのを防ぐ）
