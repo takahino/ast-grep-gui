@@ -154,6 +154,7 @@ impl TerminalState {
             10 * 1024 * 1024,
             0,
             ".git;target;node_modules".to_string(),
+            String::new(),
             UiLanguage::Japanese,
             crate::batch::SINGLE_SEARCH_JOB_ID,
             tx,

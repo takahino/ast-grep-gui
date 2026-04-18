@@ -14,6 +14,9 @@ use crate::lang::SupportedLanguage;
 pub struct RecvHintContext<'a> {
     pub file_path: &'a Path,
     pub source: &'a str,
+    /// C++ 型ヒント用。コンパイラの `-I` に相当するディレクトリ（空なら従来どおりソースの親のみ）。
+    /// `#include "x"` / `#include <x>` はまず `file_path` の親を基準にし、見つからなければ本配列を順に試す。
+    pub cpp_include_dirs: &'a [PathBuf],
 }
 
 /// パターンの `$RECV` に対応するノードから型ヒント文字列を返す。
@@ -199,14 +202,14 @@ fn cpp_field_type_for_class_in_sources(
     let mut visited = HashSet::new();
     visited.insert(cpp_path_key(ctx.file_path));
     for inc in cpp_include_paths_from_source(ctx.source) {
-        let p = base.join(&inc);
-        if p.is_file() {
+        if let Some(p) = cpp_resolve_include_file(base, &inc, ctx.cpp_include_dirs) {
             if let Some(ty) = cpp_try_header_file_for_field(
                 &p,
                 class_name,
                 field_name,
                 &mut visited,
                 CPP_INCLUDE_MAX_DEPTH,
+                ctx.cpp_include_dirs,
             ) {
                 return Some(ty);
             }
@@ -287,6 +290,7 @@ fn cpp_try_header_file_for_method(
     method_name: &str,
     visited: &mut HashSet<PathBuf>,
     depth: usize,
+    cpp_include_dirs: &[PathBuf],
 ) -> Option<String> {
     if depth == 0 {
         return None;
@@ -312,11 +316,15 @@ fn cpp_try_header_file_for_method(
     }
     let base = path.parent()?;
     for inc in cpp_include_paths_from_source(&text) {
-        let p = base.join(&inc);
-        if p.is_file() {
-            if let Some(ty) =
-                cpp_try_header_file_for_method(&p, class_name, method_name, visited, depth - 1)
-            {
+        if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
+            if let Some(ty) = cpp_try_header_file_for_method(
+                &p,
+                class_name,
+                method_name,
+                visited,
+                depth - 1,
+                cpp_include_dirs,
+            ) {
                 return Some(ty);
             }
         }
@@ -338,14 +346,14 @@ fn cpp_method_return_for_class_in_sources(
     let mut visited = HashSet::new();
     visited.insert(cpp_path_key(ctx.file_path));
     for inc in cpp_include_paths_from_source(ctx.source) {
-        let p = base.join(&inc);
-        if p.is_file() {
+        if let Some(p) = cpp_resolve_include_file(base, &inc, ctx.cpp_include_dirs) {
             if let Some(ty) = cpp_try_header_file_for_method(
                 &p,
                 class_name,
                 method_name,
                 &mut visited,
                 CPP_INCLUDE_MAX_DEPTH,
+                ctx.cpp_include_dirs,
             ) {
                 return Some(ty);
             }
@@ -1606,6 +1614,25 @@ fn cpp_path_key(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// `#include` の相対パスを、含み元ディレクトリの直下と `-I` 相当ディレクトリから解決する。
+fn cpp_resolve_include_file(
+    base_dir: &Path,
+    inc: &str,
+    extra_include_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    let primary = base_dir.join(inc);
+    if primary.is_file() {
+        return Some(primary);
+    }
+    for root in extra_include_dirs {
+        let p = root.join(inc);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 const CPP_INCLUDE_MAX_DEPTH: usize = 8;
 const CPP_INCLUDE_MAX_FILE_BYTES: usize = 512 * 1024;
 
@@ -1615,6 +1642,7 @@ fn cpp_try_header_file_for_field(
     field_name: &str,
     visited: &mut HashSet<PathBuf>,
     depth: usize,
+    cpp_include_dirs: &[PathBuf],
 ) -> Option<String> {
     if depth == 0 {
         return None;
@@ -1640,10 +1668,15 @@ fn cpp_try_header_file_for_field(
     }
     let base = path.parent()?;
     for inc in cpp_include_paths_from_source(&text) {
-        let p = base.join(&inc);
-        if p.is_file() {
-            if let Some(ty) = cpp_try_header_file_for_field(&p, class_name, field_name, visited, depth - 1)
-            {
+        if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
+            if let Some(ty) = cpp_try_header_file_for_field(
+                &p,
+                class_name,
+                field_name,
+                visited,
+                depth - 1,
+                cpp_include_dirs,
+            ) {
                 return Some(ty);
             }
         }
@@ -2066,6 +2099,7 @@ void f() {
         let ctx = RecvHintContext {
             file_path: std::path::Path::new("test.cpp"),
             source: src,
+            cpp_include_dirs: &[],
         };
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("Inner"));
@@ -2136,6 +2170,7 @@ void f() {
         let ctx = RecvHintContext {
             file_path: std::path::Path::new("test.cpp"),
             source: src,
+            cpp_include_dirs: &[],
         };
         let hint = infer_capture_type(SupportedLanguage::Cpp, "B", b, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("CTime.Format"));
@@ -2169,10 +2204,45 @@ void f() {
         let ctx = RecvHintContext {
             file_path: std::path::Path::new("test.cpp"),
             source: src,
+            cpp_include_dirs: &[],
         };
         let hint1 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[1], Some(&ctx));
         let hint2 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[2], Some(&ctx));
         assert_eq!(hint1.as_deref(), Some("CTime.Format"));
         assert_eq!(hint2.as_deref(), Some("CTime.Format"));
+    }
+
+    #[test]
+    fn cpp_chain_resolves_field_type_via_extra_include_dir() {
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_i_hint_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/foo.h"),
+            "struct Inner { int z; };\nstruct Foo { Inner inner; };\n",
+        )
+        .expect("write foo.h");
+
+        let src = "#include <foo.h>\nvoid f() {\n  Foo foo{};\n  foo.inner;\n}\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+        };
+
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let root = grep.root();
+        let m = root
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "foo.inner")
+            .expect("match foo.inner");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("Inner"));
     }
 }

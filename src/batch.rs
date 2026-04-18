@@ -27,6 +27,9 @@ pub struct PatternJob {
     pub search_mode: SearchMode,
     #[serde(default)]
     pub plain_text_options: PlainTextSearchOptions,
+    /// C++ 型ヒント用（`-I` 相当、`;` 区切り）
+    #[serde(default)]
+    pub cpp_include_dirs: String,
 }
 
 impl PatternJob {
@@ -43,6 +46,7 @@ impl PatternJob {
             skip_dirs: self.skip_dirs.clone(),
             search_mode: self.search_mode,
             plain_text_options: self.plain_text_options,
+            cpp_include_dirs: self.cpp_include_dirs.clone(),
         }
     }
 
@@ -61,6 +65,7 @@ impl PatternJob {
         skip_dirs: String,
         search_mode: SearchMode,
         plain_text_options: PlainTextSearchOptions,
+        cpp_include_dirs: String,
     ) -> Self {
         Self {
             id,
@@ -77,6 +82,7 @@ impl PatternJob {
             skip_dirs,
             search_mode,
             plain_text_options,
+            cpp_include_dirs,
         }
     }
 
@@ -215,6 +221,7 @@ mod tests {
             skip_dirs: String::new(),
             search_mode: SearchMode::AstGrep,
             plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
         }
     }
 
@@ -234,6 +241,7 @@ mod tests {
                 skip_dirs: String::new(),
                 search_mode: SearchMode::AstGrep,
                 plain_text_options: PlainTextSearchOptions::default(),
+                cpp_include_dirs: String::new(),
             },
             results: vec![],
             stats: SearchStats {

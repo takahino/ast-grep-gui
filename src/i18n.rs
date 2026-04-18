@@ -1341,6 +1341,32 @@ impl Tr {
         }
     }
 
+    pub fn cpp_include_dirs_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "C++ インクルード (-I):",
+            UiLanguage::English => "C++ include dirs (-I):",
+        }
+    }
+    pub fn cpp_include_dirs_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "C++ の型ヒントで `#include` を解決するときの追加検索パスです\n\
+                 コンパイラの `-I` と同様に、各フォルダをルートとして `<header>` と `\"header\"` を探します\n\
+                 複数ある場合は ; で区切ります（ソースファイルのあるディレクトリは常に先に試されます）"
+            }
+            UiLanguage::English => {
+                "Extra roots for resolving C++ `#include` when inferring type hints (like compiler -I)\n\
+                 Separate multiple paths with ; (the source file's directory is always tried first)"
+            }
+        }
+    }
+    pub fn cpp_include_dirs_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "/usr/include;C:/path/to/include",
+            UiLanguage::English => "/usr/include;C:/path/to/include",
+        }
+    }
+
     pub fn footer_hint_ast(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {
@@ -2360,6 +2386,12 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "スキップディレクトリ",
             UiLanguage::English => "Skip directories",
+        }
+    }
+    pub fn export_cond_cpp_include_dirs(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "C++ インクルードパス (-I)",
+            UiLanguage::English => "C++ include paths (-I)",
         }
     }
     pub fn export_cond_search_mode(self) -> &'static str {

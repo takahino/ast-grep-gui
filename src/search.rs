@@ -361,6 +361,8 @@ pub fn spawn_search(
     max_file_size_bytes: u64,
     max_search_hits: usize,
     skip_dirs_str: String,
+    // C++ 型ヒント用（`;` 区切り）。空なら `#include` は従来どおりソースの親のみ。
+    cpp_include_dirs_str: String,
     ui_lang: UiLanguage,
     job_id: usize,
     tx: Sender<SearchMessage>,
@@ -448,6 +450,15 @@ pub fn spawn_search(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+
+        let cpp_include_paths: Arc<Vec<PathBuf>> = Arc::new(
+            cpp_include_dirs_str
+                .split(';')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .collect(),
+        );
 
         // ファイルフィルタの解析
         let custom_patterns = parse_file_filter(&file_filter);
@@ -605,6 +616,7 @@ pub fn spawn_search(
                                     let hint_ctx = receiver_hint::RecvHintContext {
                                         file_path: path.as_path(),
                                         source: source.as_str(),
+                                        cpp_include_dirs: cpp_include_paths.as_ref().as_slice(),
                                     };
                                     let mut hints = BTreeMap::new();
                                     for name in &metavar_names {
@@ -1355,6 +1367,9 @@ pub struct SearchConditions {
     /// 文字列検索モード時のみ有効（それ以外は無視）
     #[serde(default)]
     pub plain_text_options: PlainTextSearchOptions,
+    /// C++ 型ヒントの `#include` 探索用（`-I` 相当、`;` 区切りディレクトリ）
+    #[serde(default)]
+    pub cpp_include_dirs: String,
 }
 
 pub(crate) fn default_max_search_hits() -> usize {

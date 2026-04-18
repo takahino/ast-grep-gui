@@ -292,6 +292,18 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                                 .hint_text(t.skip_dirs_hint()),
                         );
                     });
+                    if job.search_mode.is_ast_mode() {
+                        ui.horizontal(|ui| {
+                            ui.label(t.cpp_include_dirs_label())
+                                .on_hover_text(t.cpp_include_dirs_tooltip());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut job.cpp_include_dirs)
+                                    .desired_width(ui.available_width() - 4.0)
+                                    .hint_text(t.cpp_include_dirs_hint()),
+                            )
+                            .on_hover_text(t.cpp_include_dirs_tooltip());
+                        });
+                    }
 
                     if job.search_mode.is_ast_mode() {
                         ui.horizontal(|ui| {

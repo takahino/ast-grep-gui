@@ -118,6 +118,11 @@ fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLangua
     s.push_str(&format!("- {}: {}\n", t.export_cond_skip_dirs(), cond.skip_dirs));
     s.push_str(&format!(
         "- {}: {}\n",
+        t.export_cond_cpp_include_dirs(),
+        cond.cpp_include_dirs
+    ));
+    s.push_str(&format!(
+        "- {}: {}\n",
         t.export_cond_search_mode(),
         search_mode_label(t, cond.search_mode)
     ));
@@ -169,6 +174,11 @@ pub fn format_search_conditions_markdown(t: Tr, cond: &SearchConditions, lang: U
         cond.max_search_hits
     ));
     s.push_str(&format!("- **{}**: {}\n", t.export_cond_skip_dirs(), cond.skip_dirs));
+    s.push_str(&format!(
+        "- **{}**: {}\n",
+        t.export_cond_cpp_include_dirs(),
+        cond.cpp_include_dirs
+    ));
     s.push_str(&format!(
         "- **{}**: {}\n",
         t.export_cond_search_mode(),

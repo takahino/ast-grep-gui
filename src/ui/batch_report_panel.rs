@@ -100,6 +100,11 @@ fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
     ui.label(format!("{}: {}", t.export_cond_skip_dirs(), c.skip_dirs));
     ui.label(format!(
         "{}: {}",
+        t.export_cond_cpp_include_dirs(),
+        c.cpp_include_dirs
+    ));
+    ui.label(format!(
+        "{}: {}",
         t.export_cond_search_mode(),
         crate::export::search_mode_label_for_export(t, c.search_mode)
     ));
