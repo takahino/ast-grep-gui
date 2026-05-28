@@ -603,7 +603,18 @@ pub fn spawn_search(
                                     break;
                                 }
                                 let matched_node = node.get_node().clone();
-                                let node_range = matched_node.range();
+                                // C/C++ の関数定義パターンは tree-sitter の曖昧性のため
+                                // `function_declarator`（シグネチャのみ）でマッチする。表示・
+                                // ハイライト範囲は本体を含む関数定義全体に広げる。
+                                let display_node = if matched_node.kind() == "function_declarator" {
+                                    matched_node
+                                        .parent()
+                                        .filter(|p| p.kind() == "function_definition")
+                                        .unwrap_or_else(|| matched_node.clone())
+                                } else {
+                                    matched_node.clone()
+                                };
+                                let node_range = display_node.range();
                                 // ast-grep 本体（CLI）と同じノード範囲を使う
                                 let matched_end = node_range.end.min(source.len());
                                 let (line_start, col_start) =
@@ -613,7 +624,7 @@ pub fn spawn_search(
                                 let matched_text = source
                                     .get(node_range.start..matched_end)
                                     .map(str::to_owned)
-                                    .unwrap_or_else(|| node.text().to_string());
+                                    .unwrap_or_else(|| display_node.text().to_string());
                                 let type_hints = if want_type_hints {
                                     let hint_ctx = receiver_hint::RecvHintContext {
                                         file_path: path.as_path(),
