@@ -4,7 +4,7 @@ use egui::Ui;
 use regex::RegexBuilder;
 
 use crate::app::{AstGrepApp, TableRowRef};
-use crate::search::{matched_text_from_source, type_hint_column_keys, FileResult};
+use crate::search::{matched_text_from_source, FileResult};
 
 /// パネルごとに最後にスクロール同期した (クエリ, マッチ番号) を保持し、同じ内容での二重申請を防ぐ。
 #[derive(Debug, Default, Clone)]
@@ -178,7 +178,7 @@ pub fn show_bar_code(app: &mut AstGrepApp, ui: &mut Ui, source: &str) {
 }
 
 fn table_row_blob(app: &mut AstGrepApp, file_idx: usize, match_idx: usize) -> String {
-    let column_keys = type_hint_column_keys(&app.pattern, &app.results, app.type_hints_enabled);
+    let column_keys = app.type_hint_column_keys_cached().to_vec();
     let context_lines = app.context_lines;
     let path = app.results[file_idx].path.clone();
     let encoding = app.results[file_idx].text_encoding.clone();

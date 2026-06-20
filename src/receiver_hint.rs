@@ -1,13 +1,251 @@
 //! パターンのメタ変数に束縛されたノードから、表示用の型ヒントを推定する（構文ベース・best-effort）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use ast_grep_core::{Doc, Node};
 use ast_grep_language::{LanguageExt, SupportLang};
 
 use crate::lang::SupportedLanguage;
+
+macro_rules! cpp_ast_grep_with_profile {
+    ($cache:expr, $source:expr) => {{
+        let __start = Instant::now();
+        let __grep = SupportLang::Cpp.ast_grep($source);
+        if let Some(__cache) = $cache {
+            __cache.record_ast_parse(__start.elapsed());
+        }
+        __grep
+    }};
+}
+
+/// 型ヒント推定の計測（検索ジョブ内で共有、rayon ワーカーから更新）。
+#[derive(Debug, Default)]
+pub struct TypeHintProfile {
+    pub infer_calls: AtomicU64,
+    pub infer_nanos: AtomicU64,
+    pub header_reads: AtomicU64,
+    pub header_read_nanos: AtomicU64,
+    pub header_cache_hits: AtomicU64,
+    pub ast_parses: AtomicU64,
+    pub ast_parse_nanos: AtomicU64,
+    pub lookup_cache_hits: AtomicU64,
+}
+
+impl TypeHintProfile {
+    pub fn record_infer(&self, elapsed: Duration) {
+        self.infer_calls.fetch_add(1, Ordering::Relaxed);
+        self.infer_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self) -> TypeHintProfileSnapshot {
+        TypeHintProfileSnapshot {
+            infer_calls: self.infer_calls.load(Ordering::Relaxed),
+            infer_total_us: self.infer_nanos.load(Ordering::Relaxed) / 1_000,
+            header_reads: self.header_reads.load(Ordering::Relaxed),
+            header_read_total_us: self.header_read_nanos.load(Ordering::Relaxed) / 1_000,
+            header_cache_hits: self.header_cache_hits.load(Ordering::Relaxed),
+            ast_parses: self.ast_parses.load(Ordering::Relaxed),
+            ast_parse_total_us: self.ast_parse_nanos.load(Ordering::Relaxed) / 1_000,
+            lookup_cache_hits: self.lookup_cache_hits.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// 検索完了時に UI / エクスポートへ載せる型ヒント計測スナップショット。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct TypeHintProfileSnapshot {
+    pub infer_calls: u64,
+    pub infer_total_us: u64,
+    pub header_reads: u64,
+    pub header_read_total_us: u64,
+    pub header_cache_hits: u64,
+    pub ast_parses: u64,
+    pub ast_parse_total_us: u64,
+    pub lookup_cache_hits: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CppMemberLookupKey {
+    path: PathBuf,
+    class_name: String,
+    member_name: String,
+}
+
+/// 1 検索ジョブ内で C++ include 読み込み・メンバ検索結果を共有する。
+#[derive(Debug)]
+pub struct RecvHintJobCache {
+    profile: Arc<TypeHintProfile>,
+    header_text: Mutex<HashMap<PathBuf, Option<Arc<str>>>>,
+    header_field_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
+    header_method_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
+    source_field_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
+    source_method_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
+}
+
+impl RecvHintJobCache {
+    pub fn new() -> Self {
+        Self::with_profile(Arc::new(TypeHintProfile::default()))
+    }
+
+    pub fn with_profile(profile: Arc<TypeHintProfile>) -> Self {
+        Self {
+            profile,
+            header_text: Mutex::new(HashMap::new()),
+            header_field_lookup: Mutex::new(HashMap::new()),
+            header_method_lookup: Mutex::new(HashMap::new()),
+            source_field_lookup: Mutex::new(HashMap::new()),
+            source_method_lookup: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn profile(&self) -> &TypeHintProfile {
+        &self.profile
+    }
+
+    fn lookup_field(
+        &self,
+        path: &Path,
+        class_name: &str,
+        field_name: &str,
+        in_source: bool,
+    ) -> Option<Option<String>> {
+        let key = CppMemberLookupKey {
+            path: cpp_path_key(path),
+            class_name: class_name.to_string(),
+            member_name: field_name.to_string(),
+        };
+        let map = if in_source {
+            self.source_field_lookup.lock().ok()?
+        } else {
+            self.header_field_lookup.lock().ok()?
+        };
+        if let Some(v) = map.get(&key) {
+            self.profile
+                .lookup_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return Some(v.clone());
+        }
+        None
+    }
+
+    fn store_field(
+        &self,
+        path: &Path,
+        class_name: &str,
+        field_name: &str,
+        in_source: bool,
+        value: Option<String>,
+    ) {
+        let key = CppMemberLookupKey {
+            path: cpp_path_key(path),
+            class_name: class_name.to_string(),
+            member_name: field_name.to_string(),
+        };
+        if in_source {
+            if let Ok(mut map) = self.source_field_lookup.lock() {
+                map.insert(key, value);
+            }
+        } else if let Ok(mut map) = self.header_field_lookup.lock() {
+            map.insert(key, value);
+        }
+    }
+
+    fn lookup_method(
+        &self,
+        path: &Path,
+        class_name: &str,
+        method_name: &str,
+        in_source: bool,
+    ) -> Option<Option<String>> {
+        let key = CppMemberLookupKey {
+            path: cpp_path_key(path),
+            class_name: class_name.to_string(),
+            member_name: method_name.to_string(),
+        };
+        let map = if in_source {
+            self.source_method_lookup.lock().ok()?
+        } else {
+            self.header_method_lookup.lock().ok()?
+        };
+        if let Some(v) = map.get(&key) {
+            self.profile
+                .lookup_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return Some(v.clone());
+        }
+        None
+    }
+
+    fn store_method(
+        &self,
+        path: &Path,
+        class_name: &str,
+        method_name: &str,
+        in_source: bool,
+        value: Option<String>,
+    ) {
+        let key = CppMemberLookupKey {
+            path: cpp_path_key(path),
+            class_name: class_name.to_string(),
+            member_name: method_name.to_string(),
+        };
+        if in_source {
+            if let Ok(mut map) = self.source_method_lookup.lock() {
+                map.insert(key, value);
+            }
+        } else if let Ok(mut map) = self.header_method_lookup.lock() {
+            map.insert(key, value);
+        }
+    }
+
+    fn load_header_text(&self, path: &Path) -> Option<Arc<str>> {
+        let key = cpp_path_key(path);
+        if let Ok(map) = self.header_text.lock() {
+            if let Some(cached) = map.get(&key) {
+                self.profile
+                    .header_cache_hits
+                    .fetch_add(1, Ordering::Relaxed);
+                return cached.clone();
+            }
+        }
+
+        let start = Instant::now();
+        let len = fs::metadata(path).ok()?.len();
+        if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
+            self.store_header_text(&key, None);
+            return None;
+        }
+        let text = fs::read_to_string(path).ok()?;
+        self.profile.header_reads.fetch_add(1, Ordering::Relaxed);
+        self.profile.header_read_nanos.fetch_add(
+            start.elapsed().as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+        let arc: Arc<str> = Arc::from(text.as_str());
+        self.store_header_text(&key, Some(Arc::clone(&arc)));
+        Some(arc)
+    }
+
+    fn store_header_text(&self, key: &PathBuf, value: Option<Arc<str>>) {
+        if let Ok(mut map) = self.header_text.lock() {
+            map.insert(key.clone(), value);
+        }
+    }
+
+    pub(crate) fn record_ast_parse(&self, elapsed: Duration) {
+        self.profile.ast_parses.fetch_add(1, Ordering::Relaxed);
+        self.profile.ast_parse_nanos.fetch_add(
+            elapsed.as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+    }
+}
 
 /// 検索対象ファイルのパスとソース（C++ の `#include` 解決などに使用）。
 #[derive(Debug, Clone, Copy)]
@@ -17,6 +255,8 @@ pub struct RecvHintContext<'a> {
     /// C++ 型ヒント用。コンパイラの `-I` に相当するディレクトリ（空なら従来どおりソースの親のみ）。
     /// `#include "x"` / `#include <x>` はまず `file_path` の親を基準にし、見つからなければ本配列を順に試す。
     pub cpp_include_dirs: &'a [PathBuf],
+    /// 検索ジョブ内共有キャッシュ（C++ include 読み込み・メンバ検索の再利用）。
+    pub job_cache: Option<&'a RecvHintJobCache>,
 }
 
 /// パターンの `$RECV` に対応するノードから型ヒント文字列を返す。
@@ -117,6 +357,20 @@ pub fn truncate_hint_snippet(s: &str) -> String {
 /// 単一メタ変数に束縛されたノードから型ヒントを返す（ドット/アローチェインは可能な言語で逐次解決）。
 pub fn infer_capture_type<D: Doc>(
     lang: SupportedLanguage,
+    capture_name: &str,
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
+    let start = Instant::now();
+    let out = infer_capture_type_inner(lang, capture_name, node, ctx);
+    if let Some(c) = ctx.and_then(|x| x.job_cache) {
+        c.profile().record_infer(start.elapsed());
+    }
+    out
+}
+
+fn infer_capture_type_inner<D: Doc>(
+    lang: SupportedLanguage,
     _capture_name: &str,
     node: &Node<'_, D>,
     ctx: Option<&RecvHintContext<'_>>,
@@ -193,9 +447,18 @@ fn cpp_field_type_for_class_in_sources(
     class_name: &str,
     field_name: &str,
 ) -> Option<String> {
-    let grep = SupportLang::Cpp.ast_grep(ctx.source);
+    if let Some(cache) = ctx.job_cache {
+        if let Some(cached) = cache.lookup_field(ctx.file_path, class_name, field_name, true) {
+            return cached;
+        }
+    }
+
+    let grep = cpp_ast_grep_with_profile!(ctx.job_cache, ctx.source);
     let root = grep.root();
     if let Some(ty) = cpp_field_in_named_translation_unit(&root, class_name, field_name) {
+        if let Some(cache) = ctx.job_cache {
+            cache.store_field(ctx.file_path, class_name, field_name, true, Some(ty.clone()));
+        }
         return Some(ty);
     }
     let base = ctx.file_path.parent()?;
@@ -210,10 +473,17 @@ fn cpp_field_type_for_class_in_sources(
                 &mut visited,
                 CPP_INCLUDE_MAX_DEPTH,
                 ctx.cpp_include_dirs,
+                ctx.job_cache,
             ) {
+                if let Some(cache) = ctx.job_cache {
+                    cache.store_field(ctx.file_path, class_name, field_name, true, Some(ty.clone()));
+                }
                 return Some(ty);
             }
         }
+    }
+    if let Some(cache) = ctx.job_cache {
+        cache.store_field(ctx.file_path, class_name, field_name, true, None);
     }
     None
 }
@@ -294,6 +564,7 @@ fn cpp_try_header_file_for_method(
     visited: &mut HashSet<PathBuf>,
     depth: usize,
     cpp_include_dirs: &[PathBuf],
+    job_cache: Option<&RecvHintJobCache>,
 ) -> Option<String> {
     if depth == 0 {
         return None;
@@ -302,37 +573,57 @@ fn cpp_try_header_file_for_method(
     if visited.contains(&key) {
         return None;
     }
-    let len = fs::metadata(path).ok()?.len();
-    if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
-        return None;
-    }
-    let text = fs::read_to_string(path).ok()?;
-    let grep = SupportLang::Cpp.ast_grep(&text);
-    let root = grep.root();
-    if let Some(ty) = cpp_method_return_in_named_translation_unit(&root, class_name, method_name) {
-        visited.insert(key);
-        return Some(ty);
-    }
-    visited.insert(key);
-    if depth <= 1 {
-        return None;
-    }
-    let base = path.parent()?;
-    for inc in cpp_include_paths_from_source(&text) {
-        if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
-            if let Some(ty) = cpp_try_header_file_for_method(
-                &p,
-                class_name,
-                method_name,
-                visited,
-                depth - 1,
-                cpp_include_dirs,
-            ) {
-                return Some(ty);
-            }
+    if let Some(cache) = job_cache {
+        if let Some(cached) = cache.lookup_method(path, class_name, method_name, false) {
+            return cached;
         }
     }
-    None
+    let text = if let Some(cache) = job_cache {
+        cache.load_header_text(path)?.to_string()
+    } else {
+        let len = fs::metadata(path).ok()?.len();
+        if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
+            return None;
+        }
+        fs::read_to_string(path).ok()?
+    };
+    let grep = cpp_ast_grep_with_profile!(job_cache, &text);
+    let root = grep.root();
+    let result = if let Some(ty) =
+        cpp_method_return_in_named_translation_unit(&root, class_name, method_name)
+    {
+        visited.insert(key);
+        Some(ty)
+    } else {
+        visited.insert(key);
+        if depth <= 1 {
+            None
+        } else {
+            let base = path.parent()?;
+            let mut found = None;
+            for inc in cpp_include_paths_from_source(&text) {
+                if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
+                    if let Some(ty) = cpp_try_header_file_for_method(
+                        &p,
+                        class_name,
+                        method_name,
+                        visited,
+                        depth - 1,
+                        cpp_include_dirs,
+                        job_cache,
+                    ) {
+                        found = Some(ty);
+                        break;
+                    }
+                }
+            }
+            found
+        }
+    };
+    if let Some(cache) = job_cache {
+        cache.store_method(path, class_name, method_name, false, result.clone());
+    }
+    result
 }
 
 fn cpp_method_return_for_class_in_sources(
@@ -340,9 +631,18 @@ fn cpp_method_return_for_class_in_sources(
     class_name: &str,
     method_name: &str,
 ) -> Option<String> {
-    let grep = SupportLang::Cpp.ast_grep(ctx.source);
+    if let Some(cache) = ctx.job_cache {
+        if let Some(cached) = cache.lookup_method(ctx.file_path, class_name, method_name, true) {
+            return cached;
+        }
+    }
+
+    let grep = cpp_ast_grep_with_profile!(ctx.job_cache, ctx.source);
     let root = grep.root();
     if let Some(ty) = cpp_method_return_in_named_translation_unit(&root, class_name, method_name) {
+        if let Some(cache) = ctx.job_cache {
+            cache.store_method(ctx.file_path, class_name, method_name, true, Some(ty.clone()));
+        }
         return Some(ty);
     }
     let base = ctx.file_path.parent()?;
@@ -357,10 +657,23 @@ fn cpp_method_return_for_class_in_sources(
                 &mut visited,
                 CPP_INCLUDE_MAX_DEPTH,
                 ctx.cpp_include_dirs,
+                ctx.job_cache,
             ) {
+                if let Some(cache) = ctx.job_cache {
+                    cache.store_method(
+                        ctx.file_path,
+                        class_name,
+                        method_name,
+                        true,
+                        Some(ty.clone()),
+                    );
+                }
                 return Some(ty);
             }
         }
+    }
+    if let Some(cache) = ctx.job_cache {
+        cache.store_method(ctx.file_path, class_name, method_name, true, None);
     }
     None
 }
@@ -1696,6 +2009,7 @@ fn cpp_try_header_file_for_field(
     visited: &mut HashSet<PathBuf>,
     depth: usize,
     cpp_include_dirs: &[PathBuf],
+    job_cache: Option<&RecvHintJobCache>,
 ) -> Option<String> {
     if depth == 0 {
         return None;
@@ -1704,37 +2018,56 @@ fn cpp_try_header_file_for_field(
     if visited.contains(&key) {
         return None;
     }
-    let len = fs::metadata(path).ok()?.len();
-    if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
-        return None;
-    }
-    let text = fs::read_to_string(path).ok()?;
-    let grep = SupportLang::Cpp.ast_grep(&text);
-    let root = grep.root();
-    if let Some(ty) = cpp_field_in_named_translation_unit(&root, class_name, field_name) {
-        visited.insert(key);
-        return Some(ty);
-    }
-    visited.insert(key);
-    if depth <= 1 {
-        return None;
-    }
-    let base = path.parent()?;
-    for inc in cpp_include_paths_from_source(&text) {
-        if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
-            if let Some(ty) = cpp_try_header_file_for_field(
-                &p,
-                class_name,
-                field_name,
-                visited,
-                depth - 1,
-                cpp_include_dirs,
-            ) {
-                return Some(ty);
-            }
+    if let Some(cache) = job_cache {
+        if let Some(cached) = cache.lookup_field(path, class_name, field_name, false) {
+            return cached;
         }
     }
-    None
+    let text = if let Some(cache) = job_cache {
+        cache.load_header_text(path)?.to_string()
+    } else {
+        let len = fs::metadata(path).ok()?.len();
+        if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
+            return None;
+        }
+        fs::read_to_string(path).ok()?
+    };
+    let grep = cpp_ast_grep_with_profile!(job_cache, &text);
+    let root = grep.root();
+    let result = if let Some(ty) = cpp_field_in_named_translation_unit(&root, class_name, field_name)
+    {
+        visited.insert(key);
+        Some(ty)
+    } else {
+        visited.insert(key);
+        if depth <= 1 {
+            None
+        } else {
+            let base = path.parent()?;
+            let mut found = None;
+            for inc in cpp_include_paths_from_source(&text) {
+                if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
+                    if let Some(ty) = cpp_try_header_file_for_field(
+                        &p,
+                        class_name,
+                        field_name,
+                        visited,
+                        depth - 1,
+                        cpp_include_dirs,
+                        job_cache,
+                    ) {
+                        found = Some(ty);
+                        break;
+                    }
+                }
+            }
+            found
+        }
+    };
+    if let Some(cache) = job_cache {
+        cache.store_field(path, class_name, field_name, false, result.clone());
+    }
+    result
 }
 
 fn cpp_field_from_included_headers<D: Doc>(
@@ -2164,6 +2497,7 @@ void f() {
             file_path: std::path::Path::new("test.cpp"),
             source: src,
             cpp_include_dirs: &[],
+            job_cache: None,
         };
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("Inner"));
@@ -2235,6 +2569,7 @@ void f() {
             file_path: std::path::Path::new("test.cpp"),
             source: src,
             cpp_include_dirs: &[],
+            job_cache: None,
         };
         let hint = infer_capture_type(SupportedLanguage::Cpp, "B", b, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("CTime.Format"));
@@ -2269,6 +2604,7 @@ void f() {
             file_path: std::path::Path::new("test.cpp"),
             source: src,
             cpp_include_dirs: &[],
+            job_cache: None,
         };
         let hint1 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[1], Some(&ctx));
         let hint2 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[2], Some(&ctx));
@@ -2296,6 +2632,7 @@ void f() {
             file_path: test_cpp.as_path(),
             source: src,
             cpp_include_dirs: &extra,
+            job_cache: None,
         };
 
         let grep = SupportLang::Cpp.ast_grep(src);
@@ -2308,5 +2645,28 @@ void f() {
         let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("Inner"));
+    }
+
+    #[test]
+    fn recv_hint_job_cache_reuses_header_text_and_records_profile() {
+        let base = std::env::temp_dir().join(format!(
+            "ast_grep_gui_hint_cache_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("mkdir");
+        let header = base.join("foo.h");
+        std::fs::write(&header, "struct Foo { int x; };").expect("write header");
+
+        let cache = RecvHintJobCache::new();
+        let first = cache.load_header_text(&header).expect("read header");
+        let second = cache.load_header_text(&header).expect("cached header");
+        assert_eq!(first.as_ref(), second.as_ref());
+
+        let snap = cache.profile().snapshot();
+        assert_eq!(snap.header_reads, 1);
+        assert_eq!(snap.header_cache_hits, 1);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

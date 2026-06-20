@@ -369,6 +369,7 @@ mod tests {
                 elapsed_ms: 0,
                 scanned: 0,
                 hit_limit_reached: false,
+                ..SearchStats::default()
             },
             error,
         }

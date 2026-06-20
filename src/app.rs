@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -379,6 +379,11 @@ pub struct AstGrepApp {
     )>,
     /// 表示時にファイル全文を再読み込みしないためのキャッシュ（新規検索でクリア）
     file_source_cache: HashMap<PathBuf, Arc<String>>,
+    /// 型ヒント列キー（結果・パターン変更時のみ再計算）
+    cached_type_hint_column_keys: Vec<String>,
+    type_hint_keys_generation: u64,
+    type_hint_keys_pattern: String,
+    type_hint_keys_enabled: bool,
 }
 
 impl AstGrepApp {
@@ -467,6 +472,10 @@ impl AstGrepApp {
             results_generation: 0,
             cpp_include_diagnostic_cache: None,
             file_source_cache: HashMap::new(),
+            cached_type_hint_column_keys: Vec::new(),
+            type_hint_keys_generation: u64::MAX,
+            type_hint_keys_pattern: String::new(),
+            type_hint_keys_enabled: false,
         }
     }
 
@@ -1011,6 +1020,47 @@ impl AstGrepApp {
         Some(arc)
     }
 
+    /// 型ヒント表の列キーをキャッシュ付きで返す（描画フレームごとの全結果走査を避ける）。
+    pub fn type_hint_column_keys_cached(&mut self) -> &[String] {
+        let needs_refresh = self.type_hint_keys_generation != self.results_generation
+            || self.type_hint_keys_pattern != self.pattern
+            || self.type_hint_keys_enabled != self.type_hints_enabled;
+        if needs_refresh {
+            self.cached_type_hint_column_keys = crate::search::type_hint_column_keys(
+                self.pattern.as_str(),
+                &self.results,
+                self.type_hints_enabled,
+            );
+            self.type_hint_keys_generation = self.results_generation;
+            self.type_hint_keys_pattern = self.pattern.clone();
+            self.type_hint_keys_enabled = self.type_hints_enabled;
+        }
+        &self.cached_type_hint_column_keys
+    }
+
+    fn invalidate_type_hint_column_keys_cache(&mut self) {
+        self.type_hint_keys_generation = self.results_generation.wrapping_sub(1);
+    }
+
+    fn apply_type_hints_update(
+        &mut self,
+        relative_path: &str,
+        updates: Vec<(usize, BTreeMap<String, String>)>,
+    ) {
+        if let Some(file_idx) = self
+            .results
+            .iter()
+            .position(|f| f.relative_path == relative_path)
+        {
+            for (match_idx, hints) in updates {
+                if let Some(m) = self.results[file_idx].matches.get_mut(match_idx) {
+                    m.type_hints = hints;
+                }
+            }
+            self.invalidate_type_hint_column_keys_cache();
+        }
+    }
+
     /// ツールバーで変更したコンテキスト行数を、検索結果の表示に反映する
     fn sync_match_contexts_from_ui(&mut self) {
         if self.results.is_empty() {
@@ -1246,6 +1296,48 @@ impl AstGrepApp {
                     run.stats.total_files += 1;
                     run.results.push(file);
                 }
+                SearchMessage::TypeHintsFileStarted { job_id, .. } => {
+                    let Some(runner) = &mut self.batch_runner else {
+                        return;
+                    };
+                    let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                        return;
+                    };
+                    if run.job_id == job_id {
+                        run.stats.type_hints_pending_files += 1;
+                        self.stats.type_hints_pending_files += 1;
+                    }
+                }
+                SearchMessage::TypeHintsUpdate {
+                    job_id,
+                    relative_path,
+                    updates,
+                } => {
+                    let Some(runner) = &mut self.batch_runner else {
+                        return;
+                    };
+                    let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                        return;
+                    };
+                    if run.job_id != job_id {
+                        return;
+                    }
+                    run.stats.type_hints_pending_files =
+                        run.stats.type_hints_pending_files.saturating_sub(1);
+                    self.stats.type_hints_pending_files =
+                        self.stats.type_hints_pending_files.saturating_sub(1);
+                    if let Some(file) = run
+                        .results
+                        .iter_mut()
+                        .find(|f| f.relative_path == relative_path)
+                    {
+                        for (match_idx, hints) in updates {
+                            if let Some(m) = file.matches.get_mut(match_idx) {
+                                m.type_hints = hints;
+                            }
+                        }
+                    }
+                }
                 SearchMessage::Progress { job_id, scanned } => {
                     let Some(runner) = &mut self.batch_runner else {
                         return;
@@ -1262,6 +1354,7 @@ impl AstGrepApp {
                     job_id,
                     elapsed_ms,
                     hit_limit_reached,
+                    type_hint_profile,
                 } => {
                     let Some(runner) = &mut self.batch_runner else {
                         return;
@@ -1274,6 +1367,8 @@ impl AstGrepApp {
                     }
                     run.stats.elapsed_ms = elapsed_ms;
                     run.stats.hit_limit_reached = hit_limit_reached;
+                    run.stats.type_hint_profile = type_hint_profile;
+                    run.stats.type_hints_pending_files = 0;
                     let list_idx = runner.ordered_indices[runner.active_idx];
                     let ctx_lines = self.batch_jobs[list_idx].context_lines;
                     refresh_match_contexts(&mut run.results, ctx_lines);
@@ -1339,6 +1434,24 @@ impl AstGrepApp {
                         );
                     }
                     self.results.push(file_result);
+                    self.invalidate_type_hint_column_keys_cache();
+                }
+                SearchMessage::TypeHintsFileStarted { job_id, .. } => {
+                    if job_id == SINGLE_SEARCH_JOB_ID {
+                        self.stats.type_hints_pending_files += 1;
+                    }
+                }
+                SearchMessage::TypeHintsUpdate {
+                    job_id,
+                    relative_path,
+                    updates,
+                } => {
+                    if job_id != SINGLE_SEARCH_JOB_ID {
+                        return;
+                    }
+                    self.stats.type_hints_pending_files =
+                        self.stats.type_hints_pending_files.saturating_sub(1);
+                    self.apply_type_hints_update(relative_path.as_str(), updates);
                 }
                 SearchMessage::Progress { job_id, scanned } => {
                     if job_id == SINGLE_SEARCH_JOB_ID {
@@ -1349,17 +1462,21 @@ impl AstGrepApp {
                     job_id,
                     elapsed_ms,
                     hit_limit_reached,
+                    type_hint_profile,
                 } => {
                     if job_id != SINGLE_SEARCH_JOB_ID {
                         return;
                     }
                     self.stats.elapsed_ms = elapsed_ms;
                     self.stats.hit_limit_reached = hit_limit_reached;
+                    self.stats.type_hint_profile = type_hint_profile;
+                    self.stats.type_hints_pending_files = 0;
                     self.search_state = SearchState::Done;
                     self.result_rx = None;
                     refresh_match_contexts(&mut self.results, self.context_lines);
                     self.rebuild_table_row_metrics();
                     self.last_context_lines_applied = self.context_lines;
+                    self.invalidate_type_hint_column_keys_cache();
                 }
                 SearchMessage::Error { job_id, msg } => {
                     if job_id != SINGLE_SEARCH_JOB_ID {

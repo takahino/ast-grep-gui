@@ -2,9 +2,7 @@ use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 
 use crate::app::{AstGrepApp, TableColumnWidths, TablePreviewState, TableRowRef};
 use crate::highlight::build_layout_job_from_line;
-use crate::search::{
-    type_hint_column_keys, FileResult, MatchItem, TypeHintCell, UnknownHintDetail,
-};
+use crate::search::{FileResult, MatchItem, TypeHintCell, UnknownHintDetail};
 use crate::ui::{code_layout, in_view_find, scroll_keyboard};
 
 /// 列間のドラッグ用（Excel の境界に相当）
@@ -203,8 +201,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         ui.add_space(4.0);
     }
 
-    let column_keys =
-        type_hint_column_keys(app.pattern.as_str(), &app.results, app.type_hints_enabled);
+    let column_keys = app.type_hint_column_keys_cached().to_vec();
     let n_hints = column_keys.len();
     app.table_column_widths.sync_hint_cols(n_hints);
 

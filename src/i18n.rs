@@ -1694,6 +1694,18 @@ impl Tr {
             UiLanguage::English => format!("Searching... {} files scanned", scanned),
         }
     }
+    pub fn status_searching_type_hints(self, scanned: usize, pending: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!(
+                "検索中... {} ファイルスキャン済み（型ヒント推定中: {} ファイル）",
+                scanned, pending
+            ),
+            UiLanguage::English => format!(
+                "Searching... {} files scanned (type hints pending: {} files)",
+                scanned, pending
+            ),
+        }
+    }
     pub fn status_done(
         self,
         matches: usize,

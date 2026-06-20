@@ -1,9 +1,8 @@
 use egui::Ui;
 
 use crate::app::{AstGrepApp, CodeViewPaneFocus};
-use crate::file_encoding::read_text_file_as;
 use crate::highlight::{build_layout_job, build_layout_job_with_in_view_find};
-use crate::search::{type_hint_column_keys, CODE_VIEW_MAX_HIGHLIGHT_LINES};
+use crate::search::CODE_VIEW_MAX_HIGHLIGHT_LINES;
 use crate::ui::{code_layout, in_view_find, scroll_keyboard};
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
@@ -25,11 +24,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let lang = file_snapshot.source_language;
     let text_encoding = file_snapshot.text_encoding.clone();
 
-    // ファイル内容を読み込む
-    let source = match read_text_file_as(&path, text_encoding.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            ui.label(t.code_read_error_fmt(e));
+    // ファイル内容を読み込む（アプリ内キャッシュ経由）
+    let source = match app.file_source_by_path(&path, text_encoding.clone()) {
+        Some(s) => (*s).clone(),
+        None => {
+            ui.label(t.code_read_error_fmt("read failed"));
             return;
         }
     };
@@ -96,6 +95,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         .default_open(false)
         .show(ui, |ui| {
             let mut send_to_assist: Option<String> = None;
+            let column_keys = app.type_hint_column_keys_cached().to_vec();
             egui::ScrollArea::vertical()
                 .id_salt("match_list_panel")
                 .max_height(120.0)
@@ -110,11 +110,6 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                             );
                             let block =
                                 m.program_with_context_for_file(&file_snapshot, app.context_lines);
-                            let column_keys = type_hint_column_keys(
-                                app.pattern.as_str(),
-                                &app.results,
-                                app.type_hints_enabled,
-                            );
                             let hover = if column_keys.is_empty() {
                                 block.clone()
                             } else {

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use ast_grep_core::{Doc, NodeMatch};
 use ast_grep_language::LanguageExt;
 use crossbeam_channel::{Receiver, Sender};
 use jwalk::WalkDir;
@@ -74,6 +75,17 @@ pub enum SearchMessage {
         job_id: usize,
         file: FileResult,
     },
+    /// 型ヒントを後追い計算するファイル（マッチ本体は先に `FileResult` で送る）
+    TypeHintsFileStarted {
+        job_id: usize,
+        relative_path: String,
+    },
+    /// 1 ファイル分の型ヒント推定完了
+    TypeHintsUpdate {
+        job_id: usize,
+        relative_path: String,
+        updates: Vec<(usize, BTreeMap<String, String>)>,
+    },
     Progress {
         job_id: usize,
         scanned: usize,
@@ -83,6 +95,9 @@ pub enum SearchMessage {
         elapsed_ms: u64,
         /// `max_search_hits > 0` のとき、収集件数が上限に達した
         hit_limit_reached: bool,
+        /// 型ヒント推定の計測（有効時のみ）
+        #[allow(dead_code)]
+        type_hint_profile: Option<receiver_hint::TypeHintProfileSnapshot>,
     },
     Error {
         job_id: usize,
@@ -531,6 +546,59 @@ fn parse_file_filter(filter: &str) -> Option<Vec<regex::Regex>> {
     }
 }
 
+/// 1 AST マッチに対する型ヒント map を構築する。
+fn type_hints_for_ast_match<'t, D: Doc>(
+    file_lang: SupportedLanguage,
+    hint_ctx: &receiver_hint::RecvHintContext<'_>,
+    mat: &NodeMatch<'t, D>,
+    metavar_names: &[String],
+    multi_metavar_names: &[String],
+) -> BTreeMap<String, String> {
+    let mut hints = BTreeMap::new();
+    for name in metavar_names {
+        if let Some(capture) = mat.get_env().get_match(name) {
+            let mut h = receiver_hint::infer_capture_type(
+                file_lang,
+                name.as_str(),
+                capture,
+                Some(hint_ctx),
+            )
+            .unwrap_or_default();
+            if h.is_empty() {
+                h = format!(
+                    "?:{}",
+                    receiver_hint::format_stored_unknown_hint(capture),
+                );
+            }
+            hints.insert(name.clone(), h);
+        }
+    }
+    for multi_name in multi_metavar_names {
+        let nodes: Vec<_> = mat
+            .get_env()
+            .get_multiple_matches(multi_name)
+            .into_iter()
+            .filter(|n| n.is_named())
+            .collect();
+        hints.insert(format!("{multi_name}#arity"), nodes.len().to_string());
+        for (i, cap) in nodes.iter().enumerate() {
+            let key = format!("{multi_name}#{i}");
+            let mut h = receiver_hint::infer_capture_type(
+                file_lang,
+                multi_name.as_str(),
+                cap,
+                Some(hint_ctx),
+            )
+            .unwrap_or_default();
+            if h.is_empty() {
+                h = format!("?:{}", receiver_hint::format_stored_unknown_hint(cap));
+            }
+            hints.insert(key, h);
+        }
+    }
+    hints
+}
+
 /// バックグラウンドで検索を実行する
 ///
 /// - jwalk で並列ディレクトリ走査（不要なディレクトリを事前フィルタ）
@@ -650,6 +718,8 @@ pub fn spawn_search(
                 .collect(),
         );
 
+        let hint_job_cache = Arc::new(receiver_hint::RecvHintJobCache::new());
+
         // ファイルフィルタの解析
         let custom_patterns = parse_file_filter(&file_filter);
         // PlainText/Regex でファイルフィルタ未指定の場合は全ファイルを対象にする
@@ -763,7 +833,9 @@ pub fn spawn_search(
 
                 let hits_acc = Arc::clone(&hits_accepted);
                 let limit_flag = Arc::clone(&hit_limit_reached);
+                let hint_cache = Arc::clone(&hint_job_cache);
 
+                let mut file_result_sent = false;
                 let matches: Vec<MatchItem> = match search_mode {
                     SearchMode::AstGrep => {
                         let ast_lang = match file_lang.to_support_lang() {
@@ -782,8 +854,9 @@ pub fn spawn_search(
                         let multi_metavar_names = pattern_multi_metavariables(pattern_str.as_str());
                         let want_type_hints = type_hints_enabled
                             && (!metavar_names.is_empty() || !multi_metavar_names.is_empty());
-                        for compiled_pat in compiled_patterns {
-                            for node in root.root().find_all(&compiled_pat) {
+                        let mut winning_pat = None;
+                        for compiled_pat in &compiled_patterns {
+                            for node in root.root().find_all(compiled_pat) {
                                 if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
                                     break;
                                 }
@@ -806,69 +879,6 @@ pub fn spawn_search(
                                     line_index.byte_offset_to_line_col(&source, node_range.start);
                                 let (line_end, col_end) =
                                     line_index.byte_offset_to_line_col(&source, matched_end);
-                                let type_hints = if want_type_hints {
-                                    let hint_ctx = receiver_hint::RecvHintContext {
-                                        file_path: path.as_path(),
-                                        source: source.as_str(),
-                                        cpp_include_dirs: cpp_include_paths.as_ref().as_slice(),
-                                    };
-                                    let mut hints = BTreeMap::new();
-                                    for name in &metavar_names {
-                                        if let Some(capture) = node.get_env().get_match(name) {
-                                            let mut h = receiver_hint::infer_capture_type(
-                                                file_lang,
-                                                name.as_str(),
-                                                capture,
-                                                Some(&hint_ctx),
-                                            )
-                                            .unwrap_or_default();
-                                            if h.is_empty() {
-                                                h = format!(
-                                                    "?:{}",
-                                                    receiver_hint::format_stored_unknown_hint(
-                                                        capture
-                                                    ),
-                                                );
-                                            }
-                                            hints.insert(name.clone(), h);
-                                        }
-                                    }
-                                    for multi_name in &multi_metavar_names {
-                                        // `$$$A` は引数リストの「子ノード」すべてを取る。tree-sitter ではカンマ `,` が
-                                        // 無名ノードとして挟まるため、素の len は「論理引数 + カンマ」になりうる。
-                                        // 表の arity・スロットは名前付きノードだけに揃える。
-                                        let nodes: Vec<_> = node
-                                            .get_env()
-                                            .get_multiple_matches(multi_name)
-                                            .into_iter()
-                                            .filter(|n| n.is_named())
-                                            .collect();
-                                        hints.insert(
-                                            format!("{multi_name}#arity"),
-                                            nodes.len().to_string(),
-                                        );
-                                        for (i, cap) in nodes.iter().enumerate() {
-                                            let key = format!("{multi_name}#{i}");
-                                            let mut h = receiver_hint::infer_capture_type(
-                                                file_lang,
-                                                multi_name.as_str(),
-                                                cap,
-                                                Some(&hint_ctx),
-                                            )
-                                            .unwrap_or_default();
-                                            if h.is_empty() {
-                                                h = format!(
-                                                    "?:{}",
-                                                    receiver_hint::format_stored_unknown_hint(cap),
-                                                );
-                                            }
-                                            hints.insert(key, h);
-                                        }
-                                    }
-                                    hints
-                                } else {
-                                    BTreeMap::new()
-                                };
                                 out.push(build_match_item(
                                     line_start,
                                     col_start,
@@ -876,11 +886,68 @@ pub fn spawn_search(
                                     col_end,
                                     node_range.start,
                                     matched_end,
-                                    type_hints,
+                                    BTreeMap::new(),
                                 ));
                             }
                             if !out.is_empty() {
+                                winning_pat = Some(compiled_pat);
                                 break;
+                            }
+                        }
+
+                        if !out.is_empty() {
+                            if want_type_hints {
+                                let _ = tx.send(SearchMessage::TypeHintsFileStarted {
+                                    job_id,
+                                    relative_path: relative_path.clone(),
+                                });
+                            }
+                            let _ = tx.send(SearchMessage::FileResult {
+                                job_id,
+                                file: FileResult {
+                                    path: path.to_path_buf(),
+                                    relative_path: relative_path.clone(),
+                                    source_language: file_lang,
+                                    text_encoding: text_encoding.clone(),
+                                    matches: out.clone(),
+                                },
+                            });
+                            file_result_sent = true;
+                            repaint(&egui_ctx);
+
+                            if want_type_hints {
+                                if let Some(compiled_pat) = winning_pat {
+                                    let hint_ctx = receiver_hint::RecvHintContext {
+                                        file_path: path.as_path(),
+                                        source: source.as_str(),
+                                        cpp_include_dirs: cpp_include_paths.as_ref().as_slice(),
+                                        job_cache: Some(hint_cache.as_ref()),
+                                    };
+                                    let mut updates = Vec::with_capacity(out.len());
+                                    for (idx, node) in
+                                        root.root().find_all(compiled_pat).enumerate()
+                                    {
+                                        if idx >= out.len() {
+                                            break;
+                                        }
+                                        updates.push((
+                                            idx,
+                                            type_hints_for_ast_match(
+                                                file_lang,
+                                                &hint_ctx,
+                                                &node,
+                                                &metavar_names,
+                                                &multi_metavar_names,
+                                            ),
+                                        ));
+                                    }
+                                    let _ = tx.send(SearchMessage::TypeHintsUpdate {
+                                        job_id,
+                                        relative_path: relative_path.clone(),
+                                        updates,
+                                    });
+                                    repaint(&egui_ctx);
+                                }
                             }
                         }
                         out
@@ -1036,7 +1103,7 @@ pub fn spawn_search(
                     }
                 };
 
-                if !matches.is_empty() {
+                if !matches.is_empty() && !file_result_sent {
                     let _ = tx.send(SearchMessage::FileResult {
                         job_id,
                         file: FileResult {
@@ -1059,10 +1126,16 @@ pub fn spawn_search(
         });
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let hit_limit_reached = hit_limit_reached.load(Ordering::Relaxed);
+        let type_hint_profile = if type_hints_enabled {
+            Some(hint_job_cache.profile().snapshot())
+        } else {
+            None
+        };
         let _ = tx.send(SearchMessage::Done {
             job_id,
             elapsed_ms,
             hit_limit_reached,
+            type_hint_profile,
         });
         repaint(&egui_ctx);
     });
@@ -1122,16 +1195,38 @@ pub fn run_search_sync(
                 stats.total_files += 1;
                 results.push(file);
             }
+            SearchMessage::TypeHintsFileStarted { .. } => {
+                stats.type_hints_pending_files += 1;
+            }
+            SearchMessage::TypeHintsUpdate {
+                relative_path,
+                updates,
+                ..
+            } => {
+                stats.type_hints_pending_files =
+                    stats.type_hints_pending_files.saturating_sub(1);
+                if let Some(file) = results.iter_mut().find(|f| f.relative_path == relative_path)
+                {
+                    for (match_idx, hints) in updates {
+                        if let Some(m) = file.matches.get_mut(match_idx) {
+                            m.type_hints = hints;
+                        }
+                    }
+                }
+            }
             SearchMessage::Progress { scanned, .. } => {
                 stats.scanned = scanned;
             }
             SearchMessage::Done {
                 elapsed_ms,
                 hit_limit_reached,
+                type_hint_profile,
                 ..
             } => {
                 stats.elapsed_ms = elapsed_ms;
                 stats.hit_limit_reached = hit_limit_reached;
+                stats.type_hint_profile = type_hint_profile;
+                stats.type_hints_pending_files = 0;
                 break;
             }
             SearchMessage::Error { msg, .. } => {
@@ -1876,6 +1971,12 @@ pub struct SearchStats {
     pub scanned: usize,
     /// ヒット上限により結果が打ち切られた
     pub hit_limit_reached: bool,
+    /// 型ヒント後追い推定が未完了のファイル数
+    #[serde(default)]
+    pub type_hints_pending_files: usize,
+    /// 型ヒント推定の計測（検索完了時）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_hint_profile: Option<receiver_hint::TypeHintProfileSnapshot>,
 }
 
 /// `max == 0` のときは無制限。それ以外は CAS でカウンタを安全にインクリメントし、上限超えなら `false` を返す。

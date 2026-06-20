@@ -25,7 +25,19 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             SearchState::Running => {
                 ui.spinner();
                 if let Some((cur, tot)) = app.batch_job_progress() {
-                    ui.label(t.status_batch_running(cur, tot, app.stats.scanned));
+                    if app.stats.type_hints_pending_files > 0 {
+                        ui.label(t.status_searching_type_hints(
+                            app.stats.scanned,
+                            app.stats.type_hints_pending_files,
+                        ));
+                    } else {
+                        ui.label(t.status_batch_running(cur, tot, app.stats.scanned));
+                    }
+                } else if app.stats.type_hints_pending_files > 0 {
+                    ui.label(t.status_searching_type_hints(
+                        app.stats.scanned,
+                        app.stats.type_hints_pending_files,
+                    ));
                 } else {
                     ui.label(t.status_searching(app.stats.scanned));
                 }
