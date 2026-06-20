@@ -3,10 +3,10 @@
 use egui::Ui;
 
 use crate::app::AstGrepApp;
-use crate::ui::scroll_keyboard;
 use crate::batch::BatchRunResult;
 use crate::export::{file_filter_display, plain_text_options_export_value};
 use crate::search::SearchConditions;
+use crate::ui::scroll_keyboard;
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let t = app.tr();
@@ -43,7 +43,10 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 ui.group(|ui| {
                     ui.heading(format!("{}. {} (id={})", i + 1, run.label, run.job_id));
                     if let Some(ref err) = run.error {
-                        ui.colored_label(egui::Color32::RED, format!("{}: {err}", t.batch_report_error()));
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            format!("{}: {err}", t.batch_report_error()),
+                        );
                     } else {
                         ui.label(t.batch_report_job_stats(
                             run.stats.total_matches,
@@ -84,7 +87,11 @@ fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
         t.export_cond_lang(),
         c.selected_lang.combo_label(lang)
     ));
-    ui.label(format!("{}: {}", t.export_cond_context_lines(), c.context_lines));
+    ui.label(format!(
+        "{}: {}",
+        t.export_cond_context_lines(),
+        c.context_lines
+    ));
     ui.label(format!(
         "{}: {}",
         t.export_cond_file_filter(),
@@ -95,8 +102,16 @@ fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
         t.export_cond_file_encoding(),
         c.file_encoding_preference.display_label(lang)
     ));
-    ui.label(format!("{}: {}", t.export_cond_max_file_mb(), c.max_file_size_mb));
-    ui.label(format!("{}: {}", t.export_cond_max_search_hits(), c.max_search_hits));
+    ui.label(format!(
+        "{}: {}",
+        t.export_cond_max_file_mb(),
+        c.max_file_size_mb
+    ));
+    ui.label(format!(
+        "{}: {}",
+        t.export_cond_max_search_hits(),
+        c.max_search_hits
+    ));
     ui.label(format!("{}: {}", t.export_cond_skip_dirs(), c.skip_dirs));
     ui.label(format!(
         "{}: {}",
@@ -131,7 +146,7 @@ fn show_run_matches(ui: &mut Ui, run: &BatchRunResult, t: crate::i18n::Tr) {
                     ui.monospace(&file.relative_path);
                     ui.label(m.line_start.to_string());
                     ui.label(m.col_start.to_string());
-                    ui.monospace(&m.matched_text);
+                    ui.monospace(&m.matched_text_for_file(file));
                     ui.end_row();
                 }
             }

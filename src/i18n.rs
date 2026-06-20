@@ -566,7 +566,9 @@ impl Tr {
     }
     pub fn search_tooltip_ast(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "ASTパターン検索を開始します（マッチ範囲は ast-grep 本体と同じ）",
+            UiLanguage::Japanese => {
+                "ASTパターン検索を開始します（マッチ範囲は ast-grep 本体と同じ）"
+            }
             UiLanguage::English => "Start AST search (same spans as ast-grep CLI)",
         }
     }
@@ -634,12 +636,8 @@ impl Tr {
     }
     pub fn regex_visualizer_btn_tooltip(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => {
-                "正規表現の構造を見やすく分解し、コンパイル可否も確認できます"
-            }
-            UiLanguage::English => {
-                "Break down the regex structure and check whether it compiles"
-            }
+            UiLanguage::Japanese => "正規表現の構造を見やすく分解し、コンパイル可否も確認できます",
+            UiLanguage::English => "Break down the regex structure and check whether it compiles",
         }
     }
     pub fn regex_visualizer_window_title(self) -> &'static str {
@@ -712,12 +710,8 @@ impl Tr {
     }
     pub fn regex_visualizer_test_hint(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => {
-                "ここに文字列を入力すると、上の正規表現でマッチ箇所を試せます"
-            }
-            UiLanguage::English => {
-                "Type sample text here to try matches against the pattern above"
-            }
+            UiLanguage::Japanese => "ここに文字列を入力すると、上の正規表現でマッチ箇所を試せます",
+            UiLanguage::English => "Type sample text here to try matches against the pattern above",
         }
     }
     pub fn regex_visualizer_test_matches_heading(self) -> &'static str {
@@ -1028,9 +1022,7 @@ impl Tr {
             UiLanguage::Japanese => {
                 "YAML ファイルからバッチジョブ一覧を読み込み、現在の一覧を置き換えます"
             }
-            UiLanguage::English => {
-                "Load batch jobs from a YAML file, replacing the current list"
-            }
+            UiLanguage::English => "Load batch jobs from a YAML file, replacing the current list",
         }
     }
     pub fn err_batch_save(self) -> &'static str {
@@ -1130,7 +1122,9 @@ impl Tr {
     }
     pub fn batch_report_empty(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "レポートがありません。バッチ実行を完了するとここに結果が表示されます。",
+            UiLanguage::Japanese => {
+                "レポートがありません。バッチ実行を完了するとここに結果が表示されます。"
+            }
             UiLanguage::English => "No report yet. Run a batch search to see results here.",
         }
     }
@@ -1385,8 +1379,12 @@ impl Tr {
     }
     pub fn cpp_include_diagnostic_no_results(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "検索結果がありません。C/C++ ファイルがヒットしてから開いてください。",
-            UiLanguage::English => "No search results yet. Run a search that hits C/C++ files first.",
+            UiLanguage::Japanese => {
+                "検索結果がありません。C/C++ ファイルがヒットしてから開いてください。"
+            }
+            UiLanguage::English => {
+                "No search results yet. Run a search that hits C/C++ files first."
+            }
         }
     }
     pub fn cpp_include_diagnostic_cpp_files(self, n: usize) -> String {
@@ -1397,8 +1395,12 @@ impl Tr {
     }
     pub fn cpp_include_diagnostic_read_errors(self, n: usize) -> String {
         match self.0 {
-            UiLanguage::Japanese => format!("ソース読み取り失敗: {n} ファイル（文字コードや権限を確認してください）"),
-            UiLanguage::English => format!("Failed to read {n} file(s) (check encoding or permissions)."),
+            UiLanguage::Japanese => {
+                format!("ソース読み取り失敗: {n} ファイル（文字コードや権限を確認してください）")
+            }
+            UiLanguage::English => {
+                format!("Failed to read {n} file(s) (check encoding or permissions).")
+            }
         }
     }
     pub fn cpp_include_diagnostic_unresolved_section(
@@ -1407,9 +1409,9 @@ impl Tr {
         distinct: usize,
     ) -> String {
         match self.0 {
-            UiLanguage::Japanese => format!(
-                "解決できなかった #include: {total_hits} 回（{distinct} 種類）"
-            ),
+            UiLanguage::Japanese => {
+                format!("解決できなかった #include: {total_hits} 回（{distinct} 種類）")
+            }
             UiLanguage::English => format!(
                 "Unresolved #include: {total_hits} occurrence(s), {distinct} distinct path(s)"
             ),
@@ -1417,8 +1419,12 @@ impl Tr {
     }
     pub fn cpp_include_diagnostic_all_resolved(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "上記の試行ではすべてローカルに解決できました（または #include がありません）。",
-            UiLanguage::English => "All #includes above resolved locally (or none present), under current -I paths.",
+            UiLanguage::Japanese => {
+                "上記の試行ではすべてローカルに解決できました（または #include がありません）。"
+            }
+            UiLanguage::English => {
+                "All #includes above resolved locally (or none present), under current -I paths."
+            }
         }
     }
     pub fn cpp_include_diagnostic_examples(self, paths: &str) -> String {
@@ -1550,7 +1556,13 @@ impl Tr {
             UiLanguage::English => format!("Searching... {} files scanned", scanned),
         }
     }
-    pub fn status_done(self, matches: usize, files: usize, ms: u64, hit_limit_reached: bool) -> String {
+    pub fn status_done(
+        self,
+        matches: usize,
+        files: usize,
+        ms: u64,
+        hit_limit_reached: bool,
+    ) -> String {
         let base = match self.0 {
             UiLanguage::Japanese => format!("{}件 / {}ファイル / {}ms", matches, files, ms),
             UiLanguage::English => format!("{} matches / {} files / {}ms", matches, files, ms),
@@ -1652,7 +1664,7 @@ impl Tr {
             UiLanguage::English => {
                 "Replacement template (like ast-grep --rewrite).\n\
                  Meta-variables from the search pattern can be used."
-            },
+            }
         }
     }
     pub fn rewrite_template_hint(self) -> &'static str {
@@ -1732,9 +1744,7 @@ impl Tr {
             UiLanguage::Japanese => {
                 "プレビュー内容を元の文字コードでディスクに保存し、その後検索を再実行します"
             }
-            UiLanguage::English => {
-                "Save preview using each file's encoding, then run search again"
-            },
+            UiLanguage::English => "Save preview using each file's encoding, then run search again",
         }
     }
     pub fn rewrite_status_previewing(self, done: usize, total: usize) -> String {
@@ -1751,7 +1761,9 @@ impl Tr {
     }
     pub fn rewrite_applied_ok(self, n: usize) -> String {
         match self.0 {
-            UiLanguage::Japanese => format!("{n} 件のファイルを書き換えました。検索を更新しました。"),
+            UiLanguage::Japanese => {
+                format!("{n} 件のファイルを書き換えました。検索を更新しました。")
+            }
             UiLanguage::English => format!("Updated {n} file(s). Search refreshed."),
         }
     }
@@ -1836,12 +1848,8 @@ impl Tr {
     }
     pub fn help_meta_multi(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => {
-                "0個以上の複数ノードにマッチ  例: $$$ARGS  $$$BODY  $$$ITEMS"
-            }
-            UiLanguage::English => {
-                "Matches zero or more nodes  e.g. $$$ARGS  $$$BODY  $$$ITEMS"
-            }
+            UiLanguage::Japanese => "0個以上の複数ノードにマッチ  例: $$$ARGS  $$$BODY  $$$ITEMS",
+            UiLanguage::English => "Matches zero or more nodes  e.g. $$$ARGS  $$$BODY  $$$ITEMS",
         }
     }
     pub fn help_meta_ignore(self) -> &'static str {
@@ -1938,14 +1946,18 @@ impl Tr {
     }
     pub fn help_tip_1(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "同じ名前のメタ変数（例: $A, $A）は、同一のコード片にマッチする必要があります",
+            UiLanguage::Japanese => {
+                "同じ名前のメタ変数（例: $A, $A）は、同一のコード片にマッチする必要があります"
+            }
             UiLanguage::English => "Same meta-variable name (e.g. $A, $A) must match the same code",
         }
     }
     pub fn help_tip_2(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "$$$ は「複数ノード」用。引数リストや文の並びに使います",
-            UiLanguage::English => "$$$ matches zero or more nodes—use for arg lists or statement sequences",
+            UiLanguage::English => {
+                "$$$ matches zero or more nodes—use for arg lists or statement sequences"
+            }
         }
     }
     pub fn help_tip_3(self) -> &'static str {
@@ -2017,7 +2029,9 @@ impl Tr {
     }
     pub fn pa_no_candidates(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => "パターン候補が見つかりませんでした（スニペットを確認してください）",
+            UiLanguage::Japanese => {
+                "パターン候補が見つかりませんでした（スニペットを確認してください）"
+            }
             UiLanguage::English => "No pattern candidates (check your snippet)",
         }
     }
@@ -2269,11 +2283,17 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => format!(
                 "合計: {}件 / {}ファイル / {}ms{}\n\n",
-                m, f, ms, self.hit_limit_suffix(hit_limit_reached)
+                m,
+                f,
+                ms,
+                self.hit_limit_suffix(hit_limit_reached)
             ),
             UiLanguage::English => format!(
                 "Total: {} matches / {} files / {}ms{}\n\n",
-                m, f, ms, self.hit_limit_suffix(hit_limit_reached)
+                m,
+                f,
+                ms,
+                self.hit_limit_suffix(hit_limit_reached)
             ),
         }
     }
@@ -2295,19 +2315,23 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => format!(
                 "\n\n合計: **{}件** / **{}ファイル** / {}ms{}\n\n",
-                m, f, ms, self.hit_limit_suffix(hit_limit_reached)
+                m,
+                f,
+                ms,
+                self.hit_limit_suffix(hit_limit_reached)
             ),
             UiLanguage::English => format!(
                 "\n\nTotal: **{}** matches / **{}** files / {}ms{}\n\n",
-                m, f, ms, self.hit_limit_suffix(hit_limit_reached)
+                m,
+                f,
+                ms,
+                self.hit_limit_suffix(hit_limit_reached)
             ),
         }
     }
     pub fn export_md_table_header(self) -> &'static str {
         match self.0 {
-            UiLanguage::Japanese => {
-                "| ファイル | 行 | 列 | マッチテキスト | 元コード（前後） |\n"
-            }
+            UiLanguage::Japanese => "| ファイル | 行 | 列 | マッチテキスト | 元コード（前後） |\n",
             UiLanguage::English => "| File | Line | Col | Matched text | Source (context) |\n",
         }
     }
@@ -2348,11 +2372,17 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => format!(
                 "<p class=\"stats\">合計: <b>{}件</b> / <b>{}ファイル</b> / {}ms{}</p>\n",
-                m, f, ms, self.hit_limit_suffix(hit_limit_reached)
+                m,
+                f,
+                ms,
+                self.hit_limit_suffix(hit_limit_reached)
             ),
             UiLanguage::English => format!(
                 "<p class=\"stats\">Total: <b>{}</b> matches / <b>{}</b> files / {}ms{}</p>\n",
-                m, f, ms, self.hit_limit_suffix(hit_limit_reached)
+                m,
+                f,
+                ms,
+                self.hit_limit_suffix(hit_limit_reached)
             ),
         }
     }

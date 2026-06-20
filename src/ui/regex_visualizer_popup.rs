@@ -1,9 +1,7 @@
 use regex::Regex;
 
 use crate::app::AstGrepApp;
-use crate::regex_visualizer::{
-    visualize_regex, RegexDiagram, RegexDiagramNode, RegexVisualKind,
-};
+use crate::regex_visualizer::{visualize_regex, RegexDiagram, RegexDiagramNode, RegexVisualKind};
 use crate::search::SearchMode;
 
 pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
@@ -74,7 +72,11 @@ fn regex_visualizer_content(ui: &mut egui::Ui, app: &mut AstGrepApp) {
     } else {
         egui::Color32::from_rgb(220, 100, 100)
     };
-    ui.label(egui::RichText::new(status_text).strong().color(status_color));
+    ui.label(
+        egui::RichText::new(status_text)
+            .strong()
+            .color(status_color),
+    );
     if let Some(err) = &vis.compile_error {
         ui.label(
             egui::RichText::new(err)
@@ -346,11 +348,7 @@ fn draw_node(
             let size = measure_node(node);
             let rect = egui::Rect::from_min_size(egui::pos2(x, y), size);
             painter.rect_filled(rect, 6.0, token_fill(*kind));
-            painter.rect_stroke(
-                rect,
-                6.0,
-                egui::Stroke::new(1.0, token_stroke(*kind)),
-            );
+            painter.rect_stroke(rect, 6.0, egui::Stroke::new(1.0, token_stroke(*kind)));
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -578,7 +576,9 @@ fn token_fill(kind: RegexVisualKind) -> egui::Color32 {
 fn token_stroke(kind: RegexVisualKind) -> egui::Color32 {
     match kind {
         RegexVisualKind::Anchor => egui::Color32::from_rgb(170, 190, 255),
-        RegexVisualKind::Group | RegexVisualKind::GroupEnd => egui::Color32::from_rgb(255, 210, 120),
+        RegexVisualKind::Group | RegexVisualKind::GroupEnd => {
+            egui::Color32::from_rgb(255, 210, 120)
+        }
         RegexVisualKind::Alternation => egui::Color32::from_rgb(255, 170, 170),
         RegexVisualKind::Quantifier => egui::Color32::from_rgb(160, 240, 160),
         RegexVisualKind::CharClass => egui::Color32::from_rgb(150, 230, 240),

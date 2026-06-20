@@ -17,15 +17,16 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
         .default_open(false)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button(t.batch_add_job()).on_hover_text(t.batch_add_job_tooltip()).clicked() {
+                if ui
+                    .button(t.batch_add_job())
+                    .on_hover_text(t.batch_add_job_tooltip())
+                    .clicked()
+                {
                     app.add_pattern_job_from_current();
                 }
                 let can_run = app.batch_runner.is_none()
                     && !matches!(app.search_state, crate::app::SearchState::Running)
-                    && app
-                        .batch_jobs
-                        .iter()
-                        .any(|j| j.is_runnable());
+                    && app.batch_jobs.iter().any(|j| j.is_runnable());
                 if ui
                     .add_enabled(can_run, egui::Button::new(t.batch_run_all()))
                     .on_hover_text(t.batch_run_all_tooltip())
@@ -102,7 +103,10 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                                 for i in 0..n {
                                     let job = &app.batch_jobs[i];
                                     let pat_short = if job.pattern.chars().count() > 40 {
-                                        format!("{}…", job.pattern.chars().take(40).collect::<String>())
+                                        format!(
+                                            "{}…",
+                                            job.pattern.chars().take(40).collect::<String>()
+                                        )
                                     } else {
                                         job.pattern.clone()
                                     };
@@ -195,10 +199,26 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
 
                     ui.horizontal(|ui| {
                         ui.label(t.mode_label());
-                        ui.selectable_value(&mut job.search_mode, SearchMode::AstGrep, t.mode_ast());
-                        ui.selectable_value(&mut job.search_mode, SearchMode::TokenSearch, t.mode_token());
-                        ui.selectable_value(&mut job.search_mode, SearchMode::PlainText, t.mode_plain());
-                        ui.selectable_value(&mut job.search_mode, SearchMode::Regex, t.mode_regex());
+                        ui.selectable_value(
+                            &mut job.search_mode,
+                            SearchMode::AstGrep,
+                            t.mode_ast(),
+                        );
+                        ui.selectable_value(
+                            &mut job.search_mode,
+                            SearchMode::TokenSearch,
+                            t.mode_token(),
+                        );
+                        ui.selectable_value(
+                            &mut job.search_mode,
+                            SearchMode::PlainText,
+                            t.mode_plain(),
+                        );
+                        ui.selectable_value(
+                            &mut job.search_mode,
+                            SearchMode::Regex,
+                            t.mode_regex(),
+                        );
                     });
 
                     if job.search_mode.is_ast_mode() {
@@ -219,10 +239,18 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                     }
 
                     let (pattern_tooltip, pattern_hint) = match job.search_mode {
-                        SearchMode::AstGrep => (t.pattern_label_tooltip_ast(), t.pattern_hint_ast()),
-                        SearchMode::TokenSearch => (t.pattern_label_tooltip_token(), t.pattern_hint_token()),
-                        SearchMode::PlainText => (t.pattern_label_tooltip_plain(), t.pattern_hint_plain()),
-                        SearchMode::Regex => (t.pattern_label_tooltip_regex(), t.pattern_hint_regex()),
+                        SearchMode::AstGrep => {
+                            (t.pattern_label_tooltip_ast(), t.pattern_hint_ast())
+                        }
+                        SearchMode::TokenSearch => {
+                            (t.pattern_label_tooltip_token(), t.pattern_hint_token())
+                        }
+                        SearchMode::PlainText => {
+                            (t.pattern_label_tooltip_plain(), t.pattern_hint_plain())
+                        }
+                        SearchMode::Regex => {
+                            (t.pattern_label_tooltip_regex(), t.pattern_hint_regex())
+                        }
                     };
                     ui.horizontal(|ui| {
                         ui.label(t.pattern_colon()).on_hover_text(pattern_tooltip);
@@ -279,11 +307,19 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
 
                     ui.horizontal(|ui| {
                         ui.label(t.max_file_size_label());
-                        ui.add(egui::DragValue::new(&mut job.max_file_size_mb).range(1..=500).suffix(" MB"));
+                        ui.add(
+                            egui::DragValue::new(&mut job.max_file_size_mb)
+                                .range(1..=500)
+                                .suffix(" MB"),
+                        );
                     });
                     ui.horizontal(|ui| {
                         ui.label(t.max_search_hits_label());
-                        ui.add(egui::DragValue::new(&mut job.max_search_hits).range(0..=10_000_000).speed(1000.0));
+                        ui.add(
+                            egui::DragValue::new(&mut job.max_search_hits)
+                                .range(0..=10_000_000)
+                                .speed(1000.0),
+                        );
                     });
                     ui.horizontal(|ui| {
                         ui.label(t.skip_dirs_label());

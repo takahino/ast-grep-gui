@@ -1,10 +1,11 @@
-use egui::text::LayoutJob;
 use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 
 use crate::app::{AstGrepApp, TableColumnWidths, TablePreviewState, TableRowRef};
 use crate::highlight::build_layout_job_from_line;
-use crate::search::{type_hint_column_keys, MatchItem, TypeHintCell, UnknownHintDetail};
-use crate::ui::{in_view_find, scroll_keyboard};
+use crate::search::{
+    type_hint_column_keys, FileResult, MatchItem, TypeHintCell, UnknownHintDetail,
+};
+use crate::ui::{code_layout, in_view_find, scroll_keyboard};
 
 /// 列間のドラッグ用（Excel の境界に相当）
 const RESIZE_HANDLE_W: f32 = 6.0;
@@ -48,29 +49,14 @@ fn left_aligned_text_cell(
     response
 }
 
-fn left_aligned_layout_job_cell(
-    ui: &mut Ui,
-    width: f32,
-    height: f32,
-    job: LayoutJob,
-    fallback_color: Color32,
-    sense: Sense,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
-    let galley = ui.fonts(|fonts| fonts.layout_job(job));
-    let pos = rect.min + egui::vec2(4.0, 0.0);
-    ui.painter()
-        .with_clip_rect(rect)
-        .galley(pos, galley, fallback_color);
-    response
-}
-
 fn context_match_item(m: &MatchItem) -> MatchItem {
     MatchItem {
         line_start: m.line_start,
         col_start: m.col_start,
         line_end: m.line_end,
         col_end: m.col_end,
+        byte_start: m.byte_start,
+        byte_end: m.byte_end,
         matched_text: m.matched_text.clone(),
         span_lines_text: m.span_lines_text.clone(),
         context_before: Vec::new(),
@@ -170,11 +156,18 @@ fn unknown_hint_table_display(d: &UnknownHintDetail) -> String {
     if full.chars().count() <= MAX {
         full
     } else {
-        format!("{}…", full.chars().take(MAX.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            full.chars().take(MAX.saturating_sub(1)).collect::<String>()
+        )
     }
 }
 
-fn row_index_for_unit_offset(prefix_units: &[usize], row_count: usize, unit_offset: usize) -> usize {
+fn row_index_for_unit_offset(
+    prefix_units: &[usize],
+    row_count: usize,
+    unit_offset: usize,
+) -> usize {
     if row_count == 0 {
         return 0;
     }
@@ -188,10 +181,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let t = app.tr();
     if app.results.is_empty() {
         ui.centered_and_justified(|ui| {
-            ui.label(
-                egui::RichText::new(t.table_empty())
-                    .color(egui::Color32::GRAY),
-            );
+            ui.label(egui::RichText::new(t.table_empty()).color(egui::Color32::GRAY));
         });
         return;
     }
@@ -218,7 +208,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     let mut flat = flat_widths(&app.table_column_widths, n_hints);
 
-    let row_unit_height = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
+    let row_unit_height = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y);
     let header_h = row_unit_height.max(ui.spacing().interact_size.y);
 
     let table_interact_rect = ui.available_rect_before_wrap();
@@ -269,10 +261,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         let total_units = app.table_row_prefix_units.last().copied().unwrap_or(0);
 
                         if let Some(target_row) = app.table_scroll_to_row {
-                            let target_units = app.table_row_prefix_units.get(target_row).copied().unwrap_or(0);
-                            let target_height_units = app.table_row_units.get(target_row).copied().unwrap_or(1);
+                            let target_units = app
+                                .table_row_prefix_units
+                                .get(target_row)
+                                .copied()
+                                .unwrap_or(0);
+                            let target_height_units =
+                                app.table_row_units.get(target_row).copied().unwrap_or(1);
                             let target_rect = Rect::from_min_size(
-                                egui::pos2(0.0, content_top + target_units as f32 * row_unit_height),
+                                egui::pos2(
+                                    0.0,
+                                    content_top + target_units as f32 * row_unit_height,
+                                ),
                                 Vec2::new(total_w, target_height_units as f32 * row_unit_height),
                             );
                             ui.scroll_to_rect(target_rect, Some(Align::Center));
@@ -297,7 +297,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         ) + 2)
                             .min(row_count);
 
-                        let start_units = app.table_row_prefix_units.get(start).copied().unwrap_or(0);
+                        let start_units =
+                            app.table_row_prefix_units.get(start).copied().unwrap_or(0);
                         ui.add_space(start_units as f32 * row_unit_height);
 
                         let file_w = flat[0];
@@ -308,43 +309,67 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         let action_w = flat[5 + n_hints];
 
                         for row_idx in start..end {
-                            let TableRowRef { file_idx, match_idx } = app.table_rows[row_idx];
-                            let file = &app.results[file_idx];
-                            let m = &file.matches[match_idx];
+                            let TableRowRef {
+                                file_idx,
+                                match_idx,
+                            } = app.table_rows[row_idx];
+                            let file_path = app.results[file_idx].path.clone();
+                            let relative_path = app.results[file_idx].relative_path.clone();
+                            let source_language = app.results[file_idx].source_language;
+                            let text_encoding = app.results[file_idx].text_encoding.clone();
+                            let m = app.results[file_idx].matches[match_idx].clone();
+                            let matches = app.results[file_idx].matches.clone();
                             let (
                                 path,
-                                relative_path,
                                 line_start,
                                 col_start,
                                 matched_text,
-                                source_context_job,
+                                source_context_jobs,
                                 full_context,
-                                matches,
-                                source_language,
-                                text_encoding,
                             ) = {
-                                let full_context = m.program_with_context();
+                                let context_lines = app.context_lines;
+                                let full_context = m.program_with_context_for_file(
+                                    &FileResult {
+                                        path: file_path.clone(),
+                                        relative_path: relative_path.clone(),
+                                        source_language,
+                                        text_encoding: text_encoding.clone(),
+                                        matches: vec![],
+                                    },
+                                    context_lines,
+                                );
+                                let matched_text = if !m.matched_text.is_empty() {
+                                    m.matched_text.clone()
+                                } else if let Some(source) =
+                                    app.file_source_by_path(&file_path, text_encoding.clone())
+                                {
+                                    crate::search::matched_text_from_source(source.as_str(), &m)
+                                } else {
+                                    String::new()
+                                };
+                                let ctx_before_len =
+                                    context_lines.min(m.line_start.saturating_sub(1));
                                 let snippet_cache_key = format!(
                                     "table:{}:{match_idx}:{}:{}:{}:{}",
-                                    file.relative_path,
+                                    relative_path,
                                     m.line_start,
                                     m.col_start,
-                                    m.context_before.len(),
-                                    m.context_after.len(),
+                                    ctx_before_len,
+                                    context_lines,
                                 );
-                                let snippet_matches = vec![context_match_item(m)];
-                                let source_context_start_line = m.line_start.saturating_sub(m.context_before.len());
+                                let snippet_matches = vec![context_match_item(&m)];
+                                let source_context_start_line =
+                                    m.line_start.saturating_sub(ctx_before_len);
                                 let snippet_highlighted = app.highlighter.highlight_source(
                                     &snippet_cache_key,
                                     &full_context,
-                                    file.source_language,
+                                    source_language,
                                 );
                                 (
-                                    file.path.clone(),
-                                    file.relative_path.clone(),
+                                    file_path,
                                     m.line_start,
                                     m.col_start,
-                                    m.matched_text.clone(),
+                                    matched_text,
                                     build_layout_job_from_line(
                                         snippet_highlighted,
                                         &snippet_matches,
@@ -352,76 +377,63 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         source_context_start_line,
                                     ),
                                     full_context,
-                                    file.matches.clone(),
-                                    file.source_language,
-                                    file.text_encoding.clone(),
                                 )
                             };
 
                             let hint_cells: Vec<(RichText, String)> = column_keys
                                 .iter()
-                                .map(|key| {
-                                    match m.type_hint_cell(key) {
-                                        TypeHintCell::Inferred(s) => {
-                                            let display = if s.chars().count() > 28 {
-                                                format!("{}…", s.chars().take(25).collect::<String>())
-                                            } else {
-                                                s.clone()
-                                            };
-                                            (
-                                                RichText::new(display)
-                                                    .monospace()
-                                                    .color(Color32::from_rgb(220, 200, 100)),
-                                                s,
-                                            )
-                                        }
-                                        TypeHintCell::NoSlot => (
-                                            RichText::new("·")
+                                .map(|key| match m.type_hint_cell(key) {
+                                    TypeHintCell::Inferred(s) => {
+                                        let display = if s.chars().count() > 28 {
+                                            format!("{}…", s.chars().take(25).collect::<String>())
+                                        } else {
+                                            s.clone()
+                                        };
+                                        (
+                                            RichText::new(display)
                                                 .monospace()
-                                                .color(Color32::from_rgb(130, 135, 150)),
-                                            t.table_type_hint_no_slot_tooltip(key),
-                                        ),
-                                        TypeHintCell::Unknown(detail) => {
-                                            let q = Color32::from_rgb(200, 145, 90);
-                                            let (rt, hover_body) = match &detail {
-                                                None => (
-                                                    RichText::new("?").monospace().color(q),
-                                                    String::new(),
-                                                ),
-                                                Some(d) => {
-                                                    let display = unknown_hint_table_display(d);
-                                                    let full = TypeHintCell::Unknown(Some(d.clone()))
-                                                        .to_export_string();
-                                                    (
-                                                        RichText::new(display)
-                                                            .monospace()
-                                                            .color(q),
-                                                        full,
-                                                    )
-                                                }
-                                            };
-                                            let tip_base = if key.ends_with("#arity") {
-                                                t.table_type_hint_arity_empty_tooltip().to_string()
-                                            } else {
-                                                t.table_type_hint_column_empty_tooltip(key)
-                                            };
-                                            let tip = if hover_body.is_empty() {
-                                                tip_base
-                                            } else {
-                                                format!("{tip_base}\n\n{hover_body}")
-                                            };
-                                            (rt, tip)
-                                        }
+                                                .color(Color32::from_rgb(220, 200, 100)),
+                                            s,
+                                        )
+                                    }
+                                    TypeHintCell::NoSlot => (
+                                        RichText::new("·")
+                                            .monospace()
+                                            .color(Color32::from_rgb(130, 135, 150)),
+                                        t.table_type_hint_no_slot_tooltip(key),
+                                    ),
+                                    TypeHintCell::Unknown(detail) => {
+                                        let q = Color32::from_rgb(200, 145, 90);
+                                        let (rt, hover_body) = match &detail {
+                                            None => (
+                                                RichText::new("?").monospace().color(q),
+                                                String::new(),
+                                            ),
+                                            Some(d) => {
+                                                let display = unknown_hint_table_display(d);
+                                                let full = TypeHintCell::Unknown(Some(d.clone()))
+                                                    .to_export_string();
+                                                (RichText::new(display).monospace().color(q), full)
+                                            }
+                                        };
+                                        let tip_base = if key.ends_with("#arity") {
+                                            t.table_type_hint_arity_empty_tooltip().to_string()
+                                        } else {
+                                            t.table_type_hint_column_empty_tooltip(key)
+                                        };
+                                        let tip = if hover_body.is_empty() {
+                                            tip_base
+                                        } else {
+                                            format!("{tip_base}\n\n{hover_body}")
+                                        };
+                                        (rt, tip)
                                     }
                                 })
                                 .collect();
 
                             let file_label = ellipsis_path_tail(&relative_path, 40, 37);
-                            let row_height = app
-                                .table_row_units
-                                .get(row_idx)
-                                .copied()
-                                .unwrap_or(1) as f32
+                            let row_height = app.table_row_units.get(row_idx).copied().unwrap_or(1)
+                                as f32
                                 * row_unit_height;
 
                             let row_bg = if row_idx % 2 == 0 {
@@ -437,11 +449,19 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     let r_file = label_cell(ui, file_w, file_label, Sense::click())
                                         .on_hover_text(&relative_path);
                                     resize_spacer(ui, row_height);
-                                    let r_line =
-                                        label_cell(ui, line_w, line_start.to_string(), Sense::click());
+                                    let r_line = label_cell(
+                                        ui,
+                                        line_w,
+                                        line_start.to_string(),
+                                        Sense::click(),
+                                    );
                                     resize_spacer(ui, row_height);
-                                    let r_col =
-                                        label_cell(ui, col_w, col_start.to_string(), Sense::click());
+                                    let r_col = label_cell(
+                                        ui,
+                                        col_w,
+                                        col_start.to_string(),
+                                        Sense::click(),
+                                    );
                                     resize_spacer(ui, row_height);
                                     let r_matched = left_aligned_text_cell(
                                         ui,
@@ -456,11 +476,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     )
                                     .on_hover_text(&matched_text);
                                     resize_spacer(ui, row_height);
-                                    let r_src = left_aligned_layout_job_cell(
+                                    let r_src = code_layout::paint_split_layout_job_cell(
                                         ui,
                                         source_w,
                                         row_height,
-                                        source_context_job,
+                                        source_context_jobs,
                                         Color32::from_rgb(180, 190, 210),
                                         Sense::click(),
                                     )
@@ -530,15 +550,26 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                             });
                         }
 
-                        let end_units = app.table_row_prefix_units.get(end).copied().unwrap_or(total_units);
-                        ui.add_space(total_units.saturating_sub(end_units) as f32 * row_unit_height);
+                        let end_units = app
+                            .table_row_prefix_units
+                            .get(end)
+                            .copied()
+                            .unwrap_or(total_units);
+                        ui.add_space(
+                            total_units.saturating_sub(end_units) as f32 * row_unit_height,
+                        );
                     });
 
                 scroll_keyboard::store_scroll_metrics(&ctx, sid, &scroll_out, table_interact_rect);
             });
         });
 
-    scroll_keyboard::store_horizontal_scroll_metrics(&ctx_table, sid_h, &scroll_h_out, table_interact_rect);
+    scroll_keyboard::store_horizontal_scroll_metrics(
+        &ctx_table,
+        sid_h,
+        &scroll_h_out,
+        table_interact_rect,
+    );
 
     app.table_scroll_to_row = None;
 

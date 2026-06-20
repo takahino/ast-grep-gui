@@ -4,8 +4,7 @@ use std::path::Path;
 
 use chardetng::EncodingDetector;
 use encoding_rs::{
-    BIG5, EUC_JP, EUC_KR, Encoding, GBK, ISO_2022_JP, SHIFT_JIS, UTF_16BE, UTF_16LE,
-    WINDOWS_1252,
+    Encoding, BIG5, EUC_JP, EUC_KR, GBK, ISO_2022_JP, SHIFT_JIS, UTF_16BE, UTF_16LE, WINDOWS_1252,
 };
 
 use crate::i18n::UiLanguage;
@@ -298,7 +297,12 @@ fn guess_utf16_without_bom(bytes: &[u8]) -> Option<&'static Encoding> {
     }
 
     let even_zeros = sample.iter().step_by(2).filter(|&&b| b == 0).count();
-    let odd_zeros = sample.iter().skip(1).step_by(2).filter(|&&b| b == 0).count();
+    let odd_zeros = sample
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .filter(|&&b| b == 0)
+        .count();
 
     if odd_zeros * 5 >= pair_count * 4 && even_zeros * 5 <= pair_count {
         return Some(UTF_16LE);

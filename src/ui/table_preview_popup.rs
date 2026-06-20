@@ -1,7 +1,7 @@
 use crate::app::AstGrepApp;
 use crate::file_encoding::read_text_file_as;
 use crate::highlight::{build_layout_job, build_layout_job_with_in_view_find};
-use crate::ui::in_view_find;
+use crate::ui::{code_layout, in_view_find};
 
 pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
     if app.table_preview.is_none() {
@@ -68,7 +68,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
             let highlighted = app
                 .highlighter
                 .highlight_source(&relative_path, &source, lang);
-            let job = if app.in_view_find.open && !app.in_view_find.query.is_empty() {
+            let jobs = if app.in_view_find.open && !app.in_view_find.query.is_empty() {
                 let spans = in_view_find::find_byte_spans(
                     source.as_str(),
                     &app.in_view_find.query,
@@ -97,8 +97,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
             }
 
             scroll.show(ui, |ui| {
-                let galley = ui.fonts(|f| f.layout_job(job));
-                ui.add(egui::Label::new(galley).selectable(true));
+                code_layout::show_selectable_code(ui, jobs);
             });
         });
 

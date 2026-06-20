@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod ast_pattern;
 mod app;
+mod ast_pattern;
 mod batch;
 mod export;
 mod file_encoding;
@@ -10,8 +10,8 @@ mod highlight;
 mod i18n;
 mod lang;
 mod pattern_assist;
-mod regex_visualizer;
 mod receiver_hint;
+mod regex_visualizer;
 mod rewrite;
 mod search;
 mod sg_command;

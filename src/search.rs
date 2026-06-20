@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -7,12 +7,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ast_grep_language::LanguageExt;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use jwalk::WalkDir;
 use rayon::prelude::*;
 
 use crate::ast_pattern::compile_strategies;
-use crate::file_encoding::{read_text_file, read_text_file_as, FileEncoding, FileEncodingPreference};
+use crate::file_encoding::{
+    read_text_file, read_text_file_as, FileEncoding, FileEncodingPreference,
+};
 use crate::i18n::{Tr, UiLanguage};
 use crate::lang::SupportedLanguage;
 use crate::receiver_hint;
@@ -34,6 +36,24 @@ impl SearchMode {
     pub fn is_ast_mode(self) -> bool {
         matches!(self, Self::AstGrep)
     }
+}
+
+/// 検索結果チャンネル容量（UI より速く積み上がらないようバックプレッシャー）
+pub const SEARCH_MESSAGE_CHANNEL_CAPACITY: usize = 256;
+/// 1 UI フレームあたりに処理する検索メッセージ数の上限
+pub const SEARCH_MESSAGES_PER_FRAME: usize = 64;
+/// ターミナル `sg` のヒット数上限（GUI より保守的）
+pub const TERMINAL_MAX_SEARCH_HITS: usize = 10_000;
+/// ターミナル出力行数の上限
+pub const TERMINAL_MAX_LINES: usize = 50_000;
+/// ハイライトキャッシュの最大エントリ数
+pub const HIGHLIGHT_CACHE_MAX_ENTRIES: usize = 128;
+/// コードビューで全文ハイライトする最大行数
+pub const CODE_VIEW_MAX_HIGHLIGHT_LINES: usize = 5_000;
+
+/// 検索スレッド ↔ UI 用の bounded チャンネルを作成する
+pub fn search_message_channel() -> (Sender<SearchMessage>, Receiver<SearchMessage>) {
+    crossbeam_channel::bounded(SEARCH_MESSAGE_CHANNEL_CAPACITY)
 }
 
 /// 文字列検索モード（`SearchMode::PlainText`）のオプション
@@ -99,7 +119,8 @@ struct LineIndex {
 
 impl LineIndex {
     fn new(source: &str) -> Self {
-        let mut line_starts = Vec::with_capacity(source.bytes().filter(|&b| b == b'\n').count() + 1);
+        let mut line_starts =
+            Vec::with_capacity(source.bytes().filter(|&b| b == b'\n').count() + 1);
         line_starts.push(0);
         for (idx, byte) in source.bytes().enumerate() {
             if byte == b'\n' {
@@ -112,9 +133,17 @@ impl LineIndex {
     /// バイトオフセットを (0-based 行インデックス, 行内バイトオフセット) に変換
     fn byte_offset_to_line_col(&self, source: &str, byte_offset: usize) -> (usize, usize) {
         let capped = byte_offset.min(source.len());
-        let line = self.line_starts.partition_point(|&start| start <= capped).saturating_sub(1);
+        let line = self
+            .line_starts
+            .partition_point(|&start| start <= capped)
+            .saturating_sub(1);
         let col = capped.saturating_sub(self.line_starts[line]);
         (line, col)
+    }
+
+    /// 0-based 行・行内バイトオフセットをソース上のバイト位置に変換
+    fn line_col_to_byte_offset(&self, line_0: usize, col: usize) -> usize {
+        self.line_starts.get(line_0).copied().unwrap_or(0) + col
     }
 }
 
@@ -176,11 +205,20 @@ pub struct MatchItem {
     pub col_start: usize,  // byteオフセット（行内）
     pub line_end: usize,
     pub col_end: usize,
+    /// ソース上のマッチ範囲 `[byte_start, byte_end)`（新規検索ではこちらを優先）
+    #[serde(default)]
+    pub byte_start: usize,
+    #[serde(default)]
+    pub byte_end: usize,
+    /// レガシー JSON / エクスポート用。新規検索では空のまま遅延解決する
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub matched_text: String,
     /// マッチが及ぶ行のソース上の全文（`line_start`〜`line_end` の行を `\n` で連結）
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub span_lines_text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_before: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_after: Vec<String>,
     /// 単一メタ変数名 → 構文ベースで推定した型（表示専用・best-effort）
     #[serde(default)]
@@ -210,7 +248,11 @@ impl MatchItem {
             if slot_idx >= arity {
                 return TypeHintCell::NoSlot;
             }
-            let raw = self.type_hint_for_metavar(key).unwrap_or("").trim().to_string();
+            let raw = self
+                .type_hint_for_metavar(key)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if raw.is_empty() {
                 return TypeHintCell::Unknown(None);
             }
@@ -222,7 +264,11 @@ impl MatchItem {
             }
             return TypeHintCell::Inferred(raw);
         }
-        let raw = self.type_hint_for_metavar(key).unwrap_or("").trim().to_string();
+        let raw = self
+            .type_hint_for_metavar(key)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if raw.is_empty() {
             TypeHintCell::Unknown(None)
         } else if let Some(rest) = raw.strip_prefix("?:") {
@@ -259,35 +305,170 @@ impl MatchItem {
             .map(|m| m.saturating_add(1))
             .unwrap_or(0)
     }
-    /// マッチ範囲を含む行の全文＋前後コンテキスト（表の「元コード」列・エクスポート用）
+    /// インメモリに保持済みのコンテキスト文字列から表示用テキストを組み立てる（レガシー）
     pub fn program_with_context(&self) -> String {
         let center = if self.span_lines_text.is_empty() {
             self.matched_text.as_str()
         } else {
             self.span_lines_text.as_str()
         };
-        let mut s = String::new();
-        for line in &self.context_before {
-            s.push_str(line);
-            s.push('\n');
+        assemble_program_with_context(&self.context_before, center, &self.context_after)
+    }
+
+    /// ファイルからコンテキストを解決して表示用テキストを返す
+    pub fn program_with_context_for_file(&self, file: &FileResult, context_lines: usize) -> String {
+        if !self.span_lines_text.is_empty() || !self.context_before.is_empty() {
+            return self.program_with_context();
         }
-        s.push_str(center);
-        if !self.context_after.is_empty() {
-            if !center.is_empty() && !s.ends_with('\n') {
-                s.push('\n');
-            }
-            for line in &self.context_after {
-                s.push_str(line);
-                s.push('\n');
-            }
+        let Ok(source) = read_text_file_as(&file.path, file.text_encoding.clone()) else {
+            return self.matched_text.clone();
+        };
+        program_with_context_from_source(&source, self, context_lines)
+    }
+
+    /// ファイルからマッチテキストを解決する
+    pub fn matched_text_for_file(&self, file: &FileResult) -> String {
+        if !self.matched_text.is_empty() {
+            return self.matched_text.clone();
         }
-        s.trim_end_matches('\n').to_string()
+        let Ok(source) = read_text_file_as(&file.path, file.text_encoding.clone()) else {
+            return String::new();
+        };
+        matched_text_from_source(&source, self)
     }
 
     /// 後方互換: `program_with_context()` と同じ（従来の「マッチ＋コンテキスト」一体表示を置き換え）
     pub fn text_with_context(&self) -> String {
         self.program_with_context()
     }
+
+    /// エクスポート用にテキストフィールドをソースから埋める
+    pub fn materialize_from_source(&mut self, source: &str, context_lines: usize) {
+        if self.matched_text.is_empty() {
+            self.matched_text = matched_text_from_source(source, self);
+        }
+        if self.span_lines_text.is_empty() {
+            let lines: Vec<&str> = source.lines().collect();
+            let ls0 = self.line_start.saturating_sub(1);
+            let le0 = self.line_end.saturating_sub(1);
+            self.span_lines_text = join_span_lines(&lines, ls0, le0);
+            if self.context_before.is_empty() && self.context_after.is_empty() {
+                let (before, after) = slice_context_lines(&lines, ls0, le0, context_lines);
+                self.context_before = before;
+                self.context_after = after;
+            }
+        }
+    }
+}
+
+fn assemble_program_with_context(
+    context_before: &[String],
+    center: &str,
+    context_after: &[String],
+) -> String {
+    let mut s = String::new();
+    for line in context_before {
+        s.push_str(line);
+        s.push('\n');
+    }
+    s.push_str(center);
+    if !context_after.is_empty() {
+        if !center.is_empty() && !s.ends_with('\n') {
+            s.push('\n');
+        }
+        for line in context_after {
+            s.push_str(line);
+            s.push('\n');
+        }
+    }
+    s.trim_end_matches('\n').to_string()
+}
+
+/// ソース文字列からマッチテキストを解決する
+pub fn matched_text_from_source(source: &str, m: &MatchItem) -> String {
+    if !m.matched_text.is_empty() {
+        return m.matched_text.clone();
+    }
+    if m.byte_end > m.byte_start && m.byte_start < source.len() {
+        let end = m.byte_end.min(source.len());
+        return source[m.byte_start..end].to_string();
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    let ls0 = m.line_start.saturating_sub(1);
+    let le0 = m.line_end.saturating_sub(1);
+    if ls0 >= lines.len() {
+        return String::new();
+    }
+    if ls0 == le0 {
+        let line = lines[ls0];
+        let cs = m.col_start.min(line.len());
+        let ce = m.col_end.max(cs).min(line.len());
+        return line.get(cs..ce).unwrap_or("").to_string();
+    }
+    join_span_lines(&lines, ls0, le0)
+}
+
+/// ソース文字列から「マッチ＋前後コンテキスト」を解決する
+pub fn program_with_context_from_source(
+    source: &str,
+    m: &MatchItem,
+    context_lines: usize,
+) -> String {
+    if !m.span_lines_text.is_empty() || !m.context_before.is_empty() {
+        return m.program_with_context();
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    let ls0 = m.line_start.saturating_sub(1);
+    let le0 = m.line_end.saturating_sub(1);
+    let (before, after) = slice_context_lines(&lines, ls0, le0, context_lines);
+    let center = join_span_lines(&lines, ls0, le0);
+    assemble_program_with_context(&before, &center, &after)
+}
+
+/// 表ビューの行高推定（ファイル未読み込みでも使える近似）
+pub fn match_display_line_units(m: &MatchItem, context_lines: usize) -> usize {
+    if !m.span_lines_text.is_empty() {
+        let center_lines = if m.span_lines_text.is_empty() {
+            count_display_lines(&m.matched_text)
+        } else {
+            count_display_lines(&m.span_lines_text)
+        };
+        return (m.context_before.len() + center_lines + m.context_after.len()).max(1);
+    }
+    let ls0 = m.line_start.saturating_sub(1);
+    let le0 = m.line_end.saturating_sub(1);
+    let center = le0.saturating_sub(ls0) + 1;
+    let before = ls0.min(context_lines);
+    let after = context_lines;
+    (before + center + after).max(1)
+}
+
+fn count_display_lines(text: &str) -> usize {
+    if text.is_empty() {
+        1
+    } else {
+        text.bytes().filter(|b| *b == b'\n').count() + 1
+    }
+}
+
+/// エクスポート前に結果内の MatchItem テキストをファイルから埋める
+pub fn materialize_results_for_export(
+    results: &[FileResult],
+    context_lines: usize,
+) -> Vec<FileResult> {
+    results
+        .iter()
+        .map(|file| {
+            let mut out = file.clone();
+            let Ok(source) = read_text_file_as(&file.path, file.text_encoding.clone()) else {
+                return out;
+            };
+            for m in &mut out.matches {
+                m.materialize_from_source(&source, context_lines);
+            }
+            out
+        })
+        .collect()
 }
 
 /// `ARGS#0` のような複数ノードスロット列キーを `Some(("ARGS", 0))` に。`ARGS#arity` は `None`。
@@ -343,7 +524,11 @@ fn parse_file_filter(filter: &str) -> Option<Vec<regex::Regex>> {
             regex::Regex::new(&format!("^{regex_pat}$")).ok()
         })
         .collect();
-    if patterns.is_empty() { None } else { Some(patterns) }
+    if patterns.is_empty() {
+        None
+    } else {
+        Some(patterns)
+    }
 }
 
 /// バックグラウンドで検索を実行する
@@ -357,7 +542,7 @@ pub fn spawn_search(
     lang: SupportedLanguage,
     search_mode: SearchMode,
     plain_text_options: PlainTextSearchOptions,
-    context_lines: usize,
+    _context_lines: usize,
     file_filter: String,
     file_encoding_preference: FileEncodingPreference,
     max_file_size_bytes: u64,
@@ -385,10 +570,7 @@ pub fn spawn_search(
                     Ok(re) => Some(Arc::new(re)),
                     Err(e) => {
                         let msg = Tr(ui_lang).err_regex_compile(e);
-                        let _ = tx.send(SearchMessage::Error {
-                            job_id,
-                            msg,
-                        });
+                        let _ = tx.send(SearchMessage::Error { job_id, msg });
                         egui_ctx.request_repaint();
                         return;
                     }
@@ -408,10 +590,7 @@ pub fn spawn_search(
                 Ok(re) => Some(Arc::new(re)),
                 Err(e) => {
                     let msg = Tr(ui_lang).err_regex_compile(e);
-                    let _ = tx.send(SearchMessage::Error {
-                        job_id,
-                        msg,
-                    });
+                    let _ = tx.send(SearchMessage::Error { job_id, msg });
                     egui_ctx.request_repaint();
                     return;
                 }
@@ -424,7 +603,10 @@ pub fn spawn_search(
         let token_search_re: Option<Arc<regex::Regex>> = if search_mode == SearchMode::TokenSearch {
             let tokens: Vec<&str> = pattern_str.split_whitespace().collect();
             if tokens.is_empty() {
-                let _ = tx.send(SearchMessage::Error { job_id, msg: "パターンが空です".into() });
+                let _ = tx.send(SearchMessage::Error {
+                    job_id,
+                    msg: "パターンが空です".into(),
+                });
                 egui_ctx.request_repaint();
                 return;
             }
@@ -476,17 +658,16 @@ pub fn spawn_search(
         };
 
         // jwalk: スキップするディレクトリを process_read_dir で除外し走査負荷を削減
-        let walker = WalkDir::new(&search_dir)
-            .process_read_dir(move |_, _, _, children| {
-                children.retain(|entry_result| {
-                    let Ok(entry) = entry_result else { return true };
-                    if !entry.file_type.is_dir() {
-                        return true;
-                    }
-                    let name = entry.file_name.to_string_lossy();
-                    !skip_dirs.contains(name.as_ref())
-                });
+        let walker = WalkDir::new(&search_dir).process_read_dir(move |_, _, _, children| {
+            children.retain(|entry_result| {
+                let Ok(entry) = entry_result else { return true };
+                if !entry.file_type.is_dir() {
+                    return true;
+                }
+                let name = entry.file_name.to_string_lossy();
+                !skip_dirs.contains(name.as_ref())
             });
+        });
 
         // par_bridge() でイテレータを直接 rayon に渡し、全ファイル収集前から処理開始
         walker
@@ -516,8 +697,7 @@ pub fn spawn_search(
             .for_each(|entry| {
                 let path = entry.path();
 
-                if max_search_hits != 0
-                    && hits_accepted.load(Ordering::Relaxed) >= max_search_hits
+                if max_search_hits != 0 && hits_accepted.load(Ordering::Relaxed) >= max_search_hits
                 {
                     return;
                 }
@@ -557,8 +737,7 @@ pub fn spawn_search(
                 let text_encoding = decoded.encoding;
                 let source = decoded.text;
 
-                if max_search_hits != 0
-                    && hits_accepted.load(Ordering::Relaxed) >= max_search_hits
+                if max_search_hits != 0 && hits_accepted.load(Ordering::Relaxed) >= max_search_hits
                 {
                     return;
                 }
@@ -621,10 +800,6 @@ pub fn spawn_search(
                                     line_index.byte_offset_to_line_col(&source, node_range.start);
                                 let (line_end, col_end) =
                                     line_index.byte_offset_to_line_col(&source, matched_end);
-                                let matched_text = source
-                                    .get(node_range.start..matched_end)
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| display_node.text().to_string());
                                 let type_hints = if want_type_hints {
                                     let hint_ctx = receiver_hint::RecvHintContext {
                                         file_path: path.as_path(),
@@ -644,7 +819,9 @@ pub fn spawn_search(
                                             if h.is_empty() {
                                                 h = format!(
                                                     "?:{}",
-                                                    receiver_hint::format_stored_unknown_hint(capture),
+                                                    receiver_hint::format_stored_unknown_hint(
+                                                        capture
+                                                    ),
                                                 );
                                             }
                                             hints.insert(name.clone(), h);
@@ -691,9 +868,8 @@ pub fn spawn_search(
                                     col_start,
                                     line_end,
                                     col_end,
-                                    matched_text,
-                                    &lines,
-                                    context_lines,
+                                    node_range.start,
+                                    matched_end,
                                     type_hints,
                                 ));
                             }
@@ -712,7 +888,11 @@ pub fn spawn_search(
                             'lines_re: for (line_idx, line) in lines.iter().enumerate() {
                                 for mat in re.find_iter(line) {
                                     if whole
-                                        && !is_whitespace_delimited_token(line, mat.start(), mat.end())
+                                        && !is_whitespace_delimited_token(
+                                            line,
+                                            mat.start(),
+                                            mat.end(),
+                                        )
                                     {
                                         continue;
                                     }
@@ -721,15 +901,17 @@ pub fn spawn_search(
                                     }
                                     let col_start = mat.start();
                                     let col_end = mat.end();
-                                    let matched_text = line[col_start..col_end].to_string();
+                                    let byte_start =
+                                        line_index.line_col_to_byte_offset(line_idx, col_start);
+                                    let byte_end =
+                                        line_index.line_col_to_byte_offset(line_idx, col_end);
                                     result.push(build_match_item(
                                         line_idx,
                                         col_start,
                                         line_idx,
                                         col_end,
-                                        matched_text,
-                                        &lines,
-                                        context_lines,
+                                        byte_start,
+                                        byte_end,
                                         BTreeMap::new(),
                                     ));
                                 }
@@ -747,15 +929,17 @@ pub fn spawn_search(
                                     if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
                                         break 'lines_w;
                                     }
-                                    let matched_text = line[col_start..col_end].to_string();
+                                    let byte_start =
+                                        line_index.line_col_to_byte_offset(line_idx, col_start);
+                                    let byte_end =
+                                        line_index.line_col_to_byte_offset(line_idx, col_end);
                                     result.push(build_match_item(
                                         line_idx,
                                         col_start,
                                         line_idx,
                                         col_end,
-                                        matched_text,
-                                        &lines,
-                                        context_lines,
+                                        byte_start,
+                                        byte_end,
                                         BTreeMap::new(),
                                     ));
                                     search_start = col_end;
@@ -774,15 +958,17 @@ pub fn spawn_search(
                                     }
                                     let col_start = search_start + byte_pos;
                                     let col_end = col_start + needle.len();
-                                    let matched_text = line[col_start..col_end].to_string();
+                                    let byte_start =
+                                        line_index.line_col_to_byte_offset(line_idx, col_start);
+                                    let byte_end =
+                                        line_index.line_col_to_byte_offset(line_idx, col_end);
                                     result.push(build_match_item(
                                         line_idx,
                                         col_start,
                                         line_idx,
                                         col_end,
-                                        matched_text,
-                                        &lines,
-                                        context_lines,
+                                        byte_start,
+                                        byte_end,
                                         BTreeMap::new(),
                                     ));
                                     search_start = col_end;
@@ -807,8 +993,12 @@ pub fn spawn_search(
                             let (line_end, col_end) =
                                 line_index.byte_offset_to_line_col(&source, mat.end());
                             out.push(build_match_item(
-                                line_start, col_start, line_end, col_end,
-                                mat.as_str().to_string(), &lines, context_lines,
+                                line_start,
+                                col_start,
+                                line_end,
+                                col_end,
+                                mat.start(),
+                                mat.end(),
                                 BTreeMap::new(),
                             ));
                         }
@@ -827,8 +1017,13 @@ pub fn spawn_search(
                             let (line_end, col_end) =
                                 line_index.byte_offset_to_line_col(&source, mat.end());
                             out.push(build_match_item(
-                                line_start, col_start, line_end, col_end,
-                                mat.as_str().to_string(), &lines, context_lines, BTreeMap::new(),
+                                line_start,
+                                col_start,
+                                line_end,
+                                col_end,
+                                mat.start(),
+                                mat.end(),
+                                BTreeMap::new(),
                             ));
                         }
                         out
@@ -867,8 +1062,8 @@ pub fn spawn_search(
     });
 }
 
-/// 0-based の行範囲について、前後 `context_lines` 行分のコンテキストを取り出す（`build_match_item` と同一ロジック）
-fn slice_context_lines(
+/// 0-based の行範囲について、前後 `context_lines` 行分のコンテキストを取り出す
+pub fn slice_context_lines(
     lines: &[&str],
     line_start_0: usize,
     line_end_0: usize,
@@ -900,7 +1095,7 @@ fn slice_context_lines(
 }
 
 /// `line_start_0`〜`line_end_0`（0-based・両端含む）の行をソース行として連結する
-fn join_span_lines(lines: &[&str], line_start_0: usize, line_end_0: usize) -> String {
+pub fn join_span_lines(lines: &[&str], line_start_0: usize, line_end_0: usize) -> String {
     if lines.is_empty() || line_start_0 >= lines.len() {
         return String::new();
     }
@@ -918,11 +1113,7 @@ pub fn pattern_multi_metavariables(pattern: &str) -> Vec<String> {
     let bytes = pattern.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'$'
-            && i + 2 < bytes.len()
-            && bytes[i + 1] == b'$'
-            && bytes[i + 2] == b'$'
-        {
+        if bytes[i] == b'$' && i + 2 < bytes.len() && bytes[i + 1] == b'$' && bytes[i + 2] == b'$' {
             i += 3;
             let start = i;
             while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
@@ -1008,7 +1199,8 @@ fn max_multi_slot_count(results: &[FileResult], multi_name: &str) -> usize {
 
 /// パターンに単一または複数ノードメタ変数があれば型ヒント列・計算を有効にする
 pub fn pattern_wants_type_hints(pattern: &str) -> bool {
-    !pattern_single_metavariables(pattern).is_empty() || !pattern_multi_metavariables(pattern).is_empty()
+    !pattern_single_metavariables(pattern).is_empty()
+        || !pattern_multi_metavariables(pattern).is_empty()
 }
 
 /// grep 結果を「受信側・メソッド側・引数数・各引数の型」の組み合わせで集計した 1 行
@@ -1064,9 +1256,7 @@ fn parse_first_single_metavar(pattern: &str) -> Option<(String, usize)> {
         if bytes[i] == b'$' {
             if i + 2 < bytes.len() && bytes[i + 1] == b'$' && bytes[i + 2] == b'$' {
                 i += 3;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-                {
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
                 continue;
@@ -1099,9 +1289,7 @@ fn parse_balanced_paren_arg_metas(pattern: &str, open_paren: usize) -> Option<Ve
         if bytes[i] == b'$' {
             if i + 2 < bytes.len() && bytes[i + 1] == b'$' && bytes[i + 2] == b'$' {
                 i += 3;
-                while i < bytes.len()
-                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
-                {
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
                 continue;
@@ -1229,7 +1417,10 @@ fn parse_summary_args(pattern: &str) -> Option<(Option<String>, ArgsBinding)> {
 /// - 単一メタ 1 つのみ: 引数なし（例: `$RECV.Format()`）
 /// - `$$$` が無く、`.` のあとがリテラル識別子のときはメソッド列なし、括弧内の単一メタがすべて引数（例: `$RECV.Format($A,$B)`）
 /// - フォールバック: 単一メタが 3 つ以上で構造解析できないとき、受信・2 番目・残りをメソッド・引数とみなす（例: `$RECV.$METHOD($A)`）
-pub fn build_match_variation_report(pattern: &str, results: &[FileResult]) -> Option<MatchVariationReport> {
+pub fn build_match_variation_report(
+    pattern: &str,
+    results: &[FileResult],
+) -> Option<MatchVariationReport> {
     let singles = pattern_single_metavariables(pattern);
     if singles.is_empty() {
         return None;
@@ -1282,13 +1473,15 @@ pub fn build_match_variation_report(pattern: &str, results: &[FileResult]) -> Op
 
     let mut rows: Vec<MatchVariationRow> = counts
         .into_iter()
-        .map(|((receiver_display, method_display, arity, arg_displays), count)| MatchVariationRow {
-            count,
-            receiver_display,
-            method_display,
-            arity,
-            arg_displays,
-        })
+        .map(
+            |((receiver_display, method_display, arity, arg_displays), count)| MatchVariationRow {
+                count,
+                receiver_display,
+                method_display,
+                arity,
+                arg_displays,
+            },
+        )
         .collect();
 
     rows.sort_by(|a, b| {
@@ -1322,30 +1515,36 @@ fn build_match_item(
     col_start: usize,
     line_end: usize,
     col_end: usize,
-    matched_text: String,
-    lines: &[&str],
-    context_lines: usize,
+    byte_start: usize,
+    byte_end: usize,
     type_hints: BTreeMap<String, String>,
 ) -> MatchItem {
-    let (context_before, context_after) = slice_context_lines(lines, line_start, line_end, context_lines);
-    let span_lines_text = join_span_lines(lines, line_start, line_end);
-
     MatchItem {
         line_start: line_start + 1, // 1-based
         col_start,
         line_end: line_end + 1,
         col_end,
-        matched_text,
-        span_lines_text,
-        context_before,
-        context_after,
+        byte_start,
+        byte_end,
+        matched_text: String::new(),
+        span_lines_text: String::new(),
+        context_before: vec![],
+        context_after: vec![],
         type_hints,
     }
 }
 
-/// UI の「コンテキスト行数」変更に合わせ、既存の検索結果の前後コンテキストだけを再計算する（再検索はしない）
+/// レガシー結果（テキスト保持済み）のコンテキストだけを再計算する
 pub fn refresh_match_contexts(results: &mut [FileResult], context_lines: usize) {
     for file in results.iter_mut() {
+        let needs_refresh = file.matches.iter().any(|m| {
+            !m.span_lines_text.is_empty()
+                || !m.context_before.is_empty()
+                || !m.matched_text.is_empty()
+        });
+        if !needs_refresh {
+            continue;
+        }
         let Ok(source) = read_text_file_as(&file.path, file.text_encoding.clone()) else {
             continue;
         };
@@ -1353,7 +1552,8 @@ pub fn refresh_match_contexts(results: &mut [FileResult], context_lines: usize) 
         for m in &mut file.matches {
             let line_start_0 = m.line_start.saturating_sub(1);
             let line_end_0 = m.line_end.saturating_sub(1);
-            let (before, after) = slice_context_lines(&lines, line_start_0, line_end_0, context_lines);
+            let (before, after) =
+                slice_context_lines(&lines, line_start_0, line_end_0, context_lines);
             m.context_before = before;
             m.context_after = after;
             m.span_lines_text = join_span_lines(&lines, line_start_0, line_end_0);
@@ -1450,9 +1650,7 @@ pub fn compute_cpp_include_path_diagnostics(
             continue;
         };
         for inc in receiver_hint::cpp_scan_include_directives(&text) {
-            if receiver_hint::cpp_resolve_include_path(&base_dir, &inc, &extra)
-                .is_none()
-            {
+            if receiver_hint::cpp_resolve_include_path(&base_dir, &inc, &extra).is_none() {
                 unresolved_total += 1;
                 let rel = fr.relative_path.clone();
                 let e = unresolved_map.entry(inc).or_insert((0, Vec::new()));
@@ -1478,36 +1676,36 @@ pub fn compute_cpp_include_path_diagnostics(
     top.sort_by(|a, b| b.occurrence_count.cmp(&a.occurrence_count));
     top.truncate(1000);
 
-    let (cpp_type_hint_unknown_cells, cpp_type_hint_total_cells) = if pattern_wants_type_hints(pattern)
-    {
-        let keys = type_hint_column_keys(pattern, results);
-        let mut unknown = 0usize;
-        let mut total = 0usize;
-        for fr in results.iter().filter(|f| {
-            matches!(
-                f.source_language,
-                SupportedLanguage::Cpp | SupportedLanguage::C
-            )
-        }) {
-            for m in &fr.matches {
-                for k in &keys {
-                    let cell = m.type_hint_cell(k);
-                    match cell {
-                        TypeHintCell::NoSlot => {}
-                        _ => {
-                            total += 1;
-                            if matches!(cell, TypeHintCell::Unknown(_)) {
-                                unknown += 1;
+    let (cpp_type_hint_unknown_cells, cpp_type_hint_total_cells) =
+        if pattern_wants_type_hints(pattern) {
+            let keys = type_hint_column_keys(pattern, results);
+            let mut unknown = 0usize;
+            let mut total = 0usize;
+            for fr in results.iter().filter(|f| {
+                matches!(
+                    f.source_language,
+                    SupportedLanguage::Cpp | SupportedLanguage::C
+                )
+            }) {
+                for m in &fr.matches {
+                    for k in &keys {
+                        let cell = m.type_hint_cell(k);
+                        match cell {
+                            TypeHintCell::NoSlot => {}
+                            _ => {
+                                total += 1;
+                                if matches!(cell, TypeHintCell::Unknown(_)) {
+                                    unknown += 1;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        (unknown, total)
-    } else {
-        (0, 0)
-    };
+            (unknown, total)
+        } else {
+            (0, 0)
+        };
 
     CppIncludePathDiagnostics {
         distinct_cpp_result_files: distinct_cpp,
@@ -1582,8 +1780,8 @@ fn try_accept_hit(hits: &AtomicUsize, max: usize, limit_reached: &AtomicBool) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        pattern_multi_metavariables, pattern_single_metavariables, FileResult, LineIndex, MatchItem,
-        TypeHintCell, UnknownHintDetail,
+        pattern_multi_metavariables, pattern_single_metavariables, FileResult, LineIndex,
+        MatchItem, TypeHintCell, UnknownHintDetail,
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1634,6 +1832,8 @@ mod tests {
                 col_start: 0,
                 line_end: 1,
                 col_end: 1,
+                byte_start: 0,
+                byte_end: 0,
                 matched_text: String::new(),
                 span_lines_text: String::new(),
                 context_before: vec![],
@@ -1654,13 +1854,16 @@ mod tests {
             col_start: 0,
             line_end: 1,
             col_end: 1,
+            byte_start: 0,
+            byte_end: 0,
             matched_text: String::new(),
             span_lines_text: String::new(),
             context_before: vec![],
             context_after: vec![],
             type_hints: BTreeMap::new(),
         };
-        m.type_hints.insert("ARGS#arity".to_string(), "2".to_string());
+        m.type_hints
+            .insert("ARGS#arity".to_string(), "2".to_string());
         m.type_hints.insert("ARGS#0".to_string(), "int".to_string());
         m.type_hints.insert("ARGS#1".to_string(), String::new());
         assert_eq!(m.type_hint_cell("ARGS#2"), TypeHintCell::NoSlot);
@@ -1678,13 +1881,16 @@ mod tests {
             col_start: 0,
             line_end: 1,
             col_end: 1,
+            byte_start: 0,
+            byte_end: 0,
             matched_text: String::new(),
             span_lines_text: String::new(),
             context_before: vec![],
             context_after: vec![],
             type_hints: BTreeMap::new(),
         };
-        m.type_hints.insert("ARGS#arity".to_string(), "2".to_string());
+        m.type_hints
+            .insert("ARGS#arity".to_string(), "2".to_string());
         m.type_hints
             .insert("ARGS#0".to_string(), "?:StringLiteral".to_string());
         assert_eq!(
@@ -1703,13 +1909,16 @@ mod tests {
             col_start: 0,
             line_end: 1,
             col_end: 1,
+            byte_start: 0,
+            byte_end: 0,
             matched_text: String::new(),
             span_lines_text: String::new(),
             context_before: vec![],
             context_after: vec![],
             type_hints: BTreeMap::new(),
         };
-        m.type_hints.insert("ARGS#arity".to_string(), "2".to_string());
+        m.type_hints
+            .insert("ARGS#arity".to_string(), "2".to_string());
         m.type_hints.insert(
             "ARGS#0".to_string(),
             "?:Identifier\u{1f}foo.bar()".to_string(),
@@ -1766,6 +1975,8 @@ mod tests {
             col_start: 0,
             line_end: 1,
             col_end: 1,
+            byte_start: 0,
+            byte_end: 0,
             matched_text: String::new(),
             span_lines_text: String::new(),
             context_before: vec![],
@@ -1783,8 +1994,14 @@ mod tests {
     #[test]
     fn match_variation_report_recv_only_pattern() {
         let pattern = "$RECV.Format($$$A)";
-        assert_eq!(super::pattern_single_metavariables(pattern), vec!["RECV".to_string()]);
-        assert_eq!(super::pattern_multi_metavariables(pattern), vec!["A".to_string()]);
+        assert_eq!(
+            super::pattern_single_metavariables(pattern),
+            vec!["RECV".to_string()]
+        );
+        assert_eq!(
+            super::pattern_multi_metavariables(pattern),
+            vec!["A".to_string()]
+        );
         let mut hints = BTreeMap::new();
         hints.insert("A#arity".to_string(), "1".to_string());
         hints.insert("RECV".to_string(), "Time".to_string());
@@ -1816,11 +2033,13 @@ mod tests {
         sig_b.insert("METHOD".to_string(), "m".to_string());
         sig_b.insert("ARGS#0".to_string(), "bool".to_string());
 
-        let results = vec![file_result_one(vec![
-            match_with_hints(sig_a.clone()),
-            match_with_hints(sig_a),
-        ]),
-        file_result_one(vec![match_with_hints(sig_b)])];
+        let results = vec![
+            file_result_one(vec![
+                match_with_hints(sig_a.clone()),
+                match_with_hints(sig_a),
+            ]),
+            file_result_one(vec![match_with_hints(sig_b)]),
+        ];
 
         let report = super::build_match_variation_report(pattern, &results).unwrap();
         assert_eq!(report.receiver_metavar, "RECV");

@@ -26,10 +26,9 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
         .constrain_to(ctx.screen_rect())
         .show(ctx, |ui| {
             ui.label(
-                egui::RichText::new(t.rewrite_preview_summary(
-                    preview.files.len(),
-                    preview.elapsed_ms,
-                ))
+                egui::RichText::new(
+                    t.rewrite_preview_summary(preview.files.len(), preview.elapsed_ms),
+                )
                 .small(),
             );
             ui.separator();
@@ -55,15 +54,9 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             for (i, f) in preview.files.iter().enumerate() {
-                                let label = format!(
-                                    "{} ({})",
-                                    f.relative_path,
-                                    f.replacement_count
-                                );
-                                if ui
-                                    .selectable_label(sel == i, label)
-                                    .clicked()
-                                {
+                                let label =
+                                    format!("{} ({})", f.relative_path, f.replacement_count);
+                                if ui.selectable_label(sel == i, label).clicked() {
                                     app.rewrite_selected_file_idx = i;
                                 }
                             }
@@ -82,11 +75,9 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                 .color(egui::Color32::DARK_GRAY),
             );
             ui.label(
-                egui::RichText::new(t.rewrite_replacements_in_file(
-                    file.replacement_count,
-                ))
-                .small()
-                .color(egui::Color32::GRAY),
+                egui::RichText::new(t.rewrite_replacements_in_file(file.replacement_count))
+                    .small()
+                    .color(egui::Color32::GRAY),
             );
 
             ui.separator();

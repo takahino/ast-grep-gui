@@ -221,7 +221,10 @@ fn cpp_field_type_for_class_in_sources(
 fn cpp_declarator_has_method_name<D: Doc>(decl: &Node<'_, D>, method_name: &str) -> bool {
     let mut found = false;
     cpp_for_each_descendant(decl, &mut |d| {
-        if matches!(d.kind().as_ref(), "identifier" | "field_identifier" | "destructor_name") {
+        if matches!(
+            d.kind().as_ref(),
+            "identifier" | "field_identifier" | "destructor_name"
+        ) {
             if d.text().trim() == method_name {
                 found = true;
             }
@@ -369,8 +372,7 @@ fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) 
         let arg = node.field("argument")?;
         let field = node.field("field")?;
         let field_name = field.text().trim().to_string();
-        let arg_ty =
-            cpp_chain_result_type(&arg, ctx).or_else(|| cpp_hint(&arg, Some(ctx)))?;
+        let arg_ty = cpp_chain_result_type(&arg, ctx).or_else(|| cpp_hint(&arg, Some(ctx)))?;
         let class_name = cpp_simplify_type_name(&arg_ty);
         return cpp_field_type_for_class_in_sources(ctx, class_name.as_str(), field_name.as_str());
     }
@@ -380,10 +382,13 @@ fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) 
             let arg = func.field("argument")?;
             let field = func.field("field")?;
             let method_name = field.text().trim().to_string();
-            let arg_ty =
-                cpp_chain_result_type(&arg, ctx).or_else(|| cpp_hint(&arg, Some(ctx)))?;
+            let arg_ty = cpp_chain_result_type(&arg, ctx).or_else(|| cpp_hint(&arg, Some(ctx)))?;
             let class_name = cpp_simplify_type_name(&arg_ty);
-            return cpp_method_return_for_class_in_sources(ctx, class_name.as_str(), method_name.as_str());
+            return cpp_method_return_for_class_in_sources(
+                ctx,
+                class_name.as_str(),
+                method_name.as_str(),
+            );
         }
     }
     None
@@ -582,10 +587,7 @@ fn ts_chain_result_type<D: Doc>(node: &Node<'_, D>) -> Option<String> {
 fn rust_strip_receiver_text(s: &str) -> String {
     let mut t = s.trim().to_string();
     loop {
-        let next = t
-            .trim_start_matches("mut ")
-            .trim_start_matches('&')
-            .trim();
+        let next = t.trim_start_matches("mut ").trim_start_matches('&').trim();
         if next == t {
             break;
         }
@@ -630,7 +632,11 @@ fn trim_type_tail(s: &str) -> String {
         .to_string()
 }
 
-fn rust_let_type_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_start: usize) -> Option<String> {
+fn rust_let_type_in_block<D: Doc>(
+    block: &Node<'_, D>,
+    recv_name: &str,
+    recv_start: usize,
+) -> Option<String> {
     let mut last: Option<String> = None;
     for child in block.children() {
         if child.kind().as_ref() != "let_declaration" {
@@ -698,7 +704,11 @@ fn hint_var_type_or_rhs<D: Doc>(ty: &Node<'_, D>, declarator: &Node<'_, D>) -> S
     type_text.to_string()
 }
 
-fn java_local_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_start: usize) -> Option<String> {
+fn java_local_in_block<D: Doc>(
+    block: &Node<'_, D>,
+    recv_name: &str,
+    recv_start: usize,
+) -> Option<String> {
     let mut last = None;
     for child in block.children() {
         if child.kind().as_ref() != "local_variable_declaration" {
@@ -766,7 +776,8 @@ fn java_walk_formal_parameters<D: Doc>(node: &Node<'_, D>, name: &str, out: &mut
                 .map(|n| n.text().trim() == name)
                 .unwrap_or_else(|| {
                     node.children().any(|c| {
-                        c.kind().as_ref() == "_variable_declarator_id" && java_declarator_id_matches(&c, name)
+                        c.kind().as_ref() == "_variable_declarator_id"
+                            && java_declarator_id_matches(&c, name)
                     })
                 });
             if name_ok {
@@ -781,7 +792,9 @@ fn java_walk_formal_parameters<D: Doc>(node: &Node<'_, D>, name: &str, out: &mut
                     continue;
                 }
                 for cc in c.children() {
-                    if cc.kind().as_ref() == "_variable_declarator_id" && java_declarator_id_matches(&cc, name) {
+                    if cc.kind().as_ref() == "_variable_declarator_id"
+                        && java_declarator_id_matches(&cc, name)
+                    {
                         *out = Some(ty.text().trim().to_string());
                         return;
                     }
@@ -797,7 +810,10 @@ fn java_walk_formal_parameters<D: Doc>(node: &Node<'_, D>, name: &str, out: &mut
     }
 }
 
-fn java_parameters_from_formals_root<D: Doc>(executable: &Node<'_, D>, name: &str) -> Option<String> {
+fn java_parameters_from_formals_root<D: Doc>(
+    executable: &Node<'_, D>,
+    name: &str,
+) -> Option<String> {
     let mut out = None;
     // `method_declaration` / `constructor_declaration` は `field("parameters")` で `formal_parameters` に直結できる
     if let Some(params) = executable.field("parameters") {
@@ -962,7 +978,11 @@ fn csharp_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
         .and_then(|n| n.field("name").map(|x| x.text().trim().to_string()))
 }
 
-fn csharp_local_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_start: usize) -> Option<String> {
+fn csharp_local_in_block<D: Doc>(
+    block: &Node<'_, D>,
+    recv_name: &str,
+    recv_start: usize,
+) -> Option<String> {
     let mut last = None;
     for child in block.children() {
         let k = child.kind();
@@ -990,7 +1010,9 @@ fn csharp_local_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_star
 fn csharp_field_in_class<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
     let class_like = recv.ancestors().find(|n| {
         let k = n.kind();
-        k.as_ref() == "class_declaration" || k.as_ref() == "struct_declaration" || k.as_ref() == "record_declaration"
+        k.as_ref() == "class_declaration"
+            || k.as_ref() == "struct_declaration"
+            || k.as_ref() == "record_declaration"
     })?;
     let body = class_like.field("body")?;
     for child in body.children() {
@@ -1030,7 +1052,11 @@ fn csharp_hint<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
     csharp_field_in_class(recv, t)
 }
 
-fn ts_lexical_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_start: usize) -> Option<String> {
+fn ts_lexical_in_block<D: Doc>(
+    block: &Node<'_, D>,
+    recv_name: &str,
+    recv_start: usize,
+) -> Option<String> {
     let mut last = None;
     for child in block.children() {
         let k = child.kind();
@@ -1074,7 +1100,9 @@ fn ts_lexical_in_block<D: Doc>(block: &Node<'_, D>, recv_name: &str, recv_start:
 
 /// `class` body 内のフィールド（型注釈付き）と名前を照合する。
 fn ts_field_in_class<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
-    let class_decl = recv.ancestors().find(|n| n.kind().as_ref() == "class_declaration")?;
+    let class_decl = recv
+        .ancestors()
+        .find(|n| n.kind().as_ref() == "class_declaration")?;
     let body = class_decl.field("body")?;
     for child in body.children() {
         let kind = child.kind();
@@ -1096,10 +1124,7 @@ fn ts_field_in_class<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
             if let Some(tanno) = child.field("type") {
                 let tanno_text = tanno.text();
                 let tanno_trim = tanno_text.trim();
-                let s = tanno_trim
-                    .strip_prefix(':')
-                    .unwrap_or(tanno_trim)
-                    .trim();
+                let s = tanno_trim.strip_prefix(':').unwrap_or(tanno_trim).trim();
                 return Some(s.to_string());
             }
         }
@@ -1158,7 +1183,10 @@ fn cpp_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
 /// `$RECV` が `call_expression` のとき、`time.Format("%Y")` のような式に対して
 /// `CTime.Format` 形式の表示用ラベルを返す（左端の `time` だけの `CTime` ではなく、
 /// **この呼び出し**のレシーバ型とメソッド名を結合する）。
-fn cpp_recv_receiver_method_label<D: Doc>(node: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Option<String> {
+fn cpp_recv_receiver_method_label<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
     if node.kind().as_ref() != "call_expression" {
         return None;
     }
@@ -1175,7 +1203,10 @@ fn cpp_recv_receiver_method_label<D: Doc>(node: &Node<'_, D>, ctx: Option<&RecvH
 }
 
 /// `call_expression` / `field_expression` の **直接の** レシーバ式について型文字列を得る（チェーンは左へ辿る）。
-fn cpp_type_of_direct_receiver_expr<D: Doc>(node: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Option<String> {
+fn cpp_type_of_direct_receiver_expr<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
     match node.kind().as_ref() {
         "identifier" => cpp_hint(node, ctx),
         "call_expression" => {
@@ -1457,7 +1488,11 @@ fn cpp_parameter_type_if_name<D: Doc>(param: &Node<'_, D>, name: &str) -> Option
     Some(ty)
 }
 
-fn cpp_walk_parameter_declarations<D: Doc>(node: &Node<'_, D>, name: &str, out: &mut Option<String>) {
+fn cpp_walk_parameter_declarations<D: Doc>(
+    node: &Node<'_, D>,
+    name: &str,
+    out: &mut Option<String>,
+) {
     if out.is_some() {
         return;
     }
@@ -1488,7 +1523,9 @@ fn cpp_parameter_type_for_scope<D: Doc>(recv: &Node<'_, D>, name: &str) -> Optio
 fn cpp_field_in_class<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
     let spec = recv.ancestors().find(|n| {
         let k = n.kind();
-        k.as_ref() == "class_specifier" || k.as_ref() == "struct_specifier" || k.as_ref() == "union_specifier"
+        k.as_ref() == "class_specifier"
+            || k.as_ref() == "struct_specifier"
+            || k.as_ref() == "union_specifier"
     })?;
     let body = spec.field("body")?;
     let mut out: Option<String> = None;
@@ -1574,7 +1611,9 @@ fn cpp_scope_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
 
 /// `void Foo::bar()` のようなメンバ定義からクラス名 `Foo` を推定する。
 fn cpp_out_of_line_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
-    let fd = recv.ancestors().find(|n| n.kind().as_ref() == "function_definition")?;
+    let fd = recv
+        .ancestors()
+        .find(|n| n.kind().as_ref() == "function_definition")?;
     let decl = fd.field("declarator")?;
     let text = decl.text();
     let t = text.trim();
@@ -1736,7 +1775,9 @@ fn c_hint<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
 
 /// クラス body 内の `annotated_assignment`（クラス変数の型注釈）と名前を照合する。
 fn python_field_in_class<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
-    let class_def = recv.ancestors().find(|n| n.kind().as_ref() == "class_definition")?;
+    let class_def = recv
+        .ancestors()
+        .find(|n| n.kind().as_ref() == "class_definition")?;
     let body = class_def.field("body")?;
     for child in body.children() {
         if child.kind().as_ref() != "expression_statement" {
@@ -1772,7 +1813,9 @@ fn kotlin_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
         let k = n.kind();
         k.as_ref() == "class_declaration" || k.as_ref() == "object_declaration"
     })?;
-    let id = node.children().find(|c| c.kind().as_ref() == "type_identifier")?;
+    let id = node
+        .children()
+        .find(|c| c.kind().as_ref() == "type_identifier")?;
     let s = id.text();
     Some(s.trim().to_string())
 }
@@ -1789,7 +1832,10 @@ fn kotlin_hint<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
 fn scala_class_name<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
     let node = recv.ancestors().find(|n| {
         let k = n.kind();
-        matches!(k.as_ref(), "class_definition" | "object_definition" | "trait_definition")
+        matches!(
+            k.as_ref(),
+            "class_definition" | "object_definition" | "trait_definition"
+        )
     })?;
     for c in node.children() {
         if c.kind().as_ref() == "identifier" {
@@ -1921,8 +1967,15 @@ class Foo {
             })
             .collect();
 
-        assert!(hints.iter().any(|(recv, hint)| recv == "out" && hint.as_deref() == Some("java.util.List<String>")));
-        assert!(hints.iter().any(|(recv, hint)| recv == "line" && hint.as_deref() == Some("String")));
+        assert!(
+            hints
+                .iter()
+                .any(|(recv, hint)| recv == "out"
+                    && hint.as_deref() == Some("java.util.List<String>"))
+        );
+        assert!(hints
+            .iter()
+            .any(|(recv, hint)| recv == "line" && hint.as_deref() == Some("String")));
     }
 
     #[test]
@@ -2085,10 +2138,7 @@ void Pattern1_DirectFormatNest4()
                 time.Format("%Y/%m/%d"))));
 }
 "#;
-        let hint = cpp_recv_hint(
-            src,
-            r##"$RECV.Format("LOG: %s", $$$ARGS)"##,
-        );
+        let hint = cpp_recv_hint(src, r##"$RECV.Format("LOG: %s", $$$ARGS)"##);
         assert_eq!(hint.as_deref(), Some("CString"));
     }
 

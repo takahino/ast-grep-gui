@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crossbeam_channel::Receiver;
 use eframe::egui;
@@ -6,16 +8,17 @@ use eframe::egui;
 use crate::batch::{
     BatchReport, BatchRunResult, BatchRunnerState, PatternJob, SINGLE_SEARCH_JOB_ID,
 };
-use crate::file_encoding::{FileEncoding, FileEncodingPreference};
+use crate::file_encoding::{read_text_file_as, FileEncoding, FileEncodingPreference};
 use crate::highlight::Highlighter;
 use crate::i18n::{Tr, UiLanguage, UiLanguagePreference};
 use crate::lang::SupportedLanguage;
-use crate::search::{
-    refresh_match_contexts, spawn_search, FileResult, MatchItem, PlainTextSearchOptions,
-    SearchConditions, SearchMessage, SearchMode, SearchStats,
-};
 use crate::pattern_assist::PatternSuggestion;
 use crate::rewrite::{RewriteMessage, RewritePreview};
+use crate::search::{
+    refresh_match_contexts, search_message_channel, spawn_search, FileResult, MatchItem,
+    PlainTextSearchOptions, SearchConditions, SearchMessage, SearchMode, SearchStats,
+    SEARCH_MESSAGES_PER_FRAME,
+};
 use crate::terminal::TerminalState;
 use crate::ui::{
     batch_report_panel, code_panel, file_panel, help_popup, in_view_find::InViewFindState,
@@ -84,21 +87,8 @@ pub enum RewritePhase {
     Applying,
 }
 
-fn count_display_lines(text: &str) -> usize {
-    if text.is_empty() {
-        1
-    } else {
-        text.bytes().filter(|b| *b == b'\n').count() + 1
-    }
-}
-
-fn table_row_line_units(m: &MatchItem) -> usize {
-    let center_lines = if m.span_lines_text.is_empty() {
-        count_display_lines(&m.matched_text)
-    } else {
-        count_display_lines(&m.span_lines_text)
-    };
-    (m.context_before.len() + center_lines + m.context_after.len()).max(1)
+fn table_row_line_units(m: &MatchItem, context_lines: usize) -> usize {
+    crate::search::match_display_line_units(m, context_lines)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -342,6 +332,8 @@ pub struct AstGrepApp {
         (u64, u64, u64, usize, usize),
         crate::search::CppIncludePathDiagnostics,
     )>,
+    /// 表示時にファイル全文を再読み込みしないためのキャッシュ（新規検索でクリア）
+    file_source_cache: HashMap<PathBuf, Arc<String>>,
 }
 
 impl AstGrepApp {
@@ -418,6 +410,7 @@ impl AstGrepApp {
             in_view_find: InViewFindState::default(),
             results_generation: 0,
             cpp_include_diagnostic_cache: None,
+            file_source_cache: HashMap::new(),
         }
     }
 
@@ -520,6 +513,7 @@ impl AstGrepApp {
         }
 
         self.results.clear();
+        self.file_source_cache.clear();
         self.results_generation = self.results_generation.wrapping_add(1);
         self.cpp_include_diagnostic_cache = None;
         self.stats = SearchStats::default();
@@ -539,7 +533,7 @@ impl AstGrepApp {
             return;
         };
 
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = search_message_channel();
         self.result_rx = Some(rx);
 
         spawn_search(
@@ -627,6 +621,7 @@ impl AstGrepApp {
         });
 
         self.results.clear();
+        self.file_source_cache.clear();
         self.results_generation = self.results_generation.wrapping_add(1);
         self.cpp_include_diagnostic_cache = None;
         self.stats = SearchStats::default();
@@ -655,7 +650,7 @@ impl AstGrepApp {
         };
         let job = self.batch_jobs[list_idx].clone();
 
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = search_message_channel();
         self.result_rx = Some(rx);
 
         spawn_search(
@@ -702,6 +697,7 @@ impl AstGrepApp {
     /// 結果をクリアする
     pub fn clear_results(&mut self) {
         self.results.clear();
+        self.file_source_cache.clear();
         self.results_generation = self.results_generation.wrapping_add(1);
         self.cpp_include_diagnostic_cache = None;
         self.stats = SearchStats::default();
@@ -719,6 +715,30 @@ impl AstGrepApp {
         self.clear_rewrite_state();
     }
 
+    /// 表示用にファイル全文をキャッシュ付きで取得する
+    #[allow(dead_code)]
+    pub fn file_source(&mut self, file: &FileResult) -> Option<Arc<String>> {
+        self.file_source_by_path(&file.path, file.text_encoding.clone())
+    }
+
+    /// パスと文字コード指定でファイル全文をキャッシュ付き取得する
+    pub fn file_source_by_path(
+        &mut self,
+        path: &PathBuf,
+        encoding: FileEncoding,
+    ) -> Option<Arc<String>> {
+        if let Some(cached) = self.file_source_cache.get(path) {
+            return Some(Arc::clone(cached));
+        }
+        let Ok(text) = read_text_file_as(path, encoding) else {
+            return None;
+        };
+        let arc = Arc::new(text);
+        self.file_source_cache
+            .insert(path.clone(), Arc::clone(&arc));
+        Some(arc)
+    }
+
     /// ツールバーで変更したコンテキスト行数を、検索結果の表示に反映する
     fn sync_match_contexts_from_ui(&mut self) {
         if self.results.is_empty() {
@@ -728,6 +748,7 @@ impl AstGrepApp {
         if self.context_lines != self.last_context_lines_applied {
             refresh_match_contexts(&mut self.results, self.context_lines);
             self.rebuild_table_row_metrics();
+            self.highlighter.clear_cache();
             self.last_context_lines_applied = self.context_lines;
             if let Some(ref mut preview) = self.table_preview {
                 if let Some(fr) = self.results.iter().find(|f| f.path == preview.path) {
@@ -740,21 +761,25 @@ impl AstGrepApp {
 
     fn push_table_row(&mut self, row: TableRowRef, m: &MatchItem) {
         self.table_rows.push(row);
-        let units = table_row_line_units(m);
+        let units = table_row_line_units(m, self.context_lines);
         self.table_row_units.push(units);
         let next = self.table_row_prefix_units.last().copied().unwrap_or(0) + units;
         self.table_row_prefix_units.push(next);
     }
 
     fn rebuild_table_row_metrics(&mut self) {
+        let context_lines = self.context_lines;
         let mut rows = Vec::new();
         let mut units = Vec::new();
         let mut prefix_units = vec![0];
 
         for (file_idx, file) in self.results.iter().enumerate() {
             for (match_idx, m) in file.matches.iter().enumerate() {
-                rows.push(TableRowRef { file_idx, match_idx });
-                let row_units = table_row_line_units(m);
+                rows.push(TableRowRef {
+                    file_idx,
+                    match_idx,
+                });
+                let row_units = table_row_line_units(m, context_lines);
                 units.push(row_units);
                 let next = prefix_units.last().copied().unwrap_or(0) + row_units;
                 prefix_units.push(next);
@@ -891,143 +916,185 @@ impl AstGrepApp {
         }
     }
 
-    /// バックグラウンド検索からのメッセージを処理する
+    /// バックグラウンド検索からのメッセージを処理する（1 フレームあたり件数上限あり）
     fn drain_messages(&mut self) {
-        let Some(rx) = &self.result_rx else { return };
+        if self.result_rx.is_none() {
+            return;
+        }
 
-        let messages: Vec<SearchMessage> = rx.try_iter().collect();
+        let mut processed = 0usize;
+        let mut needs_more = false;
 
-        for msg in messages {
-            if self.batch_runner.is_some() {
-                match msg {
-                    SearchMessage::FileResult { job_id, file } => {
-                        let Some(runner) = &mut self.batch_runner else {
-                            continue;
-                        };
-                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
-                            continue;
-                        };
-                        if run.job_id != job_id {
-                            continue;
-                        }
-                        run.stats.total_matches += file.matches.len();
-                        run.stats.total_files += 1;
-                        run.results.push(file);
+        loop {
+            let msg = {
+                let Some(rx) = self.result_rx.as_ref() else {
+                    break;
+                };
+                match rx.try_recv() {
+                    Ok(m) => m,
+                    Err(_) => break,
+                }
+            };
+            let is_terminal = matches!(
+                &msg,
+                SearchMessage::Done { .. } | SearchMessage::Error { .. }
+            );
+            self.process_search_message(msg);
+            if is_terminal {
+                continue;
+            }
+            processed += 1;
+            if processed >= SEARCH_MESSAGES_PER_FRAME {
+                needs_more = self.result_rx.as_ref().is_some_and(|rx| !rx.is_empty());
+                break;
+            }
+        }
+
+        if needs_more {
+            if let Some(ctx) = &self.cached_ctx {
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    fn process_search_message(&mut self, msg: SearchMessage) {
+        if self.batch_runner.is_some() {
+            match msg {
+                SearchMessage::FileResult { job_id, file } => {
+                    let Some(runner) = &mut self.batch_runner else {
+                        return;
+                    };
+                    let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                        return;
+                    };
+                    if run.job_id != job_id {
+                        return;
                     }
-                    SearchMessage::Progress { job_id, scanned } => {
-                        let Some(runner) = &mut self.batch_runner else {
-                            continue;
-                        };
-                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
-                            continue;
-                        };
-                        if run.job_id == job_id {
-                            run.stats.scanned = scanned;
-                            self.stats.scanned = scanned;
-                        }
-                    }
-                    SearchMessage::Done {
-                        job_id,
-                        elapsed_ms,
-                        hit_limit_reached,
-                    } => {
-                        let Some(runner) = &mut self.batch_runner else {
-                            continue;
-                        };
-                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
-                            continue;
-                        };
-                        if run.job_id != job_id {
-                            continue;
-                        }
-                        run.stats.elapsed_ms = elapsed_ms;
-                        run.stats.hit_limit_reached = hit_limit_reached;
-                        let list_idx = runner.ordered_indices[runner.active_idx];
-                        let ctx_lines = self.batch_jobs[list_idx].context_lines;
-                        refresh_match_contexts(&mut run.results, ctx_lines);
-
-                        runner.active_idx += 1;
-                        if runner.active_idx < runner.ordered_indices.len() {
-                            let Some(ctx) = self.cached_ctx.clone() else {
-                                self.batch_runner = None;
-                                self.result_rx = None;
-                                self.search_state = SearchState::Idle;
-                                continue;
-                            };
-                            self.spawn_search_for_current_batch_job(ctx);
-                        } else {
-                            self.finish_batch_search();
-                        }
-                    }
-                    SearchMessage::Error { job_id, msg } => {
-                        let Some(runner) = &mut self.batch_runner else {
-                            continue;
-                        };
-                        let Some(run) = runner.runs.get_mut(runner.active_idx) else {
-                            continue;
-                        };
-                        if run.job_id != job_id {
-                            continue;
-                        }
-                        run.error = Some(msg);
-
-                        runner.active_idx += 1;
-                        if runner.active_idx < runner.ordered_indices.len() {
-                            let Some(ctx) = self.cached_ctx.clone() else {
-                                self.batch_runner = None;
-                                self.result_rx = None;
-                                self.search_state = SearchState::Idle;
-                                continue;
-                            };
-                            self.spawn_search_for_current_batch_job(ctx);
-                        } else {
-                            self.finish_batch_search();
-                        }
+                    run.stats.total_matches += file.matches.len();
+                    run.stats.total_files += 1;
+                    run.results.push(file);
+                }
+                SearchMessage::Progress { job_id, scanned } => {
+                    let Some(runner) = &mut self.batch_runner else {
+                        return;
+                    };
+                    let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                        return;
+                    };
+                    if run.job_id == job_id {
+                        run.stats.scanned = scanned;
+                        self.stats.scanned = scanned;
                     }
                 }
-            } else {
-                match msg {
-                    SearchMessage::FileResult { job_id, file: file_result } => {
-                        if job_id != SINGLE_SEARCH_JOB_ID {
-                            continue;
-                        }
-                        let file_idx = self.results.len();
-                        self.stats.total_matches += file_result.matches.len();
-                        self.stats.total_files += 1;
-                        for (match_idx, m) in file_result.matches.iter().enumerate() {
-                            self.push_table_row(TableRowRef { file_idx, match_idx }, m);
-                        }
-                        self.results.push(file_result);
+                SearchMessage::Done {
+                    job_id,
+                    elapsed_ms,
+                    hit_limit_reached,
+                } => {
+                    let Some(runner) = &mut self.batch_runner else {
+                        return;
+                    };
+                    let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                        return;
+                    };
+                    if run.job_id != job_id {
+                        return;
                     }
-                    SearchMessage::Progress { job_id, scanned } => {
-                        if job_id == SINGLE_SEARCH_JOB_ID {
-                            self.stats.scanned = scanned;
-                        }
+                    run.stats.elapsed_ms = elapsed_ms;
+                    run.stats.hit_limit_reached = hit_limit_reached;
+                    let list_idx = runner.ordered_indices[runner.active_idx];
+                    let ctx_lines = self.batch_jobs[list_idx].context_lines;
+                    refresh_match_contexts(&mut run.results, ctx_lines);
+
+                    runner.active_idx += 1;
+                    if runner.active_idx < runner.ordered_indices.len() {
+                        let Some(ctx) = self.cached_ctx.clone() else {
+                            self.batch_runner = None;
+                            self.result_rx = None;
+                            self.search_state = SearchState::Idle;
+                            return;
+                        };
+                        self.spawn_search_for_current_batch_job(ctx);
+                    } else {
+                        self.finish_batch_search();
                     }
-                    SearchMessage::Done {
-                        job_id,
-                        elapsed_ms,
-                        hit_limit_reached,
-                    } => {
-                        if job_id != SINGLE_SEARCH_JOB_ID {
-                            continue;
-                        }
-                        self.stats.elapsed_ms = elapsed_ms;
-                        self.stats.hit_limit_reached = hit_limit_reached;
-                        self.search_state = SearchState::Done;
-                        self.result_rx = None;
-                        // 検索中にスライダーが変わった場合も含め、現在の設定でコンテキストを揃える
-                        refresh_match_contexts(&mut self.results, self.context_lines);
-                        self.rebuild_table_row_metrics();
-                        self.last_context_lines_applied = self.context_lines;
+                }
+                SearchMessage::Error { job_id, msg } => {
+                    let Some(runner) = &mut self.batch_runner else {
+                        return;
+                    };
+                    let Some(run) = runner.runs.get_mut(runner.active_idx) else {
+                        return;
+                    };
+                    if run.job_id != job_id {
+                        return;
                     }
-                    SearchMessage::Error { job_id, msg } => {
-                        if job_id != SINGLE_SEARCH_JOB_ID {
-                            continue;
-                        }
-                        self.search_state = SearchState::Error(msg);
-                        self.result_rx = None;
+                    run.error = Some(msg);
+
+                    runner.active_idx += 1;
+                    if runner.active_idx < runner.ordered_indices.len() {
+                        let Some(ctx) = self.cached_ctx.clone() else {
+                            self.batch_runner = None;
+                            self.result_rx = None;
+                            self.search_state = SearchState::Idle;
+                            return;
+                        };
+                        self.spawn_search_for_current_batch_job(ctx);
+                    } else {
+                        self.finish_batch_search();
                     }
+                }
+            }
+        } else {
+            match msg {
+                SearchMessage::FileResult {
+                    job_id,
+                    file: file_result,
+                } => {
+                    if job_id != SINGLE_SEARCH_JOB_ID {
+                        return;
+                    }
+                    let file_idx = self.results.len();
+                    self.stats.total_matches += file_result.matches.len();
+                    self.stats.total_files += 1;
+                    for (match_idx, m) in file_result.matches.iter().enumerate() {
+                        self.push_table_row(
+                            TableRowRef {
+                                file_idx,
+                                match_idx,
+                            },
+                            m,
+                        );
+                    }
+                    self.results.push(file_result);
+                }
+                SearchMessage::Progress { job_id, scanned } => {
+                    if job_id == SINGLE_SEARCH_JOB_ID {
+                        self.stats.scanned = scanned;
+                    }
+                }
+                SearchMessage::Done {
+                    job_id,
+                    elapsed_ms,
+                    hit_limit_reached,
+                } => {
+                    if job_id != SINGLE_SEARCH_JOB_ID {
+                        return;
+                    }
+                    self.stats.elapsed_ms = elapsed_ms;
+                    self.stats.hit_limit_reached = hit_limit_reached;
+                    self.search_state = SearchState::Done;
+                    self.result_rx = None;
+                    refresh_match_contexts(&mut self.results, self.context_lines);
+                    self.rebuild_table_row_metrics();
+                    self.last_context_lines_applied = self.context_lines;
+                }
+                SearchMessage::Error { job_id, msg } => {
+                    if job_id != SINGLE_SEARCH_JOB_ID {
+                        return;
+                    }
+                    self.search_state = SearchState::Error(msg);
+                    self.result_rx = None;
                 }
             }
         }
@@ -1073,10 +1140,7 @@ impl eframe::App for AstGrepApp {
 
         // コード／表／表プレビュー内検索（Ctrl+F / Esc）
         let find_eligible = self.table_preview.is_some()
-            || matches!(
-                self.view_mode,
-                ViewMode::Code | ViewMode::Table
-            );
+            || matches!(self.view_mode, ViewMode::Code | ViewMode::Table);
         if find_eligible
             && !self.show_pattern_assist
             && !self.show_help
@@ -1089,7 +1153,8 @@ impl eframe::App for AstGrepApp {
                 {
                     self.in_view_find.begin_open();
                 }
-                if self.in_view_find.open && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                if self.in_view_find.open && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                {
                     self.in_view_find.close();
                 }
             });
@@ -1170,10 +1235,7 @@ impl eframe::App for AstGrepApp {
                 egui::pos2(avail.max.x, avail.max.y),
             );
             ctx.data_mut(|d| {
-                d.insert_persisted(
-                    panel_id,
-                    egui::panel::PanelState { rect: desired_rect },
-                )
+                d.insert_persisted(panel_id, egui::panel::PanelState { rect: desired_rect })
             });
 
             let rect_before = ctx.available_rect();

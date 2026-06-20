@@ -4,7 +4,7 @@ use egui::Ui;
 use regex::RegexBuilder;
 
 use crate::app::{AstGrepApp, TableRowRef};
-use crate::search::type_hint_column_keys;
+use crate::search::{matched_text_from_source, type_hint_column_keys, FileResult};
 
 /// パネルごとに最後にスクロール同期した (クエリ, マッチ番号) を保持し、同じ内容での二重申請を防ぐ。
 #[derive(Debug, Default, Clone)]
@@ -55,7 +55,9 @@ pub fn find_byte_spans(haystack: &str, needle: &str, case_sensitive: bool) -> Ve
     let Some(re) = build_find_regex(needle, case_sensitive) else {
         return Vec::new();
     };
-    re.find_iter(haystack).map(|m| (m.start(), m.end())).collect()
+    re.find_iter(haystack)
+        .map(|m| (m.start(), m.end()))
+        .collect()
 }
 
 fn line_1based_at_byte(source: &str, byte_idx: usize) -> usize {
@@ -135,7 +137,11 @@ pub fn show_bar_code(app: &mut AstGrepApp, ui: &mut Ui, source: &str) {
         app.in_view_find.last_code = None;
     }
 
-    let occurrences = find_byte_spans(source, &app.in_view_find.query, app.in_view_find.case_sensitive);
+    let occurrences = find_byte_spans(
+        source,
+        &app.in_view_find.query,
+        app.in_view_find.case_sensitive,
+    );
     let n = occurrences.len();
     if n > 0 {
         if prev_clicked {
@@ -171,36 +177,61 @@ pub fn show_bar_code(app: &mut AstGrepApp, ui: &mut Ui, source: &str) {
     }
 }
 
-fn table_row_blob(app: &AstGrepApp, file_idx: usize, match_idx: usize) -> String {
+fn table_row_blob(app: &mut AstGrepApp, file_idx: usize, match_idx: usize) -> String {
     let column_keys = type_hint_column_keys(&app.pattern, &app.results);
-    let file = &app.results[file_idx];
-    let m = &file.matches[match_idx];
+    let context_lines = app.context_lines;
+    let path = app.results[file_idx].path.clone();
+    let encoding = app.results[file_idx].text_encoding.clone();
+    let relative_path = app.results[file_idx].relative_path.clone();
+    let source_language = app.results[file_idx].source_language;
+    let m = app.results[file_idx].matches[match_idx].clone();
     let mut blob = format!(
         "{} {} {} {} {}",
-        file.relative_path,
-        m.line_start,
-        m.col_start,
-        m.line_end,
-        m.col_end
+        relative_path, m.line_start, m.col_start, m.line_end, m.col_end
     );
     blob.push(' ');
-    blob.push_str(&m.matched_text);
+    let matched = if !m.matched_text.is_empty() {
+        m.matched_text.clone()
+    } else if let Some(source) = app.file_source_by_path(&path, encoding.clone()) {
+        matched_text_from_source(source.as_str(), &m)
+    } else {
+        String::new()
+    };
+    blob.push_str(&matched);
     for k in &column_keys {
         blob.push(' ');
         blob.push_str(&m.type_hint_cell(k).to_export_string());
     }
     blob.push(' ');
-    blob.push_str(&m.program_with_context());
+    blob.push_str(&m.program_with_context_for_file(
+        &FileResult {
+            path,
+            relative_path,
+            source_language,
+            text_encoding: encoding,
+            matches: vec![],
+        },
+        context_lines,
+    ));
     blob
 }
 
 /// 検索にヒットする表の行インデックス（`table_rows` の添字）
-pub fn table_find_matching_row_indices(app: &AstGrepApp) -> Vec<usize> {
-    let Some(re) = build_find_regex(&app.in_view_find.query, app.in_view_find.case_sensitive) else {
+pub fn table_find_matching_row_indices(app: &mut AstGrepApp) -> Vec<usize> {
+    let Some(re) = build_find_regex(&app.in_view_find.query, app.in_view_find.case_sensitive)
+    else {
         return Vec::new();
     };
     let mut rows = Vec::new();
-    for (row_idx, TableRowRef { file_idx, match_idx }) in app.table_rows.iter().enumerate() {
+    let row_refs: Vec<_> = app.table_rows.clone();
+    for (
+        row_idx,
+        TableRowRef {
+            file_idx,
+            match_idx,
+        },
+    ) in row_refs.iter().enumerate()
+    {
         let blob = table_row_blob(app, *file_idx, *match_idx);
         if re.is_match(&blob) {
             rows.push(row_idx);
@@ -309,7 +340,12 @@ pub fn show_bar_table(app: &mut AstGrepApp, ui: &mut Ui) {
 }
 
 /// プレビュー内のファイル全文向け。`on_scroll_line` に 1-based 行を渡す。
-pub fn show_bar_preview(app: &mut AstGrepApp, ui: &mut Ui, source: &str, on_scroll_line: &mut dyn FnMut(usize)) {
+pub fn show_bar_preview(
+    app: &mut AstGrepApp,
+    ui: &mut Ui,
+    source: &str,
+    on_scroll_line: &mut dyn FnMut(usize),
+) {
     if !app.in_view_find.open {
         return;
     }
@@ -372,7 +408,11 @@ pub fn show_bar_preview(app: &mut AstGrepApp, ui: &mut Ui, source: &str, on_scro
         app.in_view_find.last_preview = None;
     }
 
-    let occurrences = find_byte_spans(source, &app.in_view_find.query, app.in_view_find.case_sensitive);
+    let occurrences = find_byte_spans(
+        source,
+        &app.in_view_find.query,
+        app.in_view_find.case_sensitive,
+    );
     let n = occurrences.len();
     if n > 0 {
         if prev_clicked {

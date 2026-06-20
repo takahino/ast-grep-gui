@@ -44,9 +44,7 @@ pub fn parse_sg_run(input: &str) -> Result<SgRunArgs, String> {
             }
             "-l" | "--lang" => {
                 idx += 1;
-                let s = tokens
-                    .get(idx)
-                    .ok_or("-l の後に言語名が必要です")?;
+                let s = tokens.get(idx).ok_or("-l の後に言語名が必要です")?;
                 lang = SupportedLanguage::from_cli_str(s)
                     .ok_or_else(|| format!("不明な言語: {}", s))?;
                 idx += 1;

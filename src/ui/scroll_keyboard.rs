@@ -101,7 +101,9 @@ pub fn apply_keyboard_horizontal_scroll_before_show(
     scroll_enabled: bool,
     allow_keyboard_without_pointer: bool,
 ) {
-    if !scroll_enabled || (!ui.rect_contains_pointer(interaction_rect) && !allow_keyboard_without_pointer) {
+    if !scroll_enabled
+        || (!ui.rect_contains_pointer(interaction_rect) && !allow_keyboard_without_pointer)
+    {
         return;
     }
 
@@ -134,7 +136,12 @@ pub fn apply_keyboard_horizontal_scroll_before_show(
     state.store(ctx, scroll_area_id);
 }
 
-pub fn store_scroll_metrics<R>(ctx: &Context, scroll_area_id: Id, output: &ScrollAreaOutput<R>, fallback_rect: Rect) {
+pub fn store_scroll_metrics<R>(
+    ctx: &Context,
+    scroll_area_id: Id,
+    output: &ScrollAreaOutput<R>,
+    fallback_rect: Rect,
+) {
     let metrics_id = scroll_area_id.with("scroll_kb_metrics");
     let metrics = ScrollMetrics {
         content_size: output.content_size,

@@ -68,19 +68,35 @@ fn pattern_help_content(ui: &mut Ui, app: &AstGrepApp, selected_pattern: &mut Op
         .striped(true)
         .spacing([20.0, 4.0])
         .show(ui, |ui| {
-            ui.label(egui::RichText::new("$VAR").monospace().color(egui::Color32::YELLOW));
+            ui.label(
+                egui::RichText::new("$VAR")
+                    .monospace()
+                    .color(egui::Color32::YELLOW),
+            );
             ui.label(t.help_meta_var_single());
             ui.end_row();
 
-            ui.label(egui::RichText::new("$$$ARGS").monospace().color(egui::Color32::YELLOW));
+            ui.label(
+                egui::RichText::new("$$$ARGS")
+                    .monospace()
+                    .color(egui::Color32::YELLOW),
+            );
             ui.label(t.help_meta_multi());
             ui.end_row();
 
-            ui.label(egui::RichText::new("$_").monospace().color(egui::Color32::YELLOW));
+            ui.label(
+                egui::RichText::new("$_")
+                    .monospace()
+                    .color(egui::Color32::YELLOW),
+            );
             ui.label(t.help_meta_ignore());
             ui.end_row();
 
-            ui.label(egui::RichText::new(t.help_meta_same_var_key()).monospace().color(egui::Color32::YELLOW));
+            ui.label(
+                egui::RichText::new(t.help_meta_same_var_key())
+                    .monospace()
+                    .color(egui::Color32::YELLOW),
+            );
             ui.label(t.help_meta_same());
             ui.end_row();
         });
@@ -116,14 +132,16 @@ fn pattern_help_content(ui: &mut Ui, app: &AstGrepApp, selected_pattern: &mut Op
     for (pattern, desc) in &examples {
         ui.horizontal(|ui| {
             if ui
-                .add(
-                    egui::Button::new(egui::RichText::new(*pattern).monospace()).small(),
-                )
+                .add(egui::Button::new(egui::RichText::new(*pattern).monospace()).small())
                 .clicked()
             {
                 *selected_pattern = Some(pattern.to_string());
             }
-            ui.label(egui::RichText::new(*desc).small().color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new(*desc)
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
         });
     }
 }

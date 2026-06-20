@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use egui::text::LayoutJob;
 use syntect::easy::HighlightLines;
@@ -7,13 +7,15 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
 use crate::lang::SupportedLanguage;
-use crate::search::MatchItem;
+use crate::search::{MatchItem, HIGHLIGHT_CACHE_MAX_ENTRIES};
 
 pub struct Highlighter {
     syntax_set: SyntaxSet,
     theme_set: ThemeSet,
     /// ファイルパスをキーにしたハイライトキャッシュ
     cache: HashMap<String, Vec<Vec<(Style, String)>>>,
+    /// LRU 風の eviction 用（古い順）
+    cache_order: VecDeque<String>,
 }
 
 impl Highlighter {
@@ -22,6 +24,7 @@ impl Highlighter {
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme_set: ThemeSet::load_defaults(),
             cache: HashMap::new(),
+            cache_order: VecDeque::new(),
         }
     }
 
@@ -51,14 +54,26 @@ impl Highlighter {
                 })
                 .collect();
 
-            self.cache.insert(cache_key.to_string(), highlighted);
+            self.insert_cache(cache_key.to_string(), highlighted);
         }
 
         &self.cache[cache_key]
     }
 
+    fn insert_cache(&mut self, key: String, value: Vec<Vec<(Style, String)>>) {
+        while self.cache.len() >= HIGHLIGHT_CACHE_MAX_ENTRIES {
+            let Some(old) = self.cache_order.pop_front() else {
+                break;
+            };
+            self.cache.remove(&old);
+        }
+        self.cache_order.push_back(key.clone());
+        self.cache.insert(key, value);
+    }
+
     pub fn clear_cache(&mut self) {
         self.cache.clear();
+        self.cache_order.clear();
     }
 }
 
@@ -84,10 +99,7 @@ pub(crate) fn line_content_byte_ranges(source: &str) -> Vec<(usize, usize)> {
     let mut rest = source;
     let mut offset = 0usize;
     while !rest.is_empty() {
-        let split = rest
-            .find('\n')
-            .map(|i| i + 1)
-            .unwrap_or_else(|| rest.len());
+        let split = rest.find('\n').map(|i| i + 1).unwrap_or_else(|| rest.len());
         let line = &rest[..split];
         let content = line.trim_end_matches('\n').trim_end_matches('\r');
         let content_len = content.len();
@@ -254,39 +266,70 @@ fn append_token_ast_and_find(
     }
 }
 
-/// 1行分のハイライトデータを egui LayoutJob のセクションとして追加する
+/// 行番号ガターとソース本文を分離した LayoutJob ペア。
+/// ガターは非選択、本文のみ選択・コピー対象にする。
+pub struct CodeLayoutJobs {
+    pub gutter: LayoutJob,
+    pub code: LayoutJob,
+}
+
+fn new_code_layout_jobs() -> CodeLayoutJobs {
+    let mut gutter = LayoutJob::default();
+    gutter.wrap.max_width = f32::INFINITY;
+    let mut code = LayoutJob::default();
+    code.wrap.max_width = f32::INFINITY;
+    CodeLayoutJobs { gutter, code }
+}
+
+fn append_gutter_line(
+    gutter_job: &mut LayoutJob,
+    line_number: usize,
+    font_size: f32,
+    is_match_line: bool,
+) {
+    let font_id = egui::FontId::monospace(font_size);
+    let line_num_text = format!("{:4}│ ", line_number);
+    let bg = if is_match_line {
+        LINE_BG
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    gutter_job.append(
+        &line_num_text,
+        0.0,
+        egui::TextFormat {
+            font_id: font_id.clone(),
+            color: egui::Color32::from_gray(110),
+            background: bg,
+            ..Default::default()
+        },
+    );
+    gutter_job.append(
+        "\n",
+        0.0,
+        egui::TextFormat {
+            font_id,
+            color: egui::Color32::TRANSPARENT,
+            ..Default::default()
+        },
+    );
+}
+
+/// 1行分のソース本文を egui LayoutJob のセクションとして追加する
 ///
 /// - `col_highlight`: この行内でテキスト強調する byteオフセット範囲
 ///   - `None`  → 通常行
 ///   - `Some(0..usize::MAX)` → 行全体を薄くハイライト（マッチ行だが列不明）
 ///   - `Some(start..end)` → 列レベルで強調
 /// - `find_in_line`: ソース行先頭からのバイトオフセット `(start, end, 現在ヒット)`。空ならビュー内検索なし
-fn append_highlighted_line(
-    job: &mut LayoutJob,
+fn append_code_line(
+    code_job: &mut LayoutJob,
     line_tokens: &[(Style, String)],
     col_highlight: Option<std::ops::Range<usize>>,
-    line_number: usize,
     font_size: f32,
     find_in_line: &[(usize, usize, bool)],
 ) {
     let font_id = egui::FontId::monospace(font_size);
-    let is_match_line = col_highlight.is_some() || !find_in_line.is_empty();
-
-    // 行番号
-    {
-        let line_num_text = format!("{:4}│ ", line_number);
-        let bg = if is_match_line { LINE_BG } else { egui::Color32::TRANSPARENT };
-        job.append(
-            &line_num_text,
-            0.0,
-            egui::TextFormat {
-                font_id: font_id.clone(),
-                color: egui::Color32::from_gray(110),
-                background: bg,
-                ..Default::default()
-            },
-        );
-    }
 
     let mut byte_pos = 0usize;
     let mut visual_col = 0usize;
@@ -306,7 +349,7 @@ fn append_highlighted_line(
             match &col_highlight {
                 None => {
                     append_text_with_format(
-                        job,
+                        code_job,
                         text,
                         egui::TextFormat {
                             font_id: font_id.clone(),
@@ -318,7 +361,7 @@ fn append_highlighted_line(
                 }
                 Some(range) => {
                     append_token_with_highlight(
-                        job,
+                        code_job,
                         text,
                         token_start,
                         token_end,
@@ -331,7 +374,7 @@ fn append_highlighted_line(
             }
         } else {
             append_token_ast_and_find(
-                job,
+                code_job,
                 text,
                 token_start,
                 token_end,
@@ -347,7 +390,7 @@ fn append_highlighted_line(
     }
 
     // 改行
-    job.append(
+    code_job.append(
         "\n",
         0.0,
         egui::TextFormat {
@@ -355,6 +398,25 @@ fn append_highlighted_line(
             color: egui::Color32::TRANSPARENT,
             ..Default::default()
         },
+    );
+}
+
+fn append_highlighted_line_pair(
+    jobs: &mut CodeLayoutJobs,
+    line_tokens: &[(Style, String)],
+    col_highlight: Option<std::ops::Range<usize>>,
+    line_number: usize,
+    font_size: f32,
+    find_in_line: &[(usize, usize, bool)],
+) {
+    let is_match_line = col_highlight.is_some() || !find_in_line.is_empty();
+    append_gutter_line(&mut jobs.gutter, line_number, font_size, is_match_line);
+    append_code_line(
+        &mut jobs.code,
+        line_tokens,
+        col_highlight,
+        font_size,
+        find_in_line,
     );
 }
 
@@ -450,7 +512,7 @@ pub fn build_layout_job(
     highlighted: &[Vec<(Style, String)>],
     matches: &[MatchItem],
     font_size: f32,
-) -> LayoutJob {
+) -> CodeLayoutJobs {
     build_layout_job_from_line(highlighted, matches, font_size, 1)
 }
 
@@ -460,15 +522,14 @@ pub fn build_layout_job_from_line(
     matches: &[MatchItem],
     font_size: f32,
     start_line_number: usize,
-) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = f32::INFINITY;
+) -> CodeLayoutJobs {
+    let mut jobs = new_code_layout_jobs();
 
     for (idx, line_tokens) in highlighted.iter().enumerate() {
         let line_number = start_line_number + idx;
         let col_highlight = col_highlight_for_line(line_number, matches);
-        append_highlighted_line(
-            &mut job,
+        append_highlighted_line_pair(
+            &mut jobs,
             line_tokens,
             col_highlight,
             line_number,
@@ -477,7 +538,7 @@ pub fn build_layout_job_from_line(
         );
     }
 
-    job
+    jobs
 }
 
 /// ビュー内検索（Ctrl+F）の一致範囲を行内で着色する。`find_spans` はソース全体の `[start, end)` バイト列。
@@ -489,9 +550,8 @@ pub fn build_layout_job_with_in_view_find(
     source: &str,
     find_spans: &[(usize, usize)],
     current_find_index: usize,
-) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = f32::INFINITY;
+) -> CodeLayoutJobs {
+    let mut jobs = new_code_layout_jobs();
 
     let line_ranges = line_content_byte_ranges(source);
     debug_assert_eq!(
@@ -528,8 +588,8 @@ pub fn build_layout_job_with_in_view_find(
             })
             .unwrap_or_default();
 
-        append_highlighted_line(
-            &mut job,
+        append_highlighted_line_pair(
+            &mut jobs,
             line_tokens,
             col_highlight,
             line_number,
@@ -538,7 +598,7 @@ pub fn build_layout_job_with_in_view_find(
         );
     }
 
-    job
+    jobs
 }
 
 /// 指定行（1-based）に対してハイライトする列範囲を返す
@@ -548,7 +608,10 @@ pub fn build_layout_job_with_in_view_find(
 /// - 複数行マッチの先頭行: `Some(col_start..MAX)` （行末まで）
 /// - 複数行マッチの中間行: `Some(0..MAX)` （全体）
 /// - 複数行マッチの末尾行: `Some(0..col_end)`
-fn col_highlight_for_line(line_number: usize, matches: &[MatchItem]) -> Option<std::ops::Range<usize>> {
+fn col_highlight_for_line(
+    line_number: usize,
+    matches: &[MatchItem],
+) -> Option<std::ops::Range<usize>> {
     for m in matches {
         if line_number < m.line_start || line_number > m.line_end {
             continue;
@@ -627,22 +690,14 @@ pub fn build_unified_diff_layout_job(
 
     let mut emitted = 0usize;
 
-    push_line(
-        &mut job,
-        &format!("--- a/{path_label}"),
-        fmt_header.clone(),
-    );
+    push_line(&mut job, &format!("--- a/{path_label}"), fmt_header.clone());
     emitted += 1;
     if emitted >= max_emitted_lines {
         push_line(&mut job, "... (truncated)", fmt_omitted.clone());
         return job;
     }
 
-    push_line(
-        &mut job,
-        &format!("+++ b/{path_label}"),
-        fmt_header,
-    );
+    push_line(&mut job, &format!("+++ b/{path_label}"), fmt_header);
     emitted += 1;
     if emitted >= max_emitted_lines {
         push_line(&mut job, "... (truncated)", fmt_omitted.clone());

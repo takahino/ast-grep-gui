@@ -38,10 +38,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 );
             }
             SearchState::Error(msg) => {
-                ui.label(
-                    egui::RichText::new(t.status_error(msg))
-                        .color(egui::Color32::RED),
-                );
+                ui.label(egui::RichText::new(t.status_error(msg)).color(egui::Color32::RED));
             }
         }
 
@@ -57,11 +54,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             }
             if let Some(ref err) = app.rewrite_error {
                 ui.separator();
-                ui.label(
-                    egui::RichText::new(err)
-                        .small()
-                        .color(egui::Color32::RED),
-                );
+                ui.label(egui::RichText::new(err).small().color(egui::Color32::RED));
             }
             if let Some(ref note) = app.rewrite_status_note {
                 ui.separator();

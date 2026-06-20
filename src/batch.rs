@@ -87,9 +87,7 @@ impl PatternJob {
     }
 
     pub fn is_runnable(&self) -> bool {
-        self.enabled
-            && !self.pattern.trim().is_empty()
-            && !self.search_dir.trim().is_empty()
+        self.enabled && !self.pattern.trim().is_empty() && !self.search_dir.trim().is_empty()
     }
 }
 

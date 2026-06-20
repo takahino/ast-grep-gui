@@ -1,19 +1,16 @@
 use egui::Ui;
 
 use crate::app::{AstGrepApp, CodeViewPaneFocus};
-use crate::ui::{in_view_find, scroll_keyboard};
 use crate::file_encoding::read_text_file_as;
 use crate::highlight::{build_layout_job, build_layout_job_with_in_view_find};
-use crate::search::type_hint_column_keys;
+use crate::search::{type_hint_column_keys, CODE_VIEW_MAX_HIGHLIGHT_LINES};
+use crate::ui::{code_layout, in_view_find, scroll_keyboard};
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let t = app.tr();
     let Some(idx) = app.selected_file_idx else {
         ui.centered_and_justified(|ui| {
-            ui.label(
-                egui::RichText::new(t.code_select_file())
-                    .color(egui::Color32::GRAY),
-            );
+            ui.label(egui::RichText::new(t.code_select_file()).color(egui::Color32::GRAY));
         });
         return;
     };
@@ -36,6 +33,29 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             return;
         }
     };
+
+    let total_lines = source.lines().count();
+    let (highlight_source, source_truncated) = if total_lines > CODE_VIEW_MAX_HIGHLIGHT_LINES {
+        let truncated = source
+            .lines()
+            .take(CODE_VIEW_MAX_HIGHLIGHT_LINES)
+            .collect::<Vec<_>>()
+            .join("\n");
+        (truncated, true)
+    } else {
+        (source.clone(), false)
+    };
+
+    if source_truncated {
+        ui.label(
+            egui::RichText::new(format!(
+                "⚠ {} / {} 行のみ表示（メモリ節約）",
+                CODE_VIEW_MAX_HIGHLIGHT_LINES, total_lines
+            ))
+            .small()
+            .color(egui::Color32::from_rgb(220, 180, 80)),
+        );
+    }
 
     // ヘッダー行：ファイル名とパターン支援への連携ボタン
     ui.horizontal(|ui| {
@@ -76,8 +96,10 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     .monospace()
                                     .color(egui::Color32::GRAY),
                             );
-                            let block = m.text_with_context();
-                            let column_keys = type_hint_column_keys(app.pattern.as_str(), &app.results);
+                            let block =
+                                m.program_with_context_for_file(file_result, app.context_lines);
+                            let column_keys =
+                                type_hint_column_keys(app.pattern.as_str(), &app.results);
                             let hover = if column_keys.is_empty() {
                                 block.clone()
                             } else {
@@ -108,7 +130,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                 .on_hover_text(t.to_assist_tooltip())
                                 .clicked()
                             {
-                                send_to_assist = Some(m.matched_text.clone());
+                                send_to_assist = Some(if !m.matched_text.is_empty() {
+                                    m.matched_text.clone()
+                                } else {
+                                    m.matched_text_for_file(file_result)
+                                });
                             }
                         });
                     }
@@ -135,10 +161,10 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let cache_key = relative_path.clone();
     let highlighted = app
         .highlighter
-        .highlight_source(&cache_key, &source, lang)
+        .highlight_source(&cache_key, &highlight_source, lang)
         .clone();
 
-    let job = if app.in_view_find.open && !app.in_view_find.query.is_empty() {
+    let jobs = if app.in_view_find.open && !app.in_view_find.query.is_empty() {
         let spans = in_view_find::find_byte_spans(
             source.as_str(),
             &app.in_view_find.query,
@@ -149,7 +175,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             &matches,
             FONT_SIZE,
             1,
-            source.as_str(),
+            highlight_source.as_str(),
             &spans,
             app.in_view_find.current,
         )
@@ -188,8 +214,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     }
 
     let scroll_out = scroll.show(ui, |ui| {
-        let galley = ui.fonts(|f| f.layout_job(job));
-        let label = ui.add(egui::Label::new(galley).selectable(true));
+        let label = code_layout::show_selectable_code(ui, jobs);
         if label.clicked() {
             app.code_view_pane_focus = CodeViewPaneFocus::Code;
         }

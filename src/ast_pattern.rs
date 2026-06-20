@@ -76,8 +76,8 @@ fn looks_like_function_definition_pattern(pattern: &str) -> bool {
 
     // 制御構文・例外構文は関数定義ではない（`try_new` 側で正しく処理される）。
     if [
-        "if ", "if(", "for ", "for(", "while ", "while(", "switch ", "switch(", "catch ",
-        "catch(", "do ", "do{", "else ", "return ", "throw ",
+        "if ", "if(", "for ", "for(", "while ", "while(", "switch ", "switch(", "catch ", "catch(",
+        "do ", "do{", "else ", "return ", "throw ",
     ]
     .iter()
     .any(|prefix| trimmed.starts_with(prefix))
@@ -131,13 +131,7 @@ fn looks_like_qualified_call_pattern(pattern: &str) -> bool {
     }
 
     ![
-        "if ",
-        "for ",
-        "while ",
-        "switch ",
-        "return ",
-        "catch ",
-        "throw ",
+        "if ", "for ", "while ", "switch ", "return ", "catch ", "throw ",
     ]
     .iter()
     .any(|prefix| trimmed.starts_with(prefix))
@@ -183,15 +177,25 @@ void CApModel00Dlg::OnPaint()
         assert!(looks_like_function_definition_pattern(
             "void CApModel00Dlg::OnPaint() { $$$BODY }"
         ));
-        assert!(looks_like_function_definition_pattern("$RET $NAME() { $$$BODY }"));
+        assert!(looks_like_function_definition_pattern(
+            "$RET $NAME() { $$$BODY }"
+        ));
         assert!(looks_like_function_definition_pattern(
             "$RET $CLASS::$METHOD($$$ARGS) { $$$BODY }"
         ));
         // 制御構文・呼び出し・宣言は関数定義扱いしない
-        assert!(!looks_like_function_definition_pattern("if ($C) { $$$BODY }"));
-        assert!(!looks_like_function_definition_pattern("while ($C) { $$$BODY }"));
-        assert!(!looks_like_function_definition_pattern("$CLASS::$METHOD($$$ARGS)"));
-        assert!(!looks_like_function_definition_pattern("class $N { $$$BODY }"));
+        assert!(!looks_like_function_definition_pattern(
+            "if ($C) { $$$BODY }"
+        ));
+        assert!(!looks_like_function_definition_pattern(
+            "while ($C) { $$$BODY }"
+        ));
+        assert!(!looks_like_function_definition_pattern(
+            "$CLASS::$METHOD($$$ARGS)"
+        ));
+        assert!(!looks_like_function_definition_pattern(
+            "class $N { $$$BODY }"
+        ));
         assert!(!looks_like_function_definition_pattern("$VAR"));
         assert!(!looks_like_function_definition_pattern("foo({})"));
     }

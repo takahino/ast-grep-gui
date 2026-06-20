@@ -5,7 +5,10 @@ use crate::app::AstGrepApp;
 use crate::pattern_assist::generate_patterns;
 
 /// `generate_patterns` と同じ trim 後座標の範囲を、表示中の全文 `full` 上のバイト範囲へ写す
-fn map_ranges_trimmed_to_full(full: &str, ranges_in_trimmed: &[(usize, usize)]) -> Vec<(usize, usize)> {
+fn map_ranges_trimmed_to_full(
+    full: &str,
+    ranges_in_trimmed: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
     let ts = full.len() - full.trim_start().len();
     let trimmed_len = full.trim().len();
     ranges_in_trimmed
@@ -22,11 +25,7 @@ fn map_ranges_trimmed_to_full(full: &str, ranges_in_trimmed: &[(usize, usize)]) 
 }
 
 /// マッチごとに色を変えて背景を付けた LayoutJob（バイト範囲は `text` 上）
-fn snippet_highlight_layout_job(
-    ui: &Ui,
-    text: &str,
-    ranges_full: &[(usize, usize)],
-) -> LayoutJob {
+fn snippet_highlight_layout_job(ui: &Ui, text: &str, ranges_full: &[(usize, usize)]) -> LayoutJob {
     const PALETTE: [egui::Color32; 8] = [
         egui::Color32::from_rgb(200, 80, 80),
         egui::Color32::from_rgb(80, 160, 220),
@@ -176,11 +175,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
     }
 }
 
-fn pattern_assist_content(
-    ui: &mut Ui,
-    app: &mut AstGrepApp,
-    apply_pattern: &mut Option<String>,
-) {
+fn pattern_assist_content(ui: &mut Ui, app: &mut AstGrepApp, apply_pattern: &mut Option<String>) {
     let t = app.tr();
     ui.label(
         egui::RichText::new(t.pa_intro())
@@ -201,8 +196,10 @@ fn pattern_assist_content(
         .max_height(160.0)
         .show(ui, |ui| {
             if let Some(suggestion) = selected_for_snippet {
-                let mapped =
-                    map_ranges_trimmed_to_full(&app.pattern_assist_snippet, &suggestion.match_ranges);
+                let mapped = map_ranges_trimmed_to_full(
+                    &app.pattern_assist_snippet,
+                    &suggestion.match_ranges,
+                );
                 let job = snippet_highlight_layout_job(ui, &app.pattern_assist_snippet, &mapped);
                 ui.add(egui::Label::new(job).wrap());
             } else {
@@ -237,11 +234,11 @@ fn pattern_assist_content(
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
-                egui::RichText::new(t.pa_lang_line(
-                    &app.pattern_assist_resolve_lang().combo_label(app.ui_lang()),
-                ))
-                    .small()
-                    .color(egui::Color32::GRAY),
+                egui::RichText::new(
+                    t.pa_lang_line(&app.pattern_assist_resolve_lang().combo_label(app.ui_lang())),
+                )
+                .small()
+                .color(egui::Color32::GRAY),
             );
         });
     });
@@ -254,8 +251,7 @@ fn pattern_assist_content(
 
     if app.pattern_assist_results.is_empty() {
         ui.label(
-            egui::RichText::new(t.pa_no_candidates())
-                .color(egui::Color32::from_rgb(200, 80, 80)),
+            egui::RichText::new(t.pa_no_candidates()).color(egui::Color32::from_rgb(200, 80, 80)),
         );
         return;
     }

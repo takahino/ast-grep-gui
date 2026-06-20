@@ -44,12 +44,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         return;
     }
 
-    let max_arg_cols = report
-        .rows
-        .iter()
-        .map(|r| r.arity)
-        .max()
-        .unwrap_or(0);
+    let max_arg_cols = report.rows.iter().map(|r| r.arity).max().unwrap_or(0);
 
     let num_fixed = if show_method { 4 } else { 3 };
     let widths = summary_column_widths(show_method, max_arg_cols);
@@ -57,7 +52,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let total_w: f32 =
         widths.iter().sum::<f32>() + spacing_x * (widths.len().saturating_sub(1)) as f32;
 
-    let row_h = ui.text_style_height(&egui::TextStyle::Body).max(ui.spacing().interact_size.y);
+    let row_h = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y);
     let header_h = row_h.max(ui.spacing().interact_size.y);
 
     let table_interact_rect = ui.available_rect_before_wrap();
@@ -176,8 +173,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                             });
                         }
                     });
-                scroll_keyboard::store_scroll_metrics(ui_v.ctx(), sid, &scroll_out, table_interact_rect);
+                scroll_keyboard::store_scroll_metrics(
+                    ui_v.ctx(),
+                    sid,
+                    &scroll_out,
+                    table_interact_rect,
+                );
             });
         });
-    scroll_keyboard::store_horizontal_scroll_metrics(&ctx_table, sid_h, &scroll_h_out, table_interact_rect);
+    scroll_keyboard::store_horizontal_scroll_metrics(
+        &ctx_table,
+        sid_h,
+        &scroll_h_out,
+        table_interact_rect,
+    );
 }

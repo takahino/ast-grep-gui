@@ -1,12 +1,18 @@
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Receiver;
 use eframe::egui;
 
-use crate::file_encoding::FileEncodingPreference;
+use crate::file_encoding::{read_text_file_as, FileEncodingPreference};
 use crate::i18n::UiLanguage;
-use crate::search::{spawn_search, FileResult, PlainTextSearchOptions, SearchMessage, SearchMode};
+use crate::search::{
+    join_span_lines, search_message_channel, slice_context_lines, spawn_search, FileResult,
+    MatchItem, PlainTextSearchOptions, SearchMessage, SearchMode, TERMINAL_MAX_LINES,
+    TERMINAL_MAX_SEARCH_HITS,
+};
 use crate::sg_command::{is_sg_command, parse_sg_run};
 
 /// ターミナル行の種別（表示色の切り替えに使用）
@@ -94,7 +100,7 @@ impl TerminalState {
 
     fn push_line(&self, text: String, kind: LineKind) {
         if let Ok(mut lock) = self.lines.lock() {
-            lock.push(TerminalLine { text, kind });
+            push_line_with_limit(&mut lock, TerminalLine { text, kind });
         }
     }
 
@@ -141,7 +147,7 @@ impl TerminalState {
 
         let context_lines = args.context_before.max(args.context_after);
 
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = search_message_channel();
         spawn_search(
             search_dir,
             args.pattern,
@@ -152,7 +158,7 @@ impl TerminalState {
             String::new(),
             self.file_encoding_preference,
             10 * 1024 * 1024,
-            0,
+            TERMINAL_MAX_SEARCH_HITS,
             ".git;target;node_modules".to_string(),
             String::new(),
             UiLanguage::Japanese,
@@ -163,14 +169,13 @@ impl TerminalState {
 
         let lines = Arc::clone(&self.lines);
         std::thread::spawn(move || {
-            format_sg_results(rx, lines, egui_ctx);
+            format_sg_results(rx, lines, context_lines, egui_ctx);
         });
     }
 
-    /// PowerShell にコマンドを委譲する
+    /// PowerShell にコマンドを委譲する（stdout/stderr をストリーミング読み取り）
     fn run_powershell_command(&mut self, cmd: &str, egui_ctx: egui::Context) {
         let lines = Arc::clone(&self.lines);
-        // 出力エンコーディングを UTF-8 に統一してから実行する（文字化け防止）
         let utf8_cmd = format!(
             "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
              [Console]::InputEncoding  = [Text.Encoding]::UTF8; \
@@ -179,41 +184,82 @@ impl TerminalState {
         );
         let cwd = self.working_dir.clone();
         std::thread::spawn(move || {
-            let result = std::process::Command::new("powershell.exe")
+            let mut child = match Command::new("powershell.exe")
                 .args(["-NonInteractive", "-NoProfile", "-Command", &utf8_cmd])
                 .current_dir(&cwd)
-                .output();
-
-            let mut lock = match lines.lock() {
-                Ok(l) => l,
-                Err(_) => return,
-            };
-            match result {
-                Ok(out) => {
-                    let stdout = decode_output(&out.stdout);
-                    for line in stdout.lines() {
-                        lock.push(TerminalLine {
-                            text: line.to_string(),
-                            kind: LineKind::Stdout,
-                        });
-                    }
-                    let stderr = decode_output(&out.stderr);
-                    for line in stderr.lines() {
-                        lock.push(TerminalLine {
-                            text: line.to_string(),
-                            kind: LineKind::Stderr,
-                        });
-                    }
-                }
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
                 Err(e) => {
-                    lock.push(TerminalLine {
-                        text: format!("コマンド実行エラー: {}", e),
-                        kind: LineKind::Stderr,
-                    });
+                    if let Ok(mut lock) = lines.lock() {
+                        push_line_with_limit(
+                            &mut lock,
+                            TerminalLine {
+                                text: format!("コマンド実行エラー: {}", e),
+                                kind: LineKind::Stderr,
+                            },
+                        );
+                    }
+                    egui_ctx.request_repaint();
+                    return;
                 }
+            };
+
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            if let Some(out) = stdout {
+                let lines_out = Arc::clone(&lines);
+                let ctx = egui_ctx.clone();
+                std::thread::spawn(move || {
+                    stream_process_output(out, lines_out, LineKind::Stdout, ctx);
+                });
             }
+            if let Some(err) = stderr {
+                let lines_err = Arc::clone(&lines);
+                let ctx = egui_ctx.clone();
+                std::thread::spawn(move || {
+                    stream_process_output(err, lines_err, LineKind::Stderr, ctx);
+                });
+            }
+
+            let _ = child.wait();
             egui_ctx.request_repaint();
         });
+    }
+}
+
+fn push_line_with_limit(lines: &mut Vec<TerminalLine>, line: TerminalLine) {
+    lines.push(line);
+    if lines.len() > TERMINAL_MAX_LINES {
+        let drop = lines.len() - TERMINAL_MAX_LINES;
+        lines.drain(0..drop);
+    }
+}
+
+fn stream_process_output<R: std::io::Read>(
+    reader: R,
+    lines: Arc<Mutex<Vec<TerminalLine>>>,
+    kind: LineKind,
+    egui_ctx: egui::Context,
+) {
+    let buffered = BufReader::new(reader);
+    for line_result in buffered.lines() {
+        let Ok(line) = line_result else {
+            break;
+        };
+        if let Ok(mut lock) = lines.lock() {
+            push_line_with_limit(
+                &mut lock,
+                TerminalLine {
+                    text: line,
+                    kind: kind.clone(),
+                },
+            );
+        }
+        egui_ctx.request_repaint();
     }
 }
 
@@ -221,6 +267,7 @@ impl TerminalState {
 fn format_sg_results(
     rx: Receiver<SearchMessage>,
     lines: Arc<Mutex<Vec<TerminalLine>>>,
+    context_lines: usize,
     egui_ctx: egui::Context,
 ) {
     let mut file_count: usize = 0;
@@ -230,28 +277,42 @@ fn format_sg_results(
         match rx.recv() {
             Ok(SearchMessage::FileResult { file, .. }) => {
                 file_count += 1;
-                append_file_result(&lines, &file, &mut match_count);
+                append_file_result(&lines, &file, &mut match_count, context_lines);
                 egui_ctx.request_repaint();
             }
-            Ok(SearchMessage::Done { elapsed_ms, .. }) => {
+            Ok(SearchMessage::Done {
+                elapsed_ms,
+                hit_limit_reached,
+                ..
+            }) => {
                 if let Ok(mut lock) = lines.lock() {
-                    lock.push(TerminalLine {
-                        text: format!(
-                            "{} matches in {} files ({} ms)",
-                            match_count, file_count, elapsed_ms
-                        ),
-                        kind: LineKind::Stdout,
-                    });
+                    let mut summary = format!(
+                        "{} matches in {} files ({} ms)",
+                        match_count, file_count, elapsed_ms
+                    );
+                    if hit_limit_reached {
+                        summary.push_str(&format!(" [hit limit: {TERMINAL_MAX_SEARCH_HITS}]"));
+                    }
+                    push_line_with_limit(
+                        &mut lock,
+                        TerminalLine {
+                            text: summary,
+                            kind: LineKind::Stdout,
+                        },
+                    );
                 }
                 egui_ctx.request_repaint();
                 break;
             }
             Ok(SearchMessage::Error { msg, .. }) => {
                 if let Ok(mut lock) = lines.lock() {
-                    lock.push(TerminalLine {
-                        text: format!("エラー: {}", msg),
-                        kind: LineKind::Stderr,
-                    });
+                    push_line_with_limit(
+                        &mut lock,
+                        TerminalLine {
+                            text: format!("エラー: {}", msg),
+                            kind: LineKind::Stderr,
+                        },
+                    );
                 }
                 egui_ctx.request_repaint();
                 break;
@@ -267,50 +328,123 @@ fn append_file_result(
     lines: &Arc<Mutex<Vec<TerminalLine>>>,
     fr: &FileResult,
     match_count: &mut usize,
+    context_lines: usize,
 ) {
-    let Ok(mut lock) = lines.lock() else { return };
+    let Ok(mut lock) = lines.lock() else {
+        return;
+    };
 
-    // ファイルパス行
-    lock.push(TerminalLine {
-        text: fr.relative_path.clone(),
-        kind: LineKind::Stdout,
-    });
+    push_line_with_limit(
+        &mut lock,
+        TerminalLine {
+            text: fr.relative_path.clone(),
+            kind: LineKind::Stdout,
+        },
+    );
+
+    let source_lines: Option<Vec<String>> = read_text_file_as(&fr.path, fr.text_encoding.clone())
+        .ok()
+        .map(|s| s.lines().map(str::to_owned).collect());
 
     for m in &fr.matches {
         *match_count += 1;
-
-        // コンテキスト前
-        let ctx_before_start = m.line_start.saturating_sub(m.context_before.len());
-        for (i, cl) in m.context_before.iter().enumerate() {
-            lock.push(TerminalLine {
-                text: format!("  {}│  {}", ctx_before_start + i, cl),
-                kind: LineKind::Stdout,
-            });
-        }
-
-        // マッチ行（複数行マッチ対応）
-        for (i, ml) in m.span_lines_text.lines().enumerate() {
-            let marker = if i == 0 { "◉" } else { " " };
-            lock.push(TerminalLine {
-                text: format!("  {}│{} {}", m.line_start + i, marker, ml),
-                kind: LineKind::Stdout,
-            });
-        }
-
-        // コンテキスト後
-        for (i, cl) in m.context_after.iter().enumerate() {
-            lock.push(TerminalLine {
-                text: format!("  {}│  {}", m.line_end + 1 + i, cl),
-                kind: LineKind::Stdout,
-            });
-        }
+        append_match_lines(&mut lock, m, context_lines, source_lines.as_deref());
     }
 
-    // ファイル間の区切り空行
-    lock.push(TerminalLine {
-        text: String::new(),
-        kind: LineKind::Stdout,
-    });
+    push_line_with_limit(
+        &mut lock,
+        TerminalLine {
+            text: String::new(),
+            kind: LineKind::Stdout,
+        },
+    );
+}
+
+fn append_match_lines(
+    lock: &mut Vec<TerminalLine>,
+    m: &MatchItem,
+    context_lines: usize,
+    source_lines: Option<&[String]>,
+) {
+    if !m.context_before.is_empty() || !m.span_lines_text.is_empty() {
+        let ctx_before_start = m.line_start.saturating_sub(m.context_before.len());
+        for (i, cl) in m.context_before.iter().enumerate() {
+            push_line_with_limit(
+                lock,
+                TerminalLine {
+                    text: format!("  {}│  {}", ctx_before_start + i, cl),
+                    kind: LineKind::Stdout,
+                },
+            );
+        }
+        for (i, ml) in m.span_lines_text.lines().enumerate() {
+            let marker = if i == 0 { "◉" } else { " " };
+            push_line_with_limit(
+                lock,
+                TerminalLine {
+                    text: format!("  {}│{} {}", m.line_start + i, marker, ml),
+                    kind: LineKind::Stdout,
+                },
+            );
+        }
+        for (i, cl) in m.context_after.iter().enumerate() {
+            push_line_with_limit(
+                lock,
+                TerminalLine {
+                    text: format!("  {}│  {}", m.line_end + 1 + i, cl),
+                    kind: LineKind::Stdout,
+                },
+            );
+        }
+        return;
+    }
+
+    let Some(lines) = source_lines else {
+        push_line_with_limit(
+            lock,
+            TerminalLine {
+                text: format!("  {}│◉ {}", m.line_start, m.matched_text),
+                kind: LineKind::Stdout,
+            },
+        );
+        return;
+    };
+
+    let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let ls0 = m.line_start.saturating_sub(1);
+    let le0 = m.line_end.saturating_sub(1);
+    let (context_before, context_after) = slice_context_lines(&line_refs, ls0, le0, context_lines);
+    let span_text = join_span_lines(&line_refs, ls0, le0);
+
+    let ctx_before_start = m.line_start.saturating_sub(context_before.len());
+    for (i, cl) in context_before.iter().enumerate() {
+        push_line_with_limit(
+            lock,
+            TerminalLine {
+                text: format!("  {}│  {}", ctx_before_start + i, cl),
+                kind: LineKind::Stdout,
+            },
+        );
+    }
+    for (i, ml) in span_text.lines().enumerate() {
+        let marker = if i == 0 { "◉" } else { " " };
+        push_line_with_limit(
+            lock,
+            TerminalLine {
+                text: format!("  {}│{} {}", m.line_start + i, marker, ml),
+                kind: LineKind::Stdout,
+            },
+        );
+    }
+    for (i, cl) in context_after.iter().enumerate() {
+        push_line_with_limit(
+            lock,
+            TerminalLine {
+                text: format!("  {}│  {}", m.line_end + 1 + i, cl),
+                kind: LineKind::Stdout,
+            },
+        );
+    }
 }
 
 /// `cd <target>` をパースして target 文字列を返す
@@ -336,15 +470,4 @@ fn resolve_dir(base: &Path, target: &str) -> PathBuf {
     } else {
         base.join(p)
     }
-}
-
-/// PowerShell 出力を UTF-8 → CP932 (Windows-31J) の順でデコードする
-fn decode_output(bytes: &[u8]) -> String {
-    // まず UTF-8 として解釈を試みる
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        return s.to_string();
-    }
-    // UTF-8 でなければ Windows-31J (CP932 / Shift-JIS) としてデコード
-    let (decoded, _, _) = encoding_rs::SHIFT_JIS.decode(bytes);
-    decoded.into_owned()
 }

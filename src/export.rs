@@ -1,9 +1,15 @@
 use crate::batch::BatchReport;
 use crate::i18n::{Tr, UiLanguage};
 use crate::search::{
-    build_match_variation_report, type_hint_column_keys, FileResult, MatchItem, MatchVariationReport,
-    SearchConditions, SearchMode, SearchStats, TypeHintCell,
+    build_match_variation_report, materialize_results_for_export, type_hint_column_keys,
+    FileResult, MatchItem, MatchVariationReport, SearchConditions, SearchMode, SearchStats,
+    TypeHintCell,
 };
+
+/// エクスポート用に MatchItem のテキストフィールドをファイルから埋める
+fn materialized_results(results: &[FileResult], context_lines: usize) -> Vec<FileResult> {
+    materialize_results_for_export(results, context_lines)
+}
 
 /// ステータスバーからの検索結果エクスポート形式（表の全行／型サマリーの集計表）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -91,14 +97,26 @@ fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLangua
     let mut s = String::new();
     s.push_str(t.export_conditions_title());
     s.push('\n');
-    s.push_str(&format!("- {}: {}\n", t.export_cond_root(), cond.search_dir));
-    s.push_str(&format!("- {}: {}\n", t.export_cond_pattern(), cond.pattern));
+    s.push_str(&format!(
+        "- {}: {}\n",
+        t.export_cond_root(),
+        cond.search_dir
+    ));
+    s.push_str(&format!(
+        "- {}: {}\n",
+        t.export_cond_pattern(),
+        cond.pattern
+    ));
     s.push_str(&format!(
         "- {}: {}\n",
         t.export_cond_lang(),
         cond.selected_lang.combo_label(lang)
     ));
-    s.push_str(&format!("- {}: {}\n", t.export_cond_context_lines(), cond.context_lines));
+    s.push_str(&format!(
+        "- {}: {}\n",
+        t.export_cond_context_lines(),
+        cond.context_lines
+    ));
     s.push_str(&format!(
         "- {}: {}\n",
         t.export_cond_file_filter(),
@@ -109,13 +127,21 @@ fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLangua
         t.export_cond_file_encoding(),
         cond.file_encoding_preference.display_label(lang)
     ));
-    s.push_str(&format!("- {}: {}\n", t.export_cond_max_file_mb(), cond.max_file_size_mb));
+    s.push_str(&format!(
+        "- {}: {}\n",
+        t.export_cond_max_file_mb(),
+        cond.max_file_size_mb
+    ));
     s.push_str(&format!(
         "- {}: {}\n",
         t.export_cond_max_search_hits(),
         cond.max_search_hits
     ));
-    s.push_str(&format!("- {}: {}\n", t.export_cond_skip_dirs(), cond.skip_dirs));
+    s.push_str(&format!(
+        "- {}: {}\n",
+        t.export_cond_skip_dirs(),
+        cond.skip_dirs
+    ));
     s.push_str(&format!(
         "- {}: {}\n",
         t.export_cond_cpp_include_dirs(),
@@ -136,13 +162,25 @@ fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLangua
 }
 
 /// Markdown 向け（見出し `##` 付き）
-pub fn format_search_conditions_markdown(t: Tr, cond: &SearchConditions, lang: UiLanguage) -> String {
+pub fn format_search_conditions_markdown(
+    t: Tr,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> String {
     let mut s = String::new();
     s.push_str("## ");
     s.push_str(t.export_conditions_title());
     s.push_str("\n\n");
-    s.push_str(&format!("- **{}**: {}\n", t.export_cond_root(), cond.search_dir));
-    s.push_str(&format!("- **{}**: {}\n", t.export_cond_pattern(), cond.pattern));
+    s.push_str(&format!(
+        "- **{}**: {}\n",
+        t.export_cond_root(),
+        cond.search_dir
+    ));
+    s.push_str(&format!(
+        "- **{}**: {}\n",
+        t.export_cond_pattern(),
+        cond.pattern
+    ));
     s.push_str(&format!(
         "- **{}**: {}\n",
         t.export_cond_lang(),
@@ -173,7 +211,11 @@ pub fn format_search_conditions_markdown(t: Tr, cond: &SearchConditions, lang: U
         t.export_cond_max_search_hits(),
         cond.max_search_hits
     ));
-    s.push_str(&format!("- **{}**: {}\n", t.export_cond_skip_dirs(), cond.skip_dirs));
+    s.push_str(&format!(
+        "- **{}**: {}\n",
+        t.export_cond_skip_dirs(),
+        cond.skip_dirs
+    ));
     s.push_str(&format!(
         "- **{}**: {}\n",
         t.export_cond_cpp_include_dirs(),
@@ -202,6 +244,7 @@ pub fn results_to_text(
     cond: &SearchConditions,
     lang: UiLanguage,
 ) -> String {
+    let results = materialized_results(results, cond.context_lines);
     let t = Tr(lang);
     let mut out = String::new();
     out.push_str("# ");
@@ -317,7 +360,10 @@ fn summary_variation_to_plain_text(
                             row.count, row.receiver_display, row.method_display, row.arity
                         ));
                     } else {
-                        out.push_str(&format!("{} | {} | {}", row.count, row.receiver_display, row.arity));
+                        out.push_str(&format!(
+                            "{} | {} | {}",
+                            row.count, row.receiver_display, row.arity
+                        ));
                     }
                     for i in 0..max_arg {
                         out.push_str(" | ");
@@ -441,6 +487,7 @@ pub fn results_to_markdown(
     if layout == ResultsExportLayout::MatchVariationSummary {
         return summary_variation_to_markdown(results, stats, cond, lang);
     }
+    let results = materialized_results(results, cond.context_lines);
     let t = Tr(lang);
     let mut out = String::new();
     out.push_str("# ");
@@ -453,7 +500,7 @@ pub fn results_to_markdown(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
-    let col_keys = type_hint_column_keys(&cond.pattern, results);
+    let col_keys = type_hint_column_keys(&cond.pattern, &results);
     if col_keys.is_empty() {
         out.push_str(t.export_md_table_header());
         out.push_str(&markdown_table_sep(5));
@@ -644,9 +691,15 @@ fn html_summary_variation_fragment(
                 for row in &report.rows {
                     out.push_str("<tr>\n");
                     out.push_str(&format!("<td>{}</td>\n", row.count));
-                    out.push_str(&format!("<td><code>{}</code></td>\n", escape(&row.receiver_display)));
+                    out.push_str(&format!(
+                        "<td><code>{}</code></td>\n",
+                        escape(&row.receiver_display)
+                    ));
                     if has_method {
-                        out.push_str(&format!("<td><code>{}</code></td>\n", escape(&row.method_display)));
+                        out.push_str(&format!(
+                            "<td><code>{}</code></td>\n",
+                            escape(&row.method_display)
+                        ));
                     }
                     out.push_str(&format!("<td>{}</td>\n", row.arity));
                     for i in 0..max_arg {
@@ -673,6 +726,7 @@ fn html_conditions_stats_table_fragment(
     cond: &SearchConditions,
     lang: UiLanguage,
 ) -> String {
+    let results = materialized_results(results, cond.context_lines);
     let t = Tr(lang);
     let escape = |s: &str| {
         s.replace('&', "&amp;")
@@ -682,7 +736,7 @@ fn html_conditions_stats_table_fragment(
     };
 
     let mut out = html_conditions_and_stats_fragment(stats, cond, lang);
-    let col_keys = type_hint_column_keys(&cond.pattern, results);
+    let col_keys = type_hint_column_keys(&cond.pattern, &results);
     out.push_str("<table>\n<thead>\n<tr>\n");
     out.push_str("<th>");
     out.push_str(t.export_html_th_file());
@@ -708,7 +762,10 @@ fn html_conditions_stats_table_fragment(
             let matched_html = escape(&m.matched_text).replace('\n', "<br>\n");
             let program_html = escape(&m.program_with_context()).replace('\n', "<br>\n");
             out.push_str("<tr>\n");
-            out.push_str(&format!("<td><code>{}</code></td>\n", escape(&file.relative_path)));
+            out.push_str(&format!(
+                "<td><code>{}</code></td>\n",
+                escape(&file.relative_path)
+            ));
             out.push_str(&format!("<td>{}</td>\n", m.line_start));
             out.push_str(&format!("<td>{}</td>\n", m.col_start));
             out.push_str(&format!("<td><code>{}</code></td>\n", matched_html));
@@ -754,14 +811,18 @@ pub fn results_to_html(
     out.push_str("th { background: #333; color: #fff; padding: 6px 10px; text-align: left; }\n");
     out.push_str("td { padding: 5px 10px; border-bottom: 1px solid #ddd; vertical-align: top; }\n");
     out.push_str("tr:hover { background: #f5f5f5; }\n");
-    out.push_str("code { background: #eee; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }\n");
+    out.push_str(
+        "code { background: #eee; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }\n",
+    );
     out.push_str("</style>\n</head>\n<body>\n");
     out.push_str("<h1>");
     out.push_str(t.export_html_h1());
     out.push_str("</h1>\n");
     match layout {
         ResultsExportLayout::FullTable => {
-            out.push_str(&html_conditions_stats_table_fragment(results, stats, cond, lang));
+            out.push_str(&html_conditions_stats_table_fragment(
+                results, stats, cond, lang,
+            ));
         }
         ResultsExportLayout::MatchVariationSummary => {
             out.push_str(&html_summary_variation_fragment(results, stats, cond, lang));
@@ -804,7 +865,11 @@ fn write_xlsx_stats_sheet(
     stats_sheet.write(8, 0, t.export_cond_context_lines())?;
     stats_sheet.write(8, 1, cond.context_lines as u32)?;
     stats_sheet.write(9, 0, t.export_cond_file_filter())?;
-    stats_sheet.write(9, 1, truncate_for_excel(file_filter_display(t, cond).as_ref()))?;
+    stats_sheet.write(
+        9,
+        1,
+        truncate_for_excel(file_filter_display(t, cond).as_ref()),
+    )?;
     stats_sheet.write(10, 0, t.export_cond_file_encoding())?;
     stats_sheet.write(10, 1, cond.file_encoding_preference.display_label(lang))?;
     stats_sheet.write(11, 0, t.export_cond_max_file_mb())?;
@@ -816,7 +881,11 @@ fn write_xlsx_stats_sheet(
     stats_sheet.write(14, 0, t.export_cond_search_mode())?;
     stats_sheet.write(14, 1, search_mode_label(t, cond.search_mode))?;
     stats_sheet.write(15, 0, t.export_cond_plain_text_options())?;
-    stats_sheet.write(15, 1, truncate_for_excel(&plain_text_options_export_value(t, cond)))?;
+    stats_sheet.write(
+        15,
+        1,
+        truncate_for_excel(&plain_text_options_export_value(t, cond)),
+    )?;
     stats_sheet.set_column_width(0, 28)?;
     stats_sheet.set_column_width(1, 72)?;
     Ok(())
@@ -840,13 +909,16 @@ pub fn export_xlsx_to_file(
 
     match layout {
         ResultsExportLayout::FullTable => {
-            let col_keys = type_hint_column_keys(&cond.pattern, results);
+            let results = materialized_results(results, cond.context_lines);
+            let col_keys = type_hint_column_keys(&cond.pattern, &results);
 
             let sheet = workbook.add_worksheet();
             sheet.set_name(t.export_xlsx_sheet_results())?;
 
-            let header_fmt =
-                Format::new().set_bold().set_background_color(0x333333u32).set_font_color(0xFFFFFFu32);
+            let header_fmt = Format::new()
+                .set_bold()
+                .set_background_color(0x333333u32)
+                .set_font_color(0xFFFFFFu32);
 
             sheet.write_with_format(0, 0, t.export_xlsx_col_file(), &header_fmt)?;
             sheet.write_with_format(0, 1, t.export_xlsx_col_line(), &header_fmt)?;
@@ -887,20 +959,26 @@ pub fn export_xlsx_to_file(
         ResultsExportLayout::MatchVariationSummary => {
             let sheet = workbook.add_worksheet();
             sheet.set_name(t.export_xlsx_sheet_summary())?;
-            let header_fmt =
-                Format::new().set_bold().set_background_color(0x333333u32).set_font_color(0xFFFFFFu32);
+            let header_fmt = Format::new()
+                .set_bold()
+                .set_background_color(0x333333u32)
+                .set_font_color(0xFFFFFFu32);
 
             match build_match_variation_report(&cond.pattern, results) {
                 None => {
                     sheet.write(0, 0, truncate_for_excel(t.summary_pattern_ineligible()))?;
                 }
                 Some(report) => {
-                    sheet.write(0, 0, truncate_for_excel(&t.summary_keys_explanation(
-                        &report.receiver_metavar,
-                        report.method_metavar.as_deref(),
-                        report.args_multi_metavar.as_deref(),
-                        &report.arg_single_metavars,
-                    )))?;
+                    sheet.write(
+                        0,
+                        0,
+                        truncate_for_excel(&t.summary_keys_explanation(
+                            &report.receiver_metavar,
+                            report.method_metavar.as_deref(),
+                            report.args_multi_metavar.as_deref(),
+                            &report.arg_single_metavars,
+                        )),
+                    )?;
                     if report.rows.is_empty() {
                         sheet.write(1, 0, truncate_for_excel(t.summary_no_match_rows()))?;
                     } else {
@@ -917,7 +995,12 @@ pub fn export_xlsx_to_file(
                             3
                         };
                         for i in 0..max_arg {
-                            sheet.write_with_format(1, arity_col + i as u16, t.summary_col_arg(i), &header_fmt)?;
+                            sheet.write_with_format(
+                                1,
+                                arity_col + i as u16,
+                                t.summary_col_arg(i),
+                                &header_fmt,
+                            )?;
                         }
                         sheet.set_column_width(0, 10)?;
                         sheet.set_column_width(1, 36)?;
@@ -998,6 +1081,7 @@ pub fn results_to_json(
 
     match layout {
         ResultsExportLayout::FullTable => {
+            let materialized = materialized_results(results, cond.context_lines);
             #[derive(serde::Serialize)]
             struct Output<'a> {
                 export_layout: &'static str,
@@ -1009,7 +1093,7 @@ pub fn results_to_json(
                 export_layout: "full_table",
                 search: cond,
                 stats: stats_out(),
-                results,
+                results: &materialized,
             };
             Ok(serde_json::to_string_pretty(&output)?)
         }
@@ -1198,7 +1282,8 @@ pub fn batch_report_to_markdown(report: &BatchReport, lang: UiLanguage) -> Strin
             run.stats.elapsed_ms,
             run.stats.hit_limit_reached,
         ));
-        let col_keys = type_hint_column_keys(&run.conditions.pattern, &run.results);
+        let results = materialized_results(&run.results, run.conditions.context_lines);
+        let col_keys = type_hint_column_keys(&run.conditions.pattern, &results);
         if col_keys.is_empty() {
             out.push_str(t.export_md_table_header());
             out.push_str(&markdown_table_sep(5));
@@ -1207,7 +1292,7 @@ pub fn batch_report_to_markdown(report: &BatchReport, lang: UiLanguage) -> Strin
             out.push_str(&markdown_table_sep(5 + col_keys.len()));
         }
 
-        for file in &run.results {
+        for file in &results {
             for m in &file.matches {
                 let md_cell = |s: &str| s.replace('|', "\\|").replace('\n', "<br>");
                 let matched_cell = md_cell(&m.matched_text);
@@ -1259,7 +1344,9 @@ pub fn batch_report_to_html(report: &BatchReport, lang: UiLanguage) -> String {
     out.push_str("</title>\n<style>\n");
     out.push_str("body { font-family: sans-serif; margin: 20px; }\n");
     out.push_str("h1 { font-size: 1.4em; }\n");
-    out.push_str("h2.job { font-size: 1.15em; margin-top: 1.2em; border-bottom: 1px solid #ccc; }\n");
+    out.push_str(
+        "h2.job { font-size: 1.15em; margin-top: 1.2em; border-bottom: 1px solid #ccc; }\n",
+    );
     out.push_str("h2.cond { font-size: 1.1em; margin: 1em 0 0.5em; }\n");
     out.push_str("dl.conditions { display: grid; grid-template-columns: 200px 1fr; column-gap: 8px; row-gap: 0.35em; margin: 0 0 14px; align-items: start; }\n");
     out.push_str("dl.conditions dt { font-weight: 600; margin: 0; padding: 0; }\n");
@@ -1272,15 +1359,13 @@ pub fn batch_report_to_html(report: &BatchReport, lang: UiLanguage) -> String {
     out.push_str("<h1>");
     out.push_str(t.batch_report_title());
     out.push_str("</h1>\n<p>");
-    out.push_str(&escape(
-        &t.batch_report_summary(
-            report.total_elapsed_ms,
-            report.total_matches(),
-            report.total_files(),
-            report.runs.len(),
-            report.failed_count(),
-        ),
-    ));
+    out.push_str(&escape(&t.batch_report_summary(
+        report.total_elapsed_ms,
+        report.total_matches(),
+        report.total_files(),
+        report.runs.len(),
+        report.failed_count(),
+    )));
     out.push_str("</p>\n");
 
     for run in &report.runs {
@@ -1339,8 +1424,8 @@ pub fn export_batch_xlsx_to_file(
 
         let cond = &run.conditions;
         let stats = &run.stats;
-        let results = &run.results;
-        let col_keys = type_hint_column_keys(&cond.pattern, results);
+        let results = materialized_results(&run.results, cond.context_lines);
+        let col_keys = type_hint_column_keys(&cond.pattern, &results);
 
         let header_fmt = Format::new()
             .set_bold()
@@ -1412,7 +1497,10 @@ pub fn export_batch_xlsx_to_file(
     Ok(())
 }
 
-pub fn export_batch_json_to_file(path: &std::path::Path, report: &BatchReport) -> anyhow::Result<()> {
+pub fn export_batch_json_to_file(
+    path: &std::path::Path,
+    report: &BatchReport,
+) -> anyhow::Result<()> {
     std::fs::write(path, batch_report_to_json(report)?)?;
     Ok(())
 }

@@ -60,12 +60,8 @@ pub fn spawn_rewrite_preview(
             let source = decoded.text;
             let text_encoding = fr.text_encoding.clone();
 
-            match apply_rewrite_to_string(
-                &source,
-                &pattern,
-                &rewrite_template,
-                fr.source_language,
-            ) {
+            match apply_rewrite_to_string(&source, &pattern, &rewrite_template, fr.source_language)
+            {
                 Ok(Some((after, count))) if count > 0 && after != source => {
                     previews.push(RewriteFilePreview {
                         path: fr.path,
@@ -243,8 +239,7 @@ mod tests {
 
     #[test]
     fn rust_multiple_matches_counted() {
-        let source =
-            "fn main() {\n    let a = x.unwrap();\n    let b = y.unwrap();\n}";
+        let source = "fn main() {\n    let a = x.unwrap();\n    let b = y.unwrap();\n}";
         let (_, count) = apply_rewrite_to_string(
             source,
             "$E.unwrap()",
@@ -258,18 +253,16 @@ mod tests {
 
     #[test]
     fn empty_pattern_returns_none() {
-        let result = apply_rewrite_to_string(
-            "fn main() {}",
-            "",
-            "replaced",
-            SupportedLanguage::Rust,
-        );
+        let result =
+            apply_rewrite_to_string("fn main() {}", "", "replaced", SupportedLanguage::Rust);
         assert_eq!(result, Ok(None));
     }
 }
 
 /// プレビュー内容をディスクに書き戻す
-pub fn apply_preview_to_disk(files: &[RewriteFilePreview]) -> Result<usize, Vec<(PathBuf, String)>> {
+pub fn apply_preview_to_disk(
+    files: &[RewriteFilePreview],
+) -> Result<usize, Vec<(PathBuf, String)>> {
     let mut errors = Vec::new();
     let mut ok = 0usize;
     for f in files {

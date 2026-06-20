@@ -238,51 +238,114 @@ mod tests {
 
     #[test]
     fn from_extension_rust() {
-        assert_eq!(SupportedLanguage::from_extension("rs"), Some(SupportedLanguage::Rust));
+        assert_eq!(
+            SupportedLanguage::from_extension("rs"),
+            Some(SupportedLanguage::Rust)
+        );
     }
 
     #[test]
     fn from_extension_python_multiple_exts() {
-        assert_eq!(SupportedLanguage::from_extension("py"), Some(SupportedLanguage::Python));
-        assert_eq!(SupportedLanguage::from_extension("pyi"), Some(SupportedLanguage::Python));
+        assert_eq!(
+            SupportedLanguage::from_extension("py"),
+            Some(SupportedLanguage::Python)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("pyi"),
+            Some(SupportedLanguage::Python)
+        );
     }
 
     #[test]
     fn from_extension_javascript_multiple_exts() {
-        assert_eq!(SupportedLanguage::from_extension("js"), Some(SupportedLanguage::JavaScript));
-        assert_eq!(SupportedLanguage::from_extension("jsx"), Some(SupportedLanguage::JavaScript));
-        assert_eq!(SupportedLanguage::from_extension("mjs"), Some(SupportedLanguage::JavaScript));
-        assert_eq!(SupportedLanguage::from_extension("cjs"), Some(SupportedLanguage::JavaScript));
+        assert_eq!(
+            SupportedLanguage::from_extension("js"),
+            Some(SupportedLanguage::JavaScript)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("jsx"),
+            Some(SupportedLanguage::JavaScript)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("mjs"),
+            Some(SupportedLanguage::JavaScript)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("cjs"),
+            Some(SupportedLanguage::JavaScript)
+        );
     }
 
     #[test]
     fn from_extension_typescript_multiple_exts() {
-        assert_eq!(SupportedLanguage::from_extension("ts"), Some(SupportedLanguage::TypeScript));
-        assert_eq!(SupportedLanguage::from_extension("tsx"), Some(SupportedLanguage::TypeScript));
-        assert_eq!(SupportedLanguage::from_extension("mts"), Some(SupportedLanguage::TypeScript));
-        assert_eq!(SupportedLanguage::from_extension("cts"), Some(SupportedLanguage::TypeScript));
+        assert_eq!(
+            SupportedLanguage::from_extension("ts"),
+            Some(SupportedLanguage::TypeScript)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("tsx"),
+            Some(SupportedLanguage::TypeScript)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("mts"),
+            Some(SupportedLanguage::TypeScript)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("cts"),
+            Some(SupportedLanguage::TypeScript)
+        );
     }
 
     #[test]
     fn from_extension_cpp_multiple_exts() {
-        assert_eq!(SupportedLanguage::from_extension("cpp"), Some(SupportedLanguage::Cpp));
-        assert_eq!(SupportedLanguage::from_extension("cc"), Some(SupportedLanguage::Cpp));
-        assert_eq!(SupportedLanguage::from_extension("cxx"), Some(SupportedLanguage::Cpp));
-        assert_eq!(SupportedLanguage::from_extension("hpp"), Some(SupportedLanguage::Cpp));
+        assert_eq!(
+            SupportedLanguage::from_extension("cpp"),
+            Some(SupportedLanguage::Cpp)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("cc"),
+            Some(SupportedLanguage::Cpp)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("cxx"),
+            Some(SupportedLanguage::Cpp)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("hpp"),
+            Some(SupportedLanguage::Cpp)
+        );
     }
 
     #[test]
     fn from_extension_kotlin_multiple_exts() {
-        assert_eq!(SupportedLanguage::from_extension("kt"), Some(SupportedLanguage::Kotlin));
-        assert_eq!(SupportedLanguage::from_extension("kts"), Some(SupportedLanguage::Kotlin));
-        assert_eq!(SupportedLanguage::from_extension("ktm"), Some(SupportedLanguage::Kotlin));
+        assert_eq!(
+            SupportedLanguage::from_extension("kt"),
+            Some(SupportedLanguage::Kotlin)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("kts"),
+            Some(SupportedLanguage::Kotlin)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("ktm"),
+            Some(SupportedLanguage::Kotlin)
+        );
     }
 
     #[test]
     fn from_extension_scala_multiple_exts() {
-        assert_eq!(SupportedLanguage::from_extension("scala"), Some(SupportedLanguage::Scala));
-        assert_eq!(SupportedLanguage::from_extension("sc"), Some(SupportedLanguage::Scala));
-        assert_eq!(SupportedLanguage::from_extension("sbt"), Some(SupportedLanguage::Scala));
+        assert_eq!(
+            SupportedLanguage::from_extension("scala"),
+            Some(SupportedLanguage::Scala)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("sc"),
+            Some(SupportedLanguage::Scala)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("sbt"),
+            Some(SupportedLanguage::Scala)
+        );
     }
 
     #[test]
@@ -295,15 +358,30 @@ mod tests {
 
     #[test]
     fn from_extension_is_case_insensitive() {
-        assert_eq!(SupportedLanguage::from_extension("RS"), Some(SupportedLanguage::Rust));
-        assert_eq!(SupportedLanguage::from_extension("Java"), Some(SupportedLanguage::Java));
-        assert_eq!(SupportedLanguage::from_extension("PY"), Some(SupportedLanguage::Python));
+        assert_eq!(
+            SupportedLanguage::from_extension("RS"),
+            Some(SupportedLanguage::Rust)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("Java"),
+            Some(SupportedLanguage::Java)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension("PY"),
+            Some(SupportedLanguage::Python)
+        );
     }
 
     #[test]
     fn from_extension_strips_leading_dot() {
-        assert_eq!(SupportedLanguage::from_extension(".rs"), Some(SupportedLanguage::Rust));
-        assert_eq!(SupportedLanguage::from_extension(".java"), Some(SupportedLanguage::Java));
+        assert_eq!(
+            SupportedLanguage::from_extension(".rs"),
+            Some(SupportedLanguage::Rust)
+        );
+        assert_eq!(
+            SupportedLanguage::from_extension(".java"),
+            Some(SupportedLanguage::Java)
+        );
     }
 
     #[test]
@@ -368,9 +446,18 @@ mod tests {
 
     #[test]
     fn from_cli_str_case_insensitive() {
-        assert_eq!(SupportedLanguage::from_cli_str("RUST"), Some(SupportedLanguage::Rust));
-        assert_eq!(SupportedLanguage::from_cli_str("Python"), Some(SupportedLanguage::Python));
-        assert_eq!(SupportedLanguage::from_cli_str("GO"), Some(SupportedLanguage::Go));
+        assert_eq!(
+            SupportedLanguage::from_cli_str("RUST"),
+            Some(SupportedLanguage::Rust)
+        );
+        assert_eq!(
+            SupportedLanguage::from_cli_str("Python"),
+            Some(SupportedLanguage::Python)
+        );
+        assert_eq!(
+            SupportedLanguage::from_cli_str("GO"),
+            Some(SupportedLanguage::Go)
+        );
     }
 
     #[test]
@@ -402,14 +489,19 @@ mod tests {
 
     #[test]
     fn all_with_auto_starts_with_auto() {
-        assert_eq!(SupportedLanguage::all_with_auto()[0], SupportedLanguage::Auto);
+        assert_eq!(
+            SupportedLanguage::all_with_auto()[0],
+            SupportedLanguage::Auto
+        );
     }
 
     #[test]
     fn union_extensions_contains_common_extensions() {
         let set = SupportedLanguage::union_extensions_for_auto_filter();
         assert!(!set.is_empty());
-        for ext in ["rs", "java", "py", "js", "ts", "go", "cpp", "c", "cs", "kt", "scala"] {
+        for ext in [
+            "rs", "java", "py", "js", "ts", "go", "cpp", "c", "cs", "kt", "scala",
+        ] {
             assert!(set.contains(ext), "missing: {ext}");
         }
     }

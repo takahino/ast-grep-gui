@@ -23,10 +23,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     if app.results.is_empty() {
         app.code_view_pointer_on_list = false;
-        ui.label(
-            egui::RichText::new(t.file_list_empty())
-                .color(egui::Color32::GRAY),
-        );
+        ui.label(egui::RichText::new(t.file_list_empty()).color(egui::Color32::GRAY));
         return;
     }
 

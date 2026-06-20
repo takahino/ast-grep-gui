@@ -214,8 +214,16 @@ impl Parser {
             r"\d" => tr(self.lang, "数字 1 文字", "A single digit"),
             r"\D" => tr(self.lang, "数字以外 1 文字", "A single non-digit"),
             r"\w" => tr(self.lang, "単語文字 1 文字", "A single word character"),
-            r"\W" => tr(self.lang, "単語文字以外 1 文字", "A single non-word character"),
-            r"\s" => tr(self.lang, "空白文字 1 文字", "A single whitespace character"),
+            r"\W" => tr(
+                self.lang,
+                "単語文字以外 1 文字",
+                "A single non-word character",
+            ),
+            r"\s" => tr(
+                self.lang,
+                "空白文字 1 文字",
+                "A single whitespace character",
+            ),
             r"\S" => tr(
                 self.lang,
                 "空白以外 1 文字",
@@ -297,7 +305,7 @@ impl Parser {
         self.depth += 1;
         self.stats.groups += 1;
 
-        let (token, note) = if self.peek_str("(?:" ) {
+        let (token, note) = if self.peek_str("(?:") {
             self.index += 3;
             (
                 "(?:".to_string(),
@@ -391,9 +399,21 @@ impl Parser {
         let ch = self.chars[self.index];
         self.index += 1;
         let note = match ch {
-            '*' => tr(self.lang, "直前要素の 0 回以上", "Zero or more of the previous item"),
-            '+' => tr(self.lang, "直前要素の 1 回以上", "One or more of the previous item"),
-            '?' => tr(self.lang, "直前要素の 0 回または 1 回", "Zero or one of the previous item"),
+            '*' => tr(
+                self.lang,
+                "直前要素の 0 回以上",
+                "Zero or more of the previous item",
+            ),
+            '+' => tr(
+                self.lang,
+                "直前要素の 1 回以上",
+                "One or more of the previous item",
+            ),
+            '?' => tr(
+                self.lang,
+                "直前要素の 0 回または 1 回",
+                "Zero or one of the previous item",
+            ),
             _ => "",
         };
 
@@ -855,7 +875,10 @@ mod tests {
         let vis = visualize_regex(r"[A-Z_][A-Za-z0-9_]*", UiLanguage::Japanese);
         assert!(vis.is_valid);
         assert_eq!(vis.stats.char_classes, 2);
-        assert!(vis.lines.iter().any(|line| line.label.contains("文字クラス")));
+        assert!(vis
+            .lines
+            .iter()
+            .any(|line| line.label.contains("文字クラス")));
     }
 
     #[test]

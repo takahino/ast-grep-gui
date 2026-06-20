@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use egui::Ui;
 
 use crate::app::{AstGrepApp, CodeViewPaneFocus, RewritePhase, SearchState, ViewMode};
-use crate::ui::{batch_panel, cpp_include_diagnostic};
 use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguagePreference;
 use crate::lang::SupportedLanguage;
 use crate::search::SearchMode;
+use crate::ui::{batch_panel, cpp_include_diagnostic};
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let t = app.tr();
@@ -53,8 +53,12 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         ui.label(t.mode_label()).on_hover_text(t.mode_tooltip());
         ui.selectable_value(&mut app.search_mode, SearchMode::AstGrep, t.mode_ast())
             .on_hover_text(t.mode_ast_tooltip());
-        ui.selectable_value(&mut app.search_mode, SearchMode::TokenSearch, t.mode_token())
-            .on_hover_text(t.mode_token_tooltip());
+        ui.selectable_value(
+            &mut app.search_mode,
+            SearchMode::TokenSearch,
+            t.mode_token(),
+        )
+        .on_hover_text(t.mode_token_tooltip());
         ui.selectable_value(&mut app.search_mode, SearchMode::PlainText, t.mode_plain())
             .on_hover_text(t.mode_plain_tooltip());
         ui.selectable_value(&mut app.search_mode, SearchMode::Regex, t.mode_regex())
@@ -195,7 +199,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             SearchMode::Regex => (t.pattern_label_tooltip_regex(), t.pattern_hint_regex()),
         };
 
-        ui.label(t.pattern_colon()).on_hover_text(pattern_label_tooltip);
+        ui.label(t.pattern_colon())
+            .on_hover_text(pattern_label_tooltip);
         let response = ui.add(
             egui::TextEdit::singleline(&mut app.pattern)
                 .desired_width(350.0)
@@ -216,8 +221,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         }
 
         // AST / Regex モードのみ履歴サジェストを表示
-        let show_suggest = app.search_mode.is_ast_mode()
-            || app.search_mode == SearchMode::Regex;
+        let show_suggest = app.search_mode.is_ast_mode() || app.search_mode == SearchMode::Regex;
 
         let popup_id = ui.make_persistent_id("pattern_autocomplete");
 
@@ -250,12 +254,15 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             let n = suggestions.len();
             ui.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                    app.pattern_suggest_idx =
-                        Some(app.pattern_suggest_idx.map_or(0, |idx| (idx + 1).min(n - 1)));
+                    app.pattern_suggest_idx = Some(
+                        app.pattern_suggest_idx
+                            .map_or(0, |idx| (idx + 1).min(n - 1)),
+                    );
                 }
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
                     app.pattern_suggest_idx = Some(
-                        app.pattern_suggest_idx.map_or(n - 1, |idx| idx.saturating_sub(1)),
+                        app.pattern_suggest_idx
+                            .map_or(n - 1, |idx| idx.saturating_sub(1)),
                     );
                 }
             });
@@ -317,7 +324,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         let is_running = matches!(app.search_state, SearchState::Running);
 
         if is_running {
-            if ui.button(t.stop()).on_hover_text(t.stop_tooltip()).clicked() {
+            if ui
+                .button(t.stop())
+                .on_hover_text(t.stop_tooltip())
+                .clicked()
+            {
                 app.stop_search();
             }
         } else {
@@ -327,7 +338,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 SearchMode::PlainText => t.search_tooltip_plain(),
                 SearchMode::Regex => t.search_tooltip_regex(),
             };
-            if ui.button(t.search_btn()).on_hover_text(search_tooltip).clicked() {
+            if ui
+                .button(t.search_btn())
+                .on_hover_text(search_tooltip)
+                .clicked()
+            {
                 app.start_search();
             }
         }
@@ -335,7 +350,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         ui.checkbox(&mut app.incremental_search, t.incremental_search_label())
             .on_hover_text(t.incremental_search_tooltip());
 
-        if ui.button(t.clear_results())
+        if ui
+            .button(t.clear_results())
             .on_hover_text(t.clear_results_tooltip())
             .clicked()
         {
@@ -344,21 +360,24 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
         // ASTモードのときのみヘルプ・パターン支援を表示
         if app.search_mode.is_ast_mode() {
-            if ui.button(t.help_btn())
+            if ui
+                .button(t.help_btn())
                 .on_hover_text(t.help_btn_tooltip())
                 .clicked()
             {
                 app.show_help = !app.show_help;
             }
 
-            if ui.button(t.pattern_assist_btn())
+            if ui
+                .button(t.pattern_assist_btn())
                 .on_hover_text(t.pattern_assist_btn_tooltip())
                 .clicked()
             {
                 app.show_pattern_assist = !app.show_pattern_assist;
             }
         } else if app.search_mode == SearchMode::Regex {
-            if ui.button(t.regex_visualizer_btn())
+            if ui
+                .button(t.regex_visualizer_btn())
                 .on_hover_text(t.regex_visualizer_btn_tooltip())
                 .clicked()
             {
@@ -373,8 +392,12 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .on_hover_text(t.view_code_tooltip());
         ui.selectable_value(&mut app.view_mode, ViewMode::Table, t.view_table())
             .on_hover_text(t.view_table_tooltip());
-        ui.selectable_value(&mut app.view_mode, ViewMode::BatchReport, t.view_batch_report())
-            .on_hover_text(t.view_batch_report_tooltip());
+        ui.selectable_value(
+            &mut app.view_mode,
+            ViewMode::BatchReport,
+            t.view_batch_report(),
+        )
+        .on_hover_text(t.view_batch_report_tooltip());
         ui.selectable_value(&mut app.view_mode, ViewMode::Summary, t.view_summary())
             .on_hover_text(t.view_summary_tooltip());
 
@@ -415,7 +438,10 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         format!("Auto detect -> {}", encoding.display_label())
                     }
                 },
-                _ => app.file_encoding_preference.display_label(ui_lang).to_string(),
+                _ => app
+                    .file_encoding_preference
+                    .display_label(ui_lang)
+                    .to_string(),
             };
             egui::ComboBox::from_id_salt("file_encoding_preference")
                 .selected_text(combo_text)
@@ -492,11 +518,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         } else {
             t.footer_hint_non_ast()
         };
-        ui.label(
-            egui::RichText::new(hint)
-                .small()
-                .color(egui::Color32::GRAY),
-        );
+        ui.label(egui::RichText::new(hint).small().color(egui::Color32::GRAY));
     });
 
     // AST モード: 置換テンプレート（--rewrite 相当）とプレビュー

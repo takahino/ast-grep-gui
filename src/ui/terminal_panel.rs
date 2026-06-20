@@ -36,24 +36,29 @@ pub fn show(app: &mut AstGrepApp, ui: &mut egui::Ui) {
                 ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
             }
 
-            let lines_snapshot = terminal
-                .lines
-                .lock()
-                .map(|l| l.clone())
-                .unwrap_or_default();
+            let lines_snapshot = match terminal.lines.lock() {
+                Ok(lock) => lock.len(),
+                Err(_) => 0,
+            };
+            let line_height_px = 13.0 + 4.0;
+            let viewport_rows =
+                ((output_height / line_height_px).ceil() as usize).saturating_add(4);
 
-            for line in &lines_snapshot {
-                let color = match line.kind {
-                    LineKind::Prompt => egui::Color32::from_rgb(100, 160, 255),
-                    LineKind::Stdout => egui::Color32::LIGHT_GRAY,
-                    LineKind::Stderr => egui::Color32::from_rgb(255, 100, 80),
-                };
-                ui.label(
-                    egui::RichText::new(&line.text)
-                        .monospace()
-                        .color(color)
-                        .size(13.0),
-                );
+            if let Ok(lock) = terminal.lines.lock() {
+                let start = lines_snapshot.saturating_sub(viewport_rows);
+                for line in lock.iter().skip(start) {
+                    let color = match line.kind {
+                        LineKind::Prompt => egui::Color32::from_rgb(100, 160, 255),
+                        LineKind::Stdout => egui::Color32::LIGHT_GRAY,
+                        LineKind::Stderr => egui::Color32::from_rgb(255, 100, 80),
+                    };
+                    ui.label(
+                        egui::RichText::new(&line.text)
+                            .monospace()
+                            .color(color)
+                            .size(13.0),
+                    );
+                }
             }
         });
 
