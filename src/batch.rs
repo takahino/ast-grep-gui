@@ -6,6 +6,7 @@ use crate::cli_config::BatchCommonOptions;
 use crate::file_encoding::FileEncodingPreference;
 use crate::lang::SupportedLanguage;
 use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
+use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
 
 /// 単一検索で使う予約 `job_id`（バッチジョブは 1 から採番）
 pub const SINGLE_SEARCH_JOB_ID: usize = 0;
@@ -18,6 +19,10 @@ pub struct PatternJob {
     pub enabled: bool,
     pub pattern: String,
     pub search_dir: String,
+    #[serde(default)]
+    pub search_target_mode: SearchTargetMode,
+    #[serde(default)]
+    pub remote_target: RemoteTargetConfig,
     pub selected_lang: SupportedLanguage,
     pub context_lines: usize,
     pub file_filter: String,
@@ -40,6 +45,8 @@ impl PatternJob {
     pub fn to_conditions(&self) -> SearchConditions {
         SearchConditions {
             search_dir: self.search_dir.clone(),
+            search_target_mode: self.search_target_mode,
+            remote_target: self.remote_target.clone(),
             pattern: self.pattern.clone(),
             selected_lang: self.selected_lang,
             context_lines: self.context_lines,
@@ -61,6 +68,8 @@ impl PatternJob {
         label: String,
         pattern: String,
         search_dir: String,
+        search_target_mode: SearchTargetMode,
+        remote_target: RemoteTargetConfig,
         selected_lang: SupportedLanguage,
         context_lines: usize,
         file_filter: String,
@@ -79,6 +88,8 @@ impl PatternJob {
             enabled: true,
             pattern,
             search_dir,
+            search_target_mode,
+            remote_target,
             selected_lang,
             context_lines,
             file_filter,
@@ -94,7 +105,30 @@ impl PatternJob {
     }
 
     pub fn is_runnable(&self) -> bool {
-        self.enabled && !self.pattern.trim().is_empty() && !self.search_dir.trim().is_empty()
+        if !self.enabled || self.pattern.trim().is_empty() {
+            return false;
+        }
+        match self.search_target_mode {
+            SearchTargetMode::Directory => !self.search_dir.trim().is_empty(),
+            mode => self.remote_target.is_remote_ready(mode),
+        }
+    }
+
+    pub fn effective_search_dir_display(&self) -> String {
+        match self.search_target_mode {
+            SearchTargetMode::Directory => self.search_dir.clone(),
+            mode => {
+                let mut s = self.remote_target.url.clone();
+                let rev = self.remote_target.ref_or_revision_for(mode);
+                if !rev.is_empty() {
+                    s.push_str(&format!("@{rev}"));
+                }
+                if !self.remote_target.subdir.trim().is_empty() {
+                    s.push_str(&format!("/{}", self.remote_target.subdir.trim()));
+                }
+                s
+            }
+        }
     }
 }
 
@@ -234,6 +268,8 @@ pub fn jobs_from_pattern_lines(
                 enabled: true,
                 pattern: pattern.clone(),
                 search_dir: common.search_dir.clone(),
+                search_target_mode: common.search_target_mode,
+                remote_target: common.remote_target.clone(),
                 selected_lang: common.selected_lang,
                 context_lines: common.context_lines,
                 file_filter: common.file_filter.clone(),
@@ -280,6 +316,7 @@ mod tests {
     use crate::file_encoding::FileEncodingPreference;
     use crate::lang::SupportedLanguage;
     use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
+    use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
 
     fn make_job(id: usize, enabled: bool, pattern: &str, search_dir: &str) -> PatternJob {
         PatternJob {
@@ -288,6 +325,8 @@ mod tests {
             enabled,
             pattern: pattern.to_string(),
             search_dir: search_dir.to_string(),
+            search_target_mode: SearchTargetMode::default(),
+            remote_target: RemoteTargetConfig::default(),
             selected_lang: SupportedLanguage::Rust,
             context_lines: 0,
             file_filter: String::new(),
@@ -308,6 +347,8 @@ mod tests {
             label: "test".to_string(),
             conditions: SearchConditions {
                 search_dir: String::new(),
+                search_target_mode: SearchTargetMode::default(),
+                remote_target: RemoteTargetConfig::default(),
                 pattern: String::new(),
                 selected_lang: SupportedLanguage::Rust,
                 context_lines: 0,
@@ -346,6 +387,14 @@ mod tests {
     #[test]
     fn is_runnable_false_when_pattern_blank() {
         assert!(!make_job(1, true, "   ", "/src").is_runnable());
+    }
+
+    #[test]
+    fn is_runnable_true_for_git_remote_url() {
+        let mut job = make_job(1, true, "fn main", "");
+        job.search_target_mode = SearchTargetMode::GitRemote;
+        job.remote_target.url = "https://example.com/repo.git".into();
+        assert!(job.is_runnable());
     }
 
     #[test]

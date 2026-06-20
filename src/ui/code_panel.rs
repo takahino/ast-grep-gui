@@ -15,18 +15,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         return;
     };
 
-    let Some(file_result) = app.results.get(idx) else {
+    let Some(file_snapshot) = app.results.get(idx).cloned() else {
         return;
     };
 
-    let path = file_result.path.clone();
-    let relative_path = file_result.relative_path.clone();
-    let matches = file_result.matches.clone();
-    let lang = file_result.source_language;
-    let text_encoding = file_result.text_encoding.clone();
+    let path = file_snapshot.path.clone();
+    let relative_path = file_snapshot.relative_path.clone();
+    let matches = file_snapshot.matches.clone();
+    let lang = file_snapshot.source_language;
+    let text_encoding = file_snapshot.text_encoding.clone();
 
     // ファイル内容を読み込む
-    let source = match read_text_file_as(&path, text_encoding) {
+    let source = match read_text_file_as(&path, text_encoding.clone()) {
         Ok(s) => s,
         Err(e) => {
             ui.label(t.code_read_error_fmt(e));
@@ -58,8 +58,17 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     }
 
     // ヘッダー行：ファイル名とパターン支援への連携ボタン
+    let open_path = path.clone();
+    let mut open_clicked = false;
     ui.horizontal(|ui| {
         ui.heading(&relative_path);
+        if ui
+            .button(t.open_file_btn())
+            .on_hover_text(t.open_file_tooltip())
+            .clicked()
+        {
+            open_clicked = true;
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(t.code_match_count(matches.len()))
@@ -68,8 +77,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             );
         });
     });
+    if open_clicked {
+        app.open_file_externally(&open_path);
+    }
     ui.label(
-        egui::RichText::new(file_result.text_encoding.detail_text(app.ui_lang()))
+        egui::RichText::new(text_encoding.detail_text(app.ui_lang()))
             .small()
             .color(egui::Color32::GRAY),
     );
@@ -97,7 +109,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     .color(egui::Color32::GRAY),
                             );
                             let block =
-                                m.program_with_context_for_file(file_result, app.context_lines);
+                                m.program_with_context_for_file(&file_snapshot, app.context_lines);
                             let column_keys = type_hint_column_keys(
                                 app.pattern.as_str(),
                                 &app.results,
@@ -136,7 +148,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                 send_to_assist = Some(if !m.matched_text.is_empty() {
                                     m.matched_text.clone()
                                 } else {
-                                    m.matched_text_for_file(file_result)
+                                    m.matched_text_for_file(&file_snapshot)
                                 });
                             }
                         });

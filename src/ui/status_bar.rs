@@ -18,6 +18,10 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             SearchState::Idle => {
                 ui.label(t.status_idle());
             }
+            SearchState::FetchingRemote(msg) => {
+                ui.spinner();
+                ui.label(t.status_fetching_remote(msg));
+            }
             SearchState::Running => {
                 ui.spinner();
                 if let Some((cur, tot)) = app.batch_job_progress() {
@@ -40,6 +44,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             SearchState::Error(msg) => {
                 ui.label(egui::RichText::new(t.status_error(msg)).color(egui::Color32::RED));
             }
+        }
+
+        if let Some(ref err) = app.open_file_error {
+            ui.separator();
+            ui.label(egui::RichText::new(err).small().color(egui::Color32::RED));
         }
 
         if app.search_mode.is_ast_mode() {

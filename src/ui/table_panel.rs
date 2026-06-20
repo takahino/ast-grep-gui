@@ -188,6 +188,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     // パターン支援へ転送するスニペットを一時保存
     let mut send_to_assist: Option<String> = None;
+    let mut open_external_path: Option<std::path::PathBuf> = None;
     let mut open_table_preview: Option<TablePreviewState> = None;
 
     ui.label(
@@ -505,13 +506,22 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
                                     let r_assist = ui
                                         .add_sized(
-                                            [action_w, row_unit_height],
+                                            [action_w * 0.55, row_unit_height],
                                             egui::Button::new(t.to_assist()).small(),
                                         )
                                         .on_hover_text(t.to_assist_tooltip());
+                                    let r_open = ui
+                                        .add_sized(
+                                            [action_w * 0.4, row_unit_height],
+                                            egui::Button::new(t.open_file_btn()).small(),
+                                        )
+                                        .on_hover_text(t.open_file_tooltip());
 
                                     if r_assist.clicked() {
                                         send_to_assist = Some(matched_text.clone());
+                                    }
+                                    if r_open.clicked() {
+                                        open_external_path = Some(path.clone());
                                     }
 
                                     let mut any_click = r_file.clicked()
@@ -519,7 +529,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         || r_col.clicked()
                                         || r_matched.clicked()
                                         || r_src.clicked()
-                                        || r_assist.clicked();
+                                        || r_assist.clicked()
+                                        || r_open.clicked();
                                     for r in &r_hint_cols {
                                         any_click |= r.clicked();
                                     }
@@ -578,6 +589,10 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     if let Some(snippet) = send_to_assist {
         app.pending_pattern_assist_snippet = Some(snippet);
         app.show_pattern_assist = true;
+    }
+
+    if let Some(path) = open_external_path {
+        app.open_file_externally(&path);
     }
 
     if let Some(preview) = open_table_preview {

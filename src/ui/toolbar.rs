@@ -7,6 +7,7 @@ use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguagePreference;
 use crate::lang::SupportedLanguage;
 use crate::search::SearchMode;
+use crate::search_target::{RemoteCachePolicy, SearchTargetMode};
 use crate::ui::{batch_panel, cpp_include_diagnostic};
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
@@ -14,16 +15,81 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let eff = app.ui_language_preference.effective();
 
     ui.horizontal(|ui| {
-        ui.label(t.directory_label())
-            .on_hover_text(t.directory_tooltip());
-        ui.add(
-            egui::TextEdit::singleline(&mut app.search_dir)
-                .desired_width(300.0)
-                .hint_text(t.directory_hint()),
-        );
-        if ui.button(t.browse()).clicked() {
-            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                app.search_dir = dir.to_string_lossy().to_string();
+        ui.label(t.search_target_mode_label())
+            .on_hover_text(t.search_target_mode_tooltip());
+        for mode in [
+            SearchTargetMode::Directory,
+            SearchTargetMode::GitRemote,
+            SearchTargetMode::SvnRemote,
+        ] {
+            ui.selectable_value(
+                &mut app.search_target_mode,
+                mode,
+                mode.label(eff),
+            )
+            .on_hover_text(t.search_target_mode_tooltip());
+        }
+
+        ui.separator();
+
+        match app.search_target_mode {
+            SearchTargetMode::Directory => {
+                ui.label(t.directory_label())
+                    .on_hover_text(t.directory_tooltip());
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.search_dir)
+                        .desired_width(300.0)
+                        .hint_text(t.directory_hint()),
+                );
+                if ui.button(t.browse()).clicked() {
+                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                        app.search_dir = dir.to_string_lossy().to_string();
+                    }
+                }
+            }
+            SearchTargetMode::GitRemote | SearchTargetMode::SvnRemote => {
+                ui.label(t.remote_url_label())
+                    .on_hover_text(t.remote_url_tooltip());
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.remote_target.url)
+                        .desired_width(280.0)
+                        .hint_text(t.remote_url_hint()),
+                );
+                if app.search_target_mode == SearchTargetMode::GitRemote {
+                    ui.label(t.remote_git_ref_label());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.remote_target.git_ref)
+                            .desired_width(120.0)
+                            .hint_text(t.remote_git_ref_hint()),
+                    );
+                } else {
+                    ui.label(t.remote_svn_revision_label());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.remote_target.svn_revision)
+                            .desired_width(80.0)
+                            .hint_text(t.remote_svn_revision_hint()),
+                    );
+                }
+                ui.label(t.remote_subdir_label());
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.remote_target.subdir)
+                        .desired_width(120.0)
+                        .hint_text(t.remote_subdir_hint()),
+                );
+                if ui
+                    .button(t.remote_refresh_cache())
+                    .on_hover_text(t.remote_refresh_cache_tooltip())
+                    .clicked()
+                {
+                    app.remote_target.cache_policy = RemoteCachePolicy::RefreshNext;
+                }
+                if let Some(resolved) = &app.resolved_search_dir {
+                    ui.label(
+                        egui::RichText::new(t.remote_resolved_path(resolved))
+                            .small()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
             }
         }
 
@@ -321,7 +387,10 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             app.start_search();
         }
 
-        let is_running = matches!(app.search_state, SearchState::Running);
+        let is_running = matches!(
+            app.search_state,
+            SearchState::Running | SearchState::FetchingRemote(_)
+        );
 
         if is_running {
             if ui

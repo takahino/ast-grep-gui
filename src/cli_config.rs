@@ -13,6 +13,8 @@ use crate::search::{PlainTextSearchOptions, SearchMode};
 #[derive(Debug, Clone)]
 pub struct BatchCommonOptions {
     pub search_dir: String,
+    pub search_target_mode: crate::search_target::SearchTargetMode,
+    pub remote_target: crate::search_target::RemoteTargetConfig,
     pub selected_lang: SupportedLanguage,
     pub context_lines: usize,
     pub file_filter: String,
@@ -30,6 +32,8 @@ impl Default for BatchCommonOptions {
     fn default() -> Self {
         Self {
             search_dir: String::new(),
+            search_target_mode: crate::search_target::SearchTargetMode::default(),
+            remote_target: crate::search_target::RemoteTargetConfig::default(),
             selected_lang: SupportedLanguage::Auto,
             context_lines: 2,
             file_filter: String::new(),
@@ -85,6 +89,36 @@ pub fn format_cli_command(req: &BatchRunRequest, exe_name: &str) -> String {
 
     parts.push("--dir".to_string());
     parts.push(shell_quote(&req.common.search_dir));
+
+    if req.common.search_target_mode != crate::search_target::SearchTargetMode::Directory {
+        match req.common.search_target_mode {
+            crate::search_target::SearchTargetMode::GitRemote => {
+                parts.push("--git-url".to_string());
+                parts.push(shell_quote(&req.common.remote_target.url));
+            }
+            crate::search_target::SearchTargetMode::SvnRemote => {
+                parts.push("--svn-url".to_string());
+                parts.push(shell_quote(&req.common.remote_target.url));
+            }
+            _ => {}
+        }
+        let rev = req
+            .common
+            .remote_target
+            .ref_or_revision_for(req.common.search_target_mode);
+        if !rev.is_empty() {
+            if req.common.search_target_mode == crate::search_target::SearchTargetMode::GitRemote {
+                parts.push("--ref".to_string());
+            } else {
+                parts.push("--revision".to_string());
+            }
+            parts.push(shell_quote(&rev));
+        }
+        if !req.common.remote_target.subdir.trim().is_empty() {
+            parts.push("--subdir".to_string());
+            parts.push(shell_quote(req.common.remote_target.subdir.trim()));
+        }
+    }
 
     if req.common.selected_lang != SupportedLanguage::Auto {
         if let Some(lang) = lang_cli_arg(req.common.selected_lang) {

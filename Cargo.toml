@@ -33,6 +33,17 @@ encoding_rs = "0.8"
 chardetng = "0.1"
 open = "5"
 image = { version = "0.25", default-features = false, features = ["ico"] }
+gix = { version = "0.84", default-features = false, features = [
+  "sha1",
+  "interrupt",
+  "worktree-mutation",
+  "blocking-network-client",
+  "blocking-http-transport-reqwest-rust-tls",
+] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+svn = { version = "=0.1.6", default-features = true }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+quick-xml = "0.37"
 
 [build-dependencies]
 winres = "0.1"

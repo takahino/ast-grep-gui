@@ -100,6 +100,125 @@ impl Tr {
         }
     }
 
+    pub fn search_target_mode_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索対象:",
+            UiLanguage::English => "Search target:",
+        }
+    }
+    pub fn search_target_mode_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "ローカルディレクトリ、または clone/checkout していない Git/SVN リモート URL"
+            }
+            UiLanguage::English => {
+                "Local directory, or remote Git/SVN URL without a prior clone/checkout"
+            }
+        }
+    }
+    pub fn remote_url_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "URL:",
+            UiLanguage::English => "URL:",
+        }
+    }
+    pub fn remote_url_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Git または SVN のリモート URL",
+            UiLanguage::English => "Remote Git or SVN URL",
+        }
+    }
+    pub fn remote_url_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "https://... または svn://...",
+            UiLanguage::English => "https://... or svn://...",
+        }
+    }
+    pub fn remote_git_ref_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ref:",
+            UiLanguage::English => "ref:",
+        }
+    }
+    pub fn remote_git_ref_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "branch/tag/commit（空=デフォルト）",
+            UiLanguage::English => "branch/tag/commit (empty=default)",
+        }
+    }
+    pub fn remote_svn_revision_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rev:",
+            UiLanguage::English => "rev:",
+        }
+    }
+    pub fn remote_svn_revision_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "revision（空=HEAD）",
+            UiLanguage::English => "revision (empty=HEAD)",
+        }
+    }
+    pub fn remote_subdir_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "サブdir:",
+            UiLanguage::English => "subdir:",
+        }
+    }
+    pub fn remote_subdir_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "リポジトリ内の相対パス",
+            UiLanguage::English => "Relative path within repository",
+        }
+    }
+    pub fn remote_refresh_cache(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "再取得",
+            UiLanguage::English => "Refresh",
+        }
+    }
+    pub fn remote_refresh_cache_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "次回検索時にリモートから再取得する",
+            UiLanguage::English => "Re-fetch from remote on next search",
+        }
+    }
+    pub fn remote_fetch_starting(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "リモートを取得中…",
+            UiLanguage::English => "Fetching remote…",
+        }
+    }
+    pub fn remote_resolved_path(self, path: &str) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("検索パス: {path}"),
+            UiLanguage::English => format!("Search path: {path}"),
+        }
+    }
+    pub fn status_fetching_remote(self, msg: &str) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("取得中: {msg}"),
+            UiLanguage::English => format!("Fetching: {msg}"),
+        }
+    }
+    pub fn open_file_btn(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "開く",
+            UiLanguage::English => "Open",
+        }
+    }
+    pub fn open_file_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "OS の関連付けでファイルを開く",
+            UiLanguage::English => "Open file with the OS default application",
+        }
+    }
+    pub fn open_file_error_fmt(self, err: &str) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("ファイルを開けませんでした: {err}"),
+            UiLanguage::English => format!("Could not open file: {err}"),
+        }
+    }
+
     pub fn ui_language_label(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "表示言語:",

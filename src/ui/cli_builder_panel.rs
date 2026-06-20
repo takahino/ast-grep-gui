@@ -58,6 +58,8 @@ impl CliBuilderState {
             patterns_file: PathBuf::from(&self.patterns_file),
             common: BatchCommonOptions {
                 search_dir: app.search_dir.clone(),
+                search_target_mode: app.search_target_mode,
+                remote_target: app.remote_target.clone(),
                 selected_lang: app.selected_lang,
                 context_lines: app.context_lines,
                 file_filter: app.file_filter.clone(),
@@ -201,7 +203,10 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                     copy_clicked = true;
                 }
                 let can_run = app.batch_runner.is_none()
-                    && !matches!(app.search_state, crate::app::SearchState::Running)
+                    && !matches!(
+                        app.search_state,
+                        crate::app::SearchState::Running | crate::app::SearchState::FetchingRemote(_)
+                    )
                     && !app.cli_builder.patterns_file.trim().is_empty()
                     && !app.search_dir.trim().is_empty()
                     && !(app.cli_builder.format.requires_output_file()

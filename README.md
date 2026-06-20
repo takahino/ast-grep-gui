@@ -9,6 +9,8 @@ It is designed to make structural code search easier for users who prefer a visu
 
 ## Highlights
 
+- **Search targets:** local directory, or **remote Git / SVN URL** (no prior clone/checkout; fetched into a local cache, then searched)
+- **Open hits in the default app:** open a matched file with the OS file association from the file list, code view, or table view
 - AST-based code search powered by `ast-grep-core`
 - Batch rewrite (like `--rewrite`): preview, diff, then write back files in `AST` mode
 - Search modes for `AST`, `Token`, plain text, and regex
@@ -119,7 +121,13 @@ cargo run -- --batch `
 | Option | Description |
 |--------|-------------|
 | `--patterns` | One-pattern-per-line input file |
-| `--dir` | Search root directory |
+| `--dir` | Local search root directory |
+| `--git-url` | Git remote URL to fetch before search (alternative to `--dir`) |
+| `--svn-url` | SVN remote URL to fetch before search (alternative to `--dir`) |
+| `--ref` | Git branch / tag / commit (with `--git-url`) |
+| `--revision` | SVN revision (with `--svn-url`; empty = HEAD) |
+| `--subdir` | Subdirectory within the fetched tree |
+| `--refresh-cache` | Re-fetch remote content on the next run |
 | `--lang` | Language (`auto`, `rust`, `cpp`, …) |
 | `--view` | `code` / `table` / `summary` (comma-separated) |
 | `--format` | `text` / `json` / `markdown` / `html` / `xlsx` |
@@ -130,6 +138,33 @@ cargo run -- --batch `
 | `--max-hits` | Max hits per pattern (0 = unlimited) |
 | `--include-dirs` | C++ include paths for type hints |
 | `--no-type-hints` | Disable type-hint inference |
+
+### Remote Git / SVN (batch)
+
+```powershell
+cargo run -- --batch `
+  --patterns patterns.txt `
+  --git-url https://github.com/example/repo.git `
+  --ref main `
+  --subdir src `
+  --lang rust `
+  --view table `
+  --format json `
+  --output result.json
+```
+
+```powershell
+cargo run -- --batch `
+  --patterns patterns.txt `
+  --svn-url https://svn.example.com/repo/trunk `
+  --revision 12345 `
+  --lang auto `
+  --view table `
+  --format json `
+  --output result.json
+```
+
+Remote fetch uses embedded Rust libraries (`gix` for Git, `svn` + WebDAV for SVN)—not the `git` or `svn` CLI. Fetched trees are cached under `%LOCALAPPDATA%\ast-grep-gui\vcs-cache` (Windows).
 
 ## GUI CLI Builder
 
@@ -143,15 +178,26 @@ Open **⌨ CLI builder** in the toolbar **Batch jobs** section to compose the sa
 
 Search directory, language, and advanced settings come from the main toolbar.
 
+Search directory, language, and advanced settings come from the main toolbar. When **Git URL** or **SVN URL** is selected as the search target, the remote URL, ref/revision, and subdirectory fields are included in the CLI preview.
+
 ## Usage
 
-1. Select a directory to search.
-2. Choose a search mode.
-3. In `AST` mode, choose a language or use `Auto`.
-4. Enter an AST pattern, token sequence, plain text, or regex.
-5. Adjust context lines, file filter, encoding, skip directories, mode-specific options, and (in AST-related modes) **Advanced settings**—including **C++ include directories** for type-hint resolution—as needed.
-6. Run the search and inspect the results in code view, table view, or **Summary** view.
-7. Export or copy the results if needed.
+1. Choose a **search target**: **Local**, **Git URL**, or **SVN URL**.
+2. For **Local**, pick a directory. For **Git/SVN**, enter the remote URL and optionally a ref/revision and subdirectory; use **Refresh** to force a re-fetch on the next search.
+3. Choose a search mode.
+4. In `AST` mode, choose a language or use `Auto`.
+5. Enter an AST pattern, token sequence, plain text, or regex.
+6. Adjust context lines, file filter, encoding, skip directories, mode-specific options, and (in AST-related modes) **Advanced settings**—including **C++ include directories** for type-hint resolution—as needed.
+7. Run the search and inspect the results in code view, table view, or **Summary** view.
+8. Use **Open** on a hit to launch the file with the OS default application, or export/copy results as needed.
+
+### Remote Git / SVN search
+
+- **Git URL** supports HTTPS, SSH (`git@…`), `git://`, and `file://` via `gix` (no `git` executable required).
+- **SVN URL** supports `svn://` and HTTP(S) via Rust libraries (no `svn` executable required).
+- Only the **tracked tree** at the requested ref/revision is searched (no untracked files).
+- The resolved cache path is shown in the toolbar after a successful fetch.
+- **Note:** `svn+ssh://` is not enabled in the current dependency set (Rust toolchain / crate compatibility).
 
 ### In-document find (Ctrl+F)
 
@@ -205,6 +251,11 @@ src/cli_runner.rs          `--batch` CLI batch runner
 src/cli_config.rs        Shared CLI / GUI builder settings
 src/app.rs               App state and main UI flow
 src/search.rs            Background search engine
+src/search_target.rs     Search target types (local / Git / SVN remote)
+src/remote_fetch.rs      Remote fetch orchestration (async + sync for CLI)
+src/vcs_cache.rs         Remote fetch cache paths and markers
+src/git_remote.rs        Git clone via gix (no git CLI)
+src/svn_remote.rs        SVN export via svn crate / WebDAV (no svn CLI)
 src/ast_pattern.rs       Pattern compilation strategies (contextual call support)
 src/receiver_hint.rs     Best-effort metavariable type hints (per language; C++ can use extra include paths)
 src/lang.rs              Language definitions and presets
@@ -225,12 +276,15 @@ assets/help/             Embedded pattern help HTML pages
 
 - The app currently targets Windows-focused distribution.
 - Column offsets for highlighted matches are byte-based, so multibyte text can still have edge cases.
-- Search settings, C++ include paths (Advanced), and pattern history are persisted between launches.
+- Search settings, remote URL/ref/subdir, C++ include paths (Advanced), and pattern history are persisted between launches.
+- Remote fetch cache lives under `%LOCALAPPDATA%\ast-grep-gui\vcs-cache` on Windows.
 
 ## Recent updates (excerpt)
 
 User-facing changes from recent development (see `git log` for the full history):
 
+- **Remote Git/SVN search:** search by remote URL without a local clone/checkout; optional ref/revision and subdirectory; local cache with refresh.
+- **Open in default app:** open matched files from the file list, code header, or table action column.
 - **C++ type hints:** optional **include directories** (`-I`-style, semicolon-separated) in Advanced settings so `#include` resolution can reach system or SDK headers.
 - **Summary view:** aggregates inferred receiver types, arity, and per-argument types (and a method column when the pattern exposes one).
 - **Table view:** resizable type-hint columns, sticky header, keyboard horizontal scroll, and clearer empty vs unknown hint cells.

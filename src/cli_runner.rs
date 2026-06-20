@@ -13,6 +13,7 @@ use crate::file_encoding::FileEncodingPreference;
 use crate::i18n::UiLanguage;
 use crate::lang::SupportedLanguage;
 use crate::search::SearchMode;
+use crate::search_target::{RemoteCachePolicy, RemoteTargetConfig, SearchTargetMode};
 
 /// コマンドライン引数に `--batch` が含まれるか
 pub fn is_batch_mode(args: impl IntoIterator<Item = String>) -> bool {
@@ -42,9 +43,33 @@ struct BatchCli {
     #[arg(long)]
     patterns: PathBuf,
 
-    /// Search root directory
+    /// Search root directory (local)
     #[arg(long)]
-    dir: PathBuf,
+    dir: Option<PathBuf>,
+
+    /// Git remote URL to fetch before search
+    #[arg(long)]
+    git_url: Option<String>,
+
+    /// SVN remote URL to fetch before search
+    #[arg(long)]
+    svn_url: Option<String>,
+
+    /// Git branch/tag/commit (with --git-url)
+    #[arg(long)]
+    git_ref: Option<String>,
+
+    /// SVN revision (with --svn-url)
+    #[arg(long)]
+    revision: Option<String>,
+
+    /// Subdirectory within fetched repository
+    #[arg(long)]
+    subdir: Option<String>,
+
+    /// Force refresh remote cache
+    #[arg(long)]
+    refresh_cache: bool,
 
     /// Target language (default: auto)
     #[arg(long, default_value = "auto")]
@@ -110,8 +135,54 @@ fn run_batch(args: BatchCli) -> anyhow::Result<()> {
             .to_string()
     });
 
+    let (search_target_mode, search_dir, remote_target) = if let Some(url) = args.git_url {
+        (
+            SearchTargetMode::GitRemote,
+            String::new(),
+            RemoteTargetConfig {
+                url,
+                git_ref: args.git_ref.unwrap_or_default(),
+                svn_revision: String::new(),
+                subdir: args.subdir.unwrap_or_default(),
+                cache_policy: if args.refresh_cache {
+                    RemoteCachePolicy::RefreshNext
+                } else {
+                    RemoteCachePolicy::UseCache
+                },
+            },
+        )
+    } else if let Some(url) = args.svn_url {
+        (
+            SearchTargetMode::SvnRemote,
+            String::new(),
+            RemoteTargetConfig {
+                url,
+                git_ref: String::new(),
+                svn_revision: args.revision.unwrap_or_default(),
+                subdir: args.subdir.unwrap_or_default(),
+                cache_policy: if args.refresh_cache {
+                    RemoteCachePolicy::RefreshNext
+                } else {
+                    RemoteCachePolicy::UseCache
+                },
+            },
+        )
+    } else {
+        let dir = args
+            .dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("--dir, --git-url, or --svn-url is required"))?;
+        (
+            SearchTargetMode::Directory,
+            dir.display().to_string(),
+            RemoteTargetConfig::default(),
+        )
+    };
+
     let common = BatchCommonOptions {
-        search_dir: args.dir.display().to_string(),
+        search_dir,
+        search_target_mode,
+        remote_target,
         selected_lang: lang,
         context_lines: args.context,
         file_filter: args.filter,

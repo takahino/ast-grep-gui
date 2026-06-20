@@ -15,11 +15,15 @@ use crate::highlight::Highlighter;
 use crate::i18n::{Tr, UiLanguage, UiLanguagePreference};
 use crate::lang::SupportedLanguage;
 use crate::pattern_assist::PatternSuggestion;
+use crate::remote_fetch::{remote_fetch_channel, spawn_remote_fetch, RemoteFetchMessage};
 use crate::rewrite::{RewriteMessage, RewritePreview};
 use crate::search::{
     refresh_match_contexts, search_message_channel, spawn_search, FileResult, MatchItem,
     PlainTextSearchOptions, SearchConditions, SearchMessage, SearchMode, SearchStats,
     SEARCH_MESSAGES_PER_FRAME,
+};
+use crate::search_target::{
+    RemoteCachePolicy, RemoteFetchRequest, RemoteTargetConfig, SearchTargetMode,
 };
 use crate::terminal::TerminalState;
 use crate::ui::{
@@ -47,6 +51,8 @@ pub struct TablePreviewState {
 #[derive(Debug, Clone)]
 pub enum SearchState {
     Idle,
+    /// リモート VCS をキャッシュへ取得中
+    FetchingRemote(String),
     Running,
     Done,
     Error(String),
@@ -96,6 +102,10 @@ fn table_row_line_units(m: &MatchItem, context_lines: usize) -> usize {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PersistedAppState {
     search_dir: String,
+    #[serde(default)]
+    search_target_mode: SearchTargetMode,
+    #[serde(default)]
+    remote_target: RemoteTargetConfig,
     pattern: String,
     selected_lang: SupportedLanguage,
     context_lines: usize,
@@ -169,7 +179,7 @@ impl Default for TableColumnWidths {
             matched: 280.0,
             source: 520.0,
             hint_cols: Vec::new(),
-            action: 90.0,
+            action: 120.0,
         }
     }
 }
@@ -185,6 +195,8 @@ impl Default for PersistedAppState {
     fn default() -> Self {
         Self {
             search_dir: String::new(),
+            search_target_mode: SearchTargetMode::default(),
+            remote_target: RemoteTargetConfig::default(),
             pattern: String::new(),
             selected_lang: SupportedLanguage::Auto,
             context_lines: 2,
@@ -222,6 +234,12 @@ pub struct PendingBatchExport {
 
 pub struct AstGrepApp {
     pub search_dir: String,
+    /// 検索対象の種別（ローカル / Git URL / SVN URL）
+    pub search_target_mode: SearchTargetMode,
+    /// リモート URL 検索の設定
+    pub remote_target: RemoteTargetConfig,
+    /// 直近に解決した検索ディレクトリ（リモート取得後のキャッシュパス等）
+    pub resolved_search_dir: Option<String>,
     pub pattern: String,
     pub selected_lang: SupportedLanguage,
     pub context_lines: usize,
@@ -317,9 +335,14 @@ pub struct AstGrepApp {
     pub rewrite_selected_file_idx: usize,
     /// 書き戻し完了などの短い通知
     pub rewrite_status_note: Option<String>,
+    /// 外部アプリでファイルを開けなかったときのエラー
+    pub open_file_error: Option<String>,
 
     // バックグラウンド検索チャンネル
     result_rx: Option<Receiver<SearchMessage>>,
+    remote_fetch_rx: Option<Receiver<RemoteFetchMessage>>,
+    /// リモート取得完了後に検索を続行する（バッチジョブ ID。単一検索は `SINGLE_SEARCH_JOB_ID`）
+    pending_search_job_id: Option<usize>,
     /// Rewrite プレビュー生成
     rewrite_rx: Option<Receiver<RewriteMessage>>,
     /// Rewrite ディスク適用
@@ -367,6 +390,9 @@ impl AstGrepApp {
 
         Self {
             search_dir: persisted.search_dir,
+            search_target_mode: persisted.search_target_mode,
+            remote_target: persisted.remote_target,
+            resolved_search_dir: None,
             pattern: persisted.pattern,
             selected_lang: persisted.selected_lang,
             context_lines: persisted.context_lines,
@@ -419,7 +445,10 @@ impl AstGrepApp {
             show_rewrite_popup: false,
             rewrite_selected_file_idx: 0,
             rewrite_status_note: None,
+            open_file_error: None,
             result_rx: None,
+            remote_fetch_rx: None,
+            pending_search_job_id: None,
             rewrite_rx: None,
             rewrite_apply_rx: None,
             cached_ctx: None,
@@ -471,7 +500,9 @@ impl AstGrepApp {
     /// エクスポートに埋め込む現在の検索条件
     pub fn search_conditions_for_export(&self) -> SearchConditions {
         SearchConditions {
-            search_dir: self.search_dir.clone(),
+            search_dir: self.effective_search_dir_display(),
+            search_target_mode: self.search_target_mode,
+            remote_target: self.remote_target.clone(),
             pattern: self.pattern.clone(),
             selected_lang: self.selected_lang,
             context_lines: self.context_lines,
@@ -490,6 +521,8 @@ impl AstGrepApp {
     fn persisted_state(&self) -> PersistedAppState {
         PersistedAppState {
             search_dir: self.search_dir.clone(),
+            search_target_mode: self.search_target_mode,
+            remote_target: self.remote_target.clone(),
             pattern: self.pattern.clone(),
             selected_lang: self.selected_lang,
             context_lines: self.context_lines,
@@ -525,13 +558,12 @@ impl AstGrepApp {
     }
 
     fn start_search_impl(&mut self, add_history: bool) {
-        if self.search_dir.is_empty() || self.pattern.is_empty() {
+        if self.pattern.is_empty() || !self.can_start_search_target() {
             return;
         }
 
         self.batch_runner = None;
 
-        // 検索履歴に追加（最新を先頭に、重複排除、最大30件）
         if add_history {
             let pat = self.pattern.trim().to_string();
             if !pat.is_empty() {
@@ -541,6 +573,24 @@ impl AstGrepApp {
             }
         }
 
+        self.clear_results_state_for_new_search();
+        self.pending_search_job_id = Some(SINGLE_SEARCH_JOB_ID);
+
+        if self.search_target_mode == SearchTargetMode::Directory {
+            let dir = self.search_dir.clone();
+            self.resolved_search_dir = Some(dir.clone());
+            self.spawn_search_for_dir(&dir, SINGLE_SEARCH_JOB_ID);
+            return;
+        }
+
+        self.search_state =
+            SearchState::FetchingRemote(self.tr().remote_fetch_starting().to_string());
+        let (tx, rx) = remote_fetch_channel();
+        self.remote_fetch_rx = Some(rx);
+        spawn_remote_fetch(self.build_remote_fetch_request(), tx);
+    }
+
+    fn clear_results_state_for_new_search(&mut self) {
         self.results.clear();
         self.file_source_cache.clear();
         self.results_generation = self.results_generation.wrapping_add(1);
@@ -555,35 +605,167 @@ impl AstGrepApp {
         self.table_row_prefix_units.push(0);
         self.table_scroll_to_row = None;
         self.highlighter.clear_cache();
-        self.search_state = SearchState::Running;
         self.clear_rewrite_state();
+    }
 
+    pub fn can_start_search_target(&self) -> bool {
+        match self.search_target_mode {
+            SearchTargetMode::Directory => !self.search_dir.trim().is_empty(),
+            mode => self.remote_target.is_remote_ready(mode),
+        }
+    }
+
+    pub fn effective_search_dir_display(&self) -> String {
+        match self.search_target_mode {
+            SearchTargetMode::Directory => self.search_dir.clone(),
+            mode => {
+                let mut s = self.remote_target.url.clone();
+                let rev = self.remote_target.ref_or_revision_for(mode);
+                if !rev.is_empty() {
+                    s.push_str(&format!("@{rev}"));
+                }
+                if !self.remote_target.subdir.trim().is_empty() {
+                    s.push_str(&format!("/{}", self.remote_target.subdir.trim()));
+                }
+                if let Some(resolved) = &self.resolved_search_dir {
+                    s.push_str(&format!(" -> {resolved}"));
+                }
+                s
+            }
+        }
+    }
+
+    pub fn build_remote_fetch_request(&self) -> RemoteFetchRequest {
+        let force_refresh = self.remote_target.cache_policy == RemoteCachePolicy::RefreshNext;
+        RemoteFetchRequest {
+            mode: self.search_target_mode,
+            url: self.remote_target.url.clone(),
+            ref_or_revision: self
+                .remote_target
+                .ref_or_revision_for(self.search_target_mode),
+            subdir: self.remote_target.subdir.clone(),
+            force_refresh,
+        }
+    }
+
+    pub fn build_remote_fetch_request_for_job(&self, job: &PatternJob) -> RemoteFetchRequest {
+        let force_refresh = job.remote_target.cache_policy == RemoteCachePolicy::RefreshNext;
+        RemoteFetchRequest {
+            mode: job.search_target_mode,
+            url: job.remote_target.url.clone(),
+            ref_or_revision: job
+                .remote_target
+                .ref_or_revision_for(job.search_target_mode),
+            subdir: job.remote_target.subdir.clone(),
+            force_refresh,
+        }
+    }
+
+    fn spawn_search_for_dir(&mut self, search_dir: &str, job_id: usize) {
         let Some(ctx) = self.cached_ctx.clone() else {
             return;
         };
 
+        let job = if job_id == SINGLE_SEARCH_JOB_ID {
+            None
+        } else {
+            self.batch_jobs.iter().find(|j| j.id == job_id)
+        };
+
         let (tx, rx) = search_message_channel();
         self.result_rx = Some(rx);
+        self.search_state = SearchState::Running;
 
         spawn_search(
-            self.search_dir.clone(),
-            self.pattern.clone(),
-            self.selected_lang,
-            self.search_mode,
-            self.plain_text_options,
-            self.context_lines,
-            self.file_filter.clone(),
-            self.file_encoding_preference,
-            self.max_file_size_mb * 1024 * 1024,
-            self.max_search_hits,
-            self.skip_dirs.clone(),
-            self.cpp_include_dirs.clone(),
-            self.type_hints_enabled,
+            search_dir.to_string(),
+            job.map(|j| j.pattern.clone())
+                .unwrap_or_else(|| self.pattern.clone()),
+            job.map(|j| j.selected_lang)
+                .unwrap_or(self.selected_lang),
+            job.map(|j| j.search_mode).unwrap_or(self.search_mode),
+            job.map(|j| j.plain_text_options)
+                .unwrap_or(self.plain_text_options),
+            job.map(|j| j.context_lines)
+                .unwrap_or(self.context_lines),
+            job.map(|j| j.file_filter.clone())
+                .unwrap_or_else(|| self.file_filter.clone()),
+            job.map(|j| j.file_encoding_preference)
+                .unwrap_or(self.file_encoding_preference),
+            job.map(|j| j.max_file_size_mb * 1024 * 1024)
+                .unwrap_or(self.max_file_size_mb * 1024 * 1024),
+            job.map(|j| j.max_search_hits)
+                .unwrap_or(self.max_search_hits),
+            job.map(|j| j.skip_dirs.clone())
+                .unwrap_or_else(|| self.skip_dirs.clone()),
+            job.map(|j| j.cpp_include_dirs.clone())
+                .unwrap_or_else(|| self.cpp_include_dirs.clone()),
+            job.map(|j| j.type_hints_enabled)
+                .unwrap_or(self.type_hints_enabled),
             self.ui_lang(),
-            SINGLE_SEARCH_JOB_ID,
+            job_id,
             tx,
             Some(ctx),
         );
+    }
+
+    fn drain_remote_fetch_messages(&mut self) {
+        let messages: Vec<RemoteFetchMessage> = if let Some(rx) = self.remote_fetch_rx.as_ref() {
+            rx.try_iter().collect()
+        } else {
+            return;
+        };
+        if messages.is_empty() {
+            return;
+        }
+
+        for msg in messages {
+            match msg {
+                RemoteFetchMessage::Progress(status) => {
+                    self.search_state = SearchState::FetchingRemote(status);
+                    if let Some(ctx) = &self.cached_ctx {
+                        ctx.request_repaint();
+                    }
+                }
+                RemoteFetchMessage::Done { local_path } => {
+                    self.remote_fetch_rx = None;
+                    if self.remote_target.cache_policy == RemoteCachePolicy::RefreshNext {
+                        self.remote_target.cache_policy = RemoteCachePolicy::UseCache;
+                    }
+                    let dir = local_path.to_string_lossy().to_string();
+                    self.resolved_search_dir = Some(dir.clone());
+                    let job_id = self.pending_search_job_id.take().unwrap_or(SINGLE_SEARCH_JOB_ID);
+                    self.spawn_search_for_dir(&dir, job_id);
+                }
+                RemoteFetchMessage::Error(msg) => {
+                    self.remote_fetch_rx = None;
+                    self.pending_search_job_id = None;
+                    if self.batch_runner.is_some() {
+                        if let Some(runner) = &mut self.batch_runner {
+                            if let Some(run) = runner.runs.get_mut(runner.active_idx) {
+                                run.error = Some(msg.clone());
+                            }
+                            runner.active_idx += 1;
+                            if runner.active_idx < runner.ordered_indices.len() {
+                                if let Some(ctx) = self.cached_ctx.clone() {
+                                    self.spawn_search_for_current_batch_job(ctx);
+                                }
+                            } else {
+                                self.finish_batch_search();
+                            }
+                        }
+                    } else {
+                        self.search_state = SearchState::Error(msg);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn open_file_externally(&mut self, path: &PathBuf) {
+        match open::that(path) {
+            Ok(()) => self.open_file_error = None,
+            Err(e) => self.open_file_error = Some(self.tr().open_file_error_fmt(&e.to_string())),
+        }
     }
 
     /// 現在のツールバー設定をコピーしたジョブをバッチ一覧に追加する
@@ -596,6 +778,8 @@ impl AstGrepApp {
             label,
             self.pattern.clone(),
             self.search_dir.clone(),
+            self.search_target_mode,
+            self.remote_target.clone(),
             self.selected_lang,
             self.context_lines,
             self.file_filter.clone(),
@@ -673,7 +857,8 @@ impl AstGrepApp {
     }
 
     fn spawn_search_for_current_batch_job(&mut self, ctx: egui::Context) {
-        let Some(runner) = &mut self.batch_runner else {
+        self.cached_ctx = Some(ctx);
+        let Some(runner) = &self.batch_runner else {
             return;
         };
         let Some(&list_idx) = runner.ordered_indices.get(runner.active_idx) else {
@@ -681,28 +866,17 @@ impl AstGrepApp {
         };
         let job = self.batch_jobs[list_idx].clone();
 
-        let (tx, rx) = search_message_channel();
-        self.result_rx = Some(rx);
+        if job.search_target_mode == SearchTargetMode::Directory {
+            self.spawn_search_for_dir(&job.search_dir, job.id);
+            return;
+        }
 
-        spawn_search(
-            job.search_dir.clone(),
-            job.pattern.clone(),
-            job.selected_lang,
-            job.search_mode,
-            job.plain_text_options,
-            job.context_lines,
-            job.file_filter.clone(),
-            job.file_encoding_preference,
-            job.max_file_size_mb * 1024 * 1024,
-            job.max_search_hits,
-            job.skip_dirs.clone(),
-            job.cpp_include_dirs.clone(),
-            job.type_hints_enabled,
-            self.ui_lang(),
-            job.id,
-            tx,
-            Some(ctx),
-        );
+        self.search_state =
+            SearchState::FetchingRemote(self.tr().remote_fetch_starting().to_string());
+        self.pending_search_job_id = Some(job.id);
+        let (tx, rx) = remote_fetch_channel();
+        self.remote_fetch_rx = Some(rx);
+        spawn_remote_fetch(self.build_remote_fetch_request_for_job(&job), tx);
     }
 
     fn finish_batch_search(&mut self) {
@@ -786,6 +960,8 @@ impl AstGrepApp {
     /// 検索を停止する（チャンネルをドロップ）
     pub fn stop_search(&mut self) {
         self.result_rx = None;
+        self.remote_fetch_rx = None;
+        self.pending_search_job_id = None;
         self.batch_runner = None;
         self.search_state = SearchState::Idle;
     }
@@ -1207,6 +1383,7 @@ impl eframe::App for AstGrepApp {
 
         // バックグラウンドからメッセージをドレイン
         self.drain_messages();
+        self.drain_remote_fetch_messages();
         self.drain_rewrite_messages();
         self.drain_rewrite_apply_messages();
 
@@ -1214,8 +1391,11 @@ impl eframe::App for AstGrepApp {
         if self.incremental_search {
             if let Some(changed_at) = self.pattern_last_changed {
                 if changed_at.elapsed() >= std::time::Duration::from_millis(500)
-                    && !matches!(self.search_state, SearchState::Running)
-                    && !self.search_dir.is_empty()
+                    && !matches!(
+                        self.search_state,
+                        SearchState::Running | SearchState::FetchingRemote(_)
+                    )
+                    && self.can_start_search_target()
                     && !self.pattern.is_empty()
                 {
                     self.pattern_last_changed = None;

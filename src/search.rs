@@ -1075,6 +1075,21 @@ pub fn run_search_sync(
     label: String,
     ui_lang: UiLanguage,
 ) -> crate::batch::BatchRunResult {
+    let mut cond = cond.clone();
+    match crate::remote_fetch::resolve_search_dir_from_conditions(&cond, false) {
+        Ok(dir) => cond.search_dir = dir.to_string_lossy().into_owned(),
+        Err(e) => {
+            return crate::batch::BatchRunResult {
+                job_id,
+                label,
+                conditions: cond.clone(),
+                results: Vec::new(),
+                stats: SearchStats::default(),
+                error: Some(e),
+            };
+        }
+    }
+
     let (tx, rx) = search_message_channel();
     spawn_search(
         cond.search_dir.clone(),
@@ -1821,6 +1836,10 @@ pub fn compute_cpp_include_path_diagnostics(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SearchConditions {
     pub search_dir: String,
+    #[serde(default)]
+    pub search_target_mode: crate::search_target::SearchTargetMode,
+    #[serde(default)]
+    pub remote_target: crate::search_target::RemoteTargetConfig,
     pub pattern: String,
     pub selected_lang: SupportedLanguage,
     pub context_lines: usize,

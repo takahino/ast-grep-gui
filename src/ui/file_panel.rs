@@ -60,30 +60,47 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         });
     }
 
+    let mut open_path: Option<std::path::PathBuf> = None;
     let scroll_out = egui::ScrollArea::vertical()
         .id_salt("file_list")
         .show(ui, |ui| {
             let ui_lang = app.ui_lang();
             for idx in 0..app.results.len() {
-                let (label, hover_tip) = {
+                let (label, hover_tip, path) = {
                     let file = &app.results[idx];
                     (
                         format!("{} ({})", file.relative_path, file.matches.len()),
                         file.text_encoding.detail_text(ui_lang),
+                        file.path.clone(),
                     )
                 };
                 let is_selected = app.selected_file_idx == Some(idx);
 
-                let response = ui
-                    .selectable_label(is_selected, &label)
-                    .on_hover_text(hover_tip);
-                if response.clicked() {
-                    apply_file_selection(app, idx);
-                }
-                if is_selected {
-                    response.scroll_to_me(None);
-                }
+                ui.horizontal(|ui| {
+                    let response = ui
+                        .selectable_label(is_selected, &label)
+                        .on_hover_text(hover_tip);
+                    if response.clicked() {
+                        apply_file_selection(app, idx);
+                    }
+                    if response.secondary_clicked() {
+                        open_path = Some(path.clone());
+                    }
+                    if ui
+                        .small_button(t.open_file_btn())
+                        .on_hover_text(t.open_file_tooltip())
+                        .clicked()
+                    {
+                        open_path = Some(path);
+                    }
+                    if is_selected {
+                        response.scroll_to_me(None);
+                    }
+                });
             }
         });
+    if let Some(path) = open_path {
+        app.open_file_externally(&path);
+    }
     app.code_view_pointer_on_list = ui.rect_contains_pointer(scroll_out.inner_rect);
 }

@@ -25,7 +25,10 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                     app.add_pattern_job_from_current();
                 }
                 let can_run = app.batch_runner.is_none()
-                    && !matches!(app.search_state, crate::app::SearchState::Running)
+                    && !matches!(
+                        app.search_state,
+                        crate::app::SearchState::Running | crate::app::SearchState::FetchingRemote(_)
+                    )
                     && app.batch_jobs.iter().any(|j| j.is_runnable());
                 if ui
                     .add_enabled(can_run, egui::Button::new(t.batch_run_all()))
