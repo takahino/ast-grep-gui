@@ -127,6 +127,9 @@ struct PersistedAppState {
     /// C++ 型ヒント用インクルードパス（`-I` 相当、`;` 区切り）
     #[serde(default)]
     cpp_include_dirs: String,
+    /// メタ変数の型ヒント推定を行う
+    #[serde(default = "crate::search::default_type_hints_enabled")]
+    type_hints_enabled: bool,
     /// バッチ検索ジョブ一覧
     #[serde(default)]
     batch_jobs: Vec<PatternJob>,
@@ -197,6 +200,7 @@ impl Default for PersistedAppState {
             rewrite_template: String::new(),
             incremental_search: false,
             cpp_include_dirs: String::new(),
+            type_hints_enabled: crate::search::default_type_hints_enabled(),
             batch_jobs: Vec::new(),
             next_pattern_job_id: 1,
             table_column_widths: TableColumnWidths::default(),
@@ -249,6 +253,8 @@ pub struct AstGrepApp {
     pub skip_dirs: String,
     /// C++ 型ヒント用インクルードパス（`-I` 相当、`;` 区切り）
     pub cpp_include_dirs: String,
+    /// メタ変数の型ヒント推定を行う
+    pub type_hints_enabled: bool,
     /// 検索モード（AstGrep / PlainText / Regex）
     pub search_mode: SearchMode,
     /// 文字列検索モードのオプション（大文字小文字・単語単位）
@@ -370,6 +376,7 @@ impl AstGrepApp {
             max_search_hits: persisted.max_search_hits,
             skip_dirs: persisted.skip_dirs,
             cpp_include_dirs: persisted.cpp_include_dirs,
+            type_hints_enabled: persisted.type_hints_enabled,
             search_mode: persisted.search_mode,
             plain_text_options: persisted.plain_text_options,
             ui_language_preference: persisted.ui_language_preference,
@@ -456,6 +463,7 @@ impl AstGrepApp {
             search_mode: self.search_mode,
             plain_text_options: self.plain_text_options,
             cpp_include_dirs: self.cpp_include_dirs.clone(),
+            type_hints_enabled: self.type_hints_enabled,
         }
     }
 
@@ -479,6 +487,7 @@ impl AstGrepApp {
             rewrite_template: self.rewrite_template.clone(),
             incremental_search: self.incremental_search,
             cpp_include_dirs: self.cpp_include_dirs.clone(),
+            type_hints_enabled: self.type_hints_enabled,
             batch_jobs: self.batch_jobs.clone(),
             next_pattern_job_id: self.next_pattern_job_id,
             table_column_widths: self.table_column_widths.clone(),
@@ -549,6 +558,7 @@ impl AstGrepApp {
             self.max_search_hits,
             self.skip_dirs.clone(),
             self.cpp_include_dirs.clone(),
+            self.type_hints_enabled,
             self.ui_lang(),
             SINGLE_SEARCH_JOB_ID,
             tx,
@@ -576,6 +586,7 @@ impl AstGrepApp {
             self.search_mode,
             self.plain_text_options,
             self.cpp_include_dirs.clone(),
+            self.type_hints_enabled,
         ));
     }
 
@@ -666,6 +677,7 @@ impl AstGrepApp {
             job.max_search_hits,
             job.skip_dirs.clone(),
             job.cpp_include_dirs.clone(),
+            job.type_hints_enabled,
             self.ui_lang(),
             job.id,
             tx,

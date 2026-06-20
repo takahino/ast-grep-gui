@@ -23,7 +23,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         return;
     }
 
-    let Some(report) = build_match_variation_report(&app.pattern, &app.results) else {
+    let Some(report) =
+        build_match_variation_report(&app.pattern, &app.results, app.type_hints_enabled)
+    else {
         ui.label(t.summary_pattern_ineligible());
         return;
     };

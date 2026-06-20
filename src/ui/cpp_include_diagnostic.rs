@@ -7,7 +7,7 @@ use crate::search::{compute_cpp_include_path_diagnostics, cpp_include_diagnostic
 
 /// AST モード時、詳細設定のインクルード欄の下に折りたたみで表示する。
 pub fn show_collapsing(app: &mut AstGrepApp, ui: &mut Ui) {
-    if !app.search_mode.is_ast_mode() {
+    if !app.search_mode.is_ast_mode() || !app.type_hints_enabled {
         return;
     }
     let t = app.tr();
@@ -16,6 +16,7 @@ pub fn show_collapsing(app: &mut AstGrepApp, ui: &mut Ui) {
         app.results_generation,
         app.cpp_include_dirs.as_str(),
         app.pattern.as_str(),
+        app.type_hints_enabled,
         app.results.len(),
         app.stats.total_matches,
     );
@@ -28,6 +29,7 @@ pub fn show_collapsing(app: &mut AstGrepApp, ui: &mut Ui) {
             app.results.as_slice(),
             app.cpp_include_dirs.as_str(),
             app.pattern.as_str(),
+            app.type_hints_enabled,
         );
         app.cpp_include_diagnostic_cache = Some((key, d));
     }

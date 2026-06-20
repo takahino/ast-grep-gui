@@ -120,6 +120,11 @@ fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
     ));
     ui.label(format!(
         "{}: {}",
+        t.export_cond_type_hints_enabled(),
+        t.export_bool_yes_no(c.type_hints_enabled)
+    ));
+    ui.label(format!(
+        "{}: {}",
         t.export_cond_search_mode(),
         crate::export::search_mode_label_for_export(t, c.search_mode)
     ));

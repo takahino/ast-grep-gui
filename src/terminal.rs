@@ -161,6 +161,7 @@ impl TerminalState {
             TERMINAL_MAX_SEARCH_HITS,
             ".git;target;node_modules".to_string(),
             String::new(),
+            true,
             UiLanguage::Japanese,
             crate::batch::SINGLE_SEARCH_JOB_ID,
             tx,

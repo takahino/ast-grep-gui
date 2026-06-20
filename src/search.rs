@@ -550,6 +550,7 @@ pub fn spawn_search(
     skip_dirs_str: String,
     // C++ 型ヒント用（`;` 区切り）。空なら `#include` は従来どおりソースの親のみ。
     cpp_include_dirs_str: String,
+    type_hints_enabled: bool,
     ui_lang: UiLanguage,
     job_id: usize,
     tx: Sender<SearchMessage>,
@@ -774,8 +775,8 @@ pub fn spawn_search(
                         let mut out = Vec::new();
                         let metavar_names = pattern_single_metavariables(pattern_str.as_str());
                         let multi_metavar_names = pattern_multi_metavariables(pattern_str.as_str());
-                        let want_type_hints =
-                            !metavar_names.is_empty() || !multi_metavar_names.is_empty();
+                        let want_type_hints = type_hints_enabled
+                            && (!metavar_names.is_empty() || !multi_metavar_names.is_empty());
                         for compiled_pat in compiled_patterns {
                             for node in root.root().find_all(&compiled_pat) {
                                 if !try_accept_hit(&hits_acc, max_search_hits, &limit_flag) {
@@ -1165,10 +1166,26 @@ pub fn pattern_single_metavariables(pattern: &str) -> Vec<String> {
     out
 }
 
+pub(crate) fn default_type_hints_enabled() -> bool {
+    true
+}
+
+/// 型ヒント推定が有効か（ユーザー設定 × パターンにメタ変数があるか）
+pub fn effective_type_hints_enabled(type_hints_enabled: bool, pattern: &str) -> bool {
+    type_hints_enabled && pattern_wants_type_hints(pattern)
+}
+
 /// 型ヒント表・エクスポート用の列キー（単一 `$A` のあと、各 `$$$M` について `M#arity`、`M#0`…`M#(n-1)`）。
 ///
 /// スロット列数 `n` は現在の `results` 内で当該メタ変数に付いた `M#i`（数値 `i`）の最大個数。
-pub fn type_hint_column_keys(pattern: &str, results: &[FileResult]) -> Vec<String> {
+pub fn type_hint_column_keys(
+    pattern: &str,
+    results: &[FileResult],
+    type_hints_enabled: bool,
+) -> Vec<String> {
+    if !effective_type_hints_enabled(type_hints_enabled, pattern) {
+        return Vec::new();
+    }
     let mut keys = pattern_single_metavariables(pattern);
     for m in pattern_multi_metavariables(pattern) {
         keys.push(format!("{m}#arity"));
@@ -1420,7 +1437,11 @@ fn parse_summary_args(pattern: &str) -> Option<(Option<String>, ArgsBinding)> {
 pub fn build_match_variation_report(
     pattern: &str,
     results: &[FileResult],
+    type_hints_enabled: bool,
 ) -> Option<MatchVariationReport> {
+    if !effective_type_hints_enabled(type_hints_enabled, pattern) {
+        return None;
+    }
     let singles = pattern_single_metavariables(pattern);
     if singles.is_empty() {
         return None;
@@ -1592,11 +1613,13 @@ pub fn cpp_include_diagnostic_cache_key(
     results_generation: u64,
     cpp_include_dirs: &str,
     pattern: &str,
+    type_hints_enabled: bool,
     result_files: usize,
     total_matches: usize,
 ) -> (u64, u64, u64, usize, usize) {
     let mut ha = DefaultHasher::new();
     cpp_include_dirs.hash(&mut ha);
+    type_hints_enabled.hash(&mut ha);
     let mut hb = DefaultHasher::new();
     pattern.hash(&mut hb);
     (
@@ -1622,6 +1645,7 @@ pub fn compute_cpp_include_path_diagnostics(
     results: &[FileResult],
     cpp_include_dirs_str: &str,
     pattern: &str,
+    type_hints_enabled: bool,
 ) -> CppIncludePathDiagnostics {
     let extra = parse_cpp_include_dir_list(cpp_include_dirs_str);
     let mut seen_files: HashSet<PathBuf> = HashSet::new();
@@ -1677,8 +1701,8 @@ pub fn compute_cpp_include_path_diagnostics(
     top.truncate(1000);
 
     let (cpp_type_hint_unknown_cells, cpp_type_hint_total_cells) =
-        if pattern_wants_type_hints(pattern) {
-            let keys = type_hint_column_keys(pattern, results);
+        if effective_type_hints_enabled(type_hints_enabled, pattern) {
+            let keys = type_hint_column_keys(pattern, results, type_hints_enabled);
             let mut unknown = 0usize;
             let mut total = 0usize;
             for fr in results.iter().filter(|f| {
@@ -1740,6 +1764,9 @@ pub struct SearchConditions {
     /// C++ 型ヒントの `#include` 探索用（`-I` 相当、`;` 区切りディレクトリ）
     #[serde(default)]
     pub cpp_include_dirs: String,
+    /// メタ変数の型ヒント推定を行う（AST モード・メタ変数ありのとき）
+    #[serde(default = "default_type_hints_enabled")]
+    pub type_hints_enabled: bool,
 }
 
 pub(crate) fn default_max_search_hits() -> usize {
@@ -1843,7 +1870,7 @@ mod tests {
             source_language: crate::lang::SupportedLanguage::Rust,
             text_encoding: crate::file_encoding::FileEncoding::Utf8,
         }];
-        let keys = super::type_hint_column_keys(pattern, &results);
+        let keys = super::type_hint_column_keys(pattern, &results, true);
         assert_eq!(keys, vec!["A", "ARGS#arity", "ARGS#0", "ARGS#1"]);
     }
 
@@ -1987,8 +2014,8 @@ mod tests {
 
     #[test]
     fn match_variation_report_none_when_pattern_ineligible() {
-        assert!(super::build_match_variation_report("$$$ONLY", &[]).is_none());
-        assert!(super::build_match_variation_report("", &[]).is_none());
+        assert!(super::build_match_variation_report("$$$ONLY", &[], true).is_none());
+        assert!(super::build_match_variation_report("", &[], true).is_none());
     }
 
     #[test]
@@ -2007,7 +2034,7 @@ mod tests {
         hints.insert("RECV".to_string(), "Time".to_string());
         hints.insert("A#0".to_string(), "string".to_string());
         let results = vec![file_result_one(vec![match_with_hints(hints)])];
-        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
         assert_eq!(report.receiver_metavar, "RECV");
         assert_eq!(report.method_metavar, None);
         assert_eq!(report.args_multi_metavar.as_deref(), Some("A"));
@@ -2041,7 +2068,7 @@ mod tests {
             file_result_one(vec![match_with_hints(sig_b)]),
         ];
 
-        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
         assert_eq!(report.receiver_metavar, "RECV");
         assert_eq!(report.method_metavar.as_deref(), Some("METHOD"));
         assert_eq!(report.args_multi_metavar.as_deref(), Some("ARGS"));
@@ -2060,7 +2087,7 @@ mod tests {
         hints.insert("RECV".to_string(), "Time".to_string());
         hints.insert("A".to_string(), "string".to_string());
         let results = vec![file_result_one(vec![match_with_hints(hints)])];
-        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
         assert_eq!(report.receiver_metavar, "RECV");
         assert_eq!(report.method_metavar, None);
         assert_eq!(report.args_multi_metavar, None);
@@ -2078,7 +2105,7 @@ mod tests {
         hints.insert("A".to_string(), "int".to_string());
         hints.insert("B".to_string(), "double".to_string());
         let results = vec![file_result_one(vec![match_with_hints(hints)])];
-        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
         assert_eq!(report.receiver_metavar, "RECV");
         assert_eq!(report.method_metavar, None);
         assert_eq!(report.arg_single_metavars, vec!["A", "B"]);
@@ -2095,7 +2122,7 @@ mod tests {
         hints.insert("A".to_string(), "u8".to_string());
         hints.insert("B".to_string(), "u16".to_string());
         let results = vec![file_result_one(vec![match_with_hints(hints)])];
-        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
         assert_eq!(report.method_metavar, None);
         assert_eq!(report.arg_single_metavars, vec!["A", "B"]);
         assert_eq!(report.rows[0].arity, 2);
@@ -2107,7 +2134,7 @@ mod tests {
         let mut hints = BTreeMap::new();
         hints.insert("RECV".to_string(), "Time".to_string());
         let results = vec![file_result_one(vec![match_with_hints(hints)])];
-        let report = super::build_match_variation_report(pattern, &results).unwrap();
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
         assert_eq!(report.args_multi_metavar, None);
         assert!(report.arg_single_metavars.is_empty());
         assert_eq!(report.rows.len(), 1);

@@ -496,17 +496,21 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .on_hover_text(t.skip_dirs_hover());
         });
         if app.search_mode.is_ast_mode() {
-            ui.horizontal(|ui| {
-                ui.label(t.cpp_include_dirs_label())
+            ui.checkbox(&mut app.type_hints_enabled, t.type_hints_enabled_label())
+                .on_hover_text(t.type_hints_enabled_tooltip());
+            ui.add_enabled_ui(app.type_hints_enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(t.cpp_include_dirs_label())
+                        .on_hover_text(t.cpp_include_dirs_tooltip());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.cpp_include_dirs)
+                            .desired_width(ui.available_width() - 4.0)
+                            .hint_text(t.cpp_include_dirs_hint()),
+                    )
                     .on_hover_text(t.cpp_include_dirs_tooltip());
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.cpp_include_dirs)
-                        .desired_width(ui.available_width() - 4.0)
-                        .hint_text(t.cpp_include_dirs_hint()),
-                )
-                .on_hover_text(t.cpp_include_dirs_tooltip());
+                });
+                cpp_include_diagnostic::show_collapsing(app, ui);
             });
-            cpp_include_diagnostic::show_collapsing(app, ui);
         }
     });
 

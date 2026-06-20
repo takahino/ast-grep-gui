@@ -30,6 +30,9 @@ pub struct PatternJob {
     /// C++ 型ヒント用（`-I` 相当、`;` 区切り）
     #[serde(default)]
     pub cpp_include_dirs: String,
+    /// メタ変数の型ヒント推定を行う
+    #[serde(default = "crate::search::default_type_hints_enabled")]
+    pub type_hints_enabled: bool,
 }
 
 impl PatternJob {
@@ -47,6 +50,7 @@ impl PatternJob {
             search_mode: self.search_mode,
             plain_text_options: self.plain_text_options,
             cpp_include_dirs: self.cpp_include_dirs.clone(),
+            type_hints_enabled: self.type_hints_enabled,
         }
     }
 
@@ -66,6 +70,7 @@ impl PatternJob {
         search_mode: SearchMode,
         plain_text_options: PlainTextSearchOptions,
         cpp_include_dirs: String,
+        type_hints_enabled: bool,
     ) -> Self {
         Self {
             id,
@@ -83,6 +88,7 @@ impl PatternJob {
             search_mode,
             plain_text_options,
             cpp_include_dirs,
+            type_hints_enabled,
         }
     }
 
@@ -220,6 +226,7 @@ mod tests {
             search_mode: SearchMode::AstGrep,
             plain_text_options: PlainTextSearchOptions::default(),
             cpp_include_dirs: String::new(),
+            type_hints_enabled: crate::search::default_type_hints_enabled(),
         }
     }
 
@@ -240,6 +247,7 @@ mod tests {
                 search_mode: SearchMode::AstGrep,
                 plain_text_options: PlainTextSearchOptions::default(),
                 cpp_include_dirs: String::new(),
+                type_hints_enabled: crate::search::default_type_hints_enabled(),
             },
             results: vec![],
             stats: SearchStats {

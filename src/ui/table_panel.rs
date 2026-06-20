@@ -202,7 +202,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         ui.add_space(4.0);
     }
 
-    let column_keys = type_hint_column_keys(app.pattern.as_str(), &app.results);
+    let column_keys =
+        type_hint_column_keys(app.pattern.as_str(), &app.results, app.type_hints_enabled);
     let n_hints = column_keys.len();
     app.table_column_widths.sync_hint_cols(n_hints);
 

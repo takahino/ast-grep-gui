@@ -330,6 +330,8 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                         );
                     });
                     if job.search_mode.is_ast_mode() {
+                        ui.checkbox(&mut job.type_hints_enabled, t.type_hints_enabled_label())
+                            .on_hover_text(t.type_hints_enabled_tooltip());
                         ui.horizontal(|ui| {
                             ui.label(t.cpp_include_dirs_label())
                                 .on_hover_text(t.cpp_include_dirs_tooltip());

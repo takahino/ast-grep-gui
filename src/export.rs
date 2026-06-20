@@ -149,6 +149,11 @@ fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLangua
     ));
     s.push_str(&format!(
         "- {}: {}\n",
+        t.export_cond_type_hints_enabled(),
+        t.export_bool_yes_no(cond.type_hints_enabled)
+    ));
+    s.push_str(&format!(
+        "- {}: {}\n",
         t.export_cond_search_mode(),
         search_mode_label(t, cond.search_mode)
     ));
@@ -220,6 +225,11 @@ pub fn format_search_conditions_markdown(
         "- **{}**: {}\n",
         t.export_cond_cpp_include_dirs(),
         cond.cpp_include_dirs
+    ));
+    s.push_str(&format!(
+        "- **{}**: {}\n",
+        t.export_cond_type_hints_enabled(),
+        t.export_bool_yes_no(cond.type_hints_enabled)
     ));
     s.push_str(&format!(
         "- **{}**: {}\n",
@@ -313,7 +323,7 @@ fn summary_variation_to_plain_text(
         stats.hit_limit_reached,
     ));
     out.push('\n');
-    match build_match_variation_report(&cond.pattern, results) {
+    match build_match_variation_report(&cond.pattern, results, cond.type_hints_enabled) {
         None => {
             out.push_str(t.summary_pattern_ineligible());
             out.push('\n');
@@ -400,7 +410,7 @@ pub fn summary_variation_to_markdown(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
-    match build_match_variation_report(&cond.pattern, results) {
+    match build_match_variation_report(&cond.pattern, results, cond.type_hints_enabled) {
         None => {
             out.push_str(t.summary_pattern_ineligible());
             out.push('\n');
@@ -500,7 +510,7 @@ pub fn results_to_markdown(
         stats.elapsed_ms,
         stats.hit_limit_reached,
     ));
-    let col_keys = type_hint_column_keys(&cond.pattern, &results);
+    let col_keys = type_hint_column_keys(&cond.pattern, &results, cond.type_hints_enabled);
     if col_keys.is_empty() {
         out.push_str(t.export_md_table_header());
         out.push_str(&markdown_table_sep(5));
@@ -645,7 +655,7 @@ fn html_summary_variation_fragment(
     out.push_str(t.summary_title());
     out.push_str("</h2>\n");
 
-    match build_match_variation_report(&cond.pattern, results) {
+    match build_match_variation_report(&cond.pattern, results, cond.type_hints_enabled) {
         None => {
             out.push_str("<p>");
             out.push_str(t.summary_pattern_ineligible());
@@ -736,7 +746,7 @@ fn html_conditions_stats_table_fragment(
     };
 
     let mut out = html_conditions_and_stats_fragment(stats, cond, lang);
-    let col_keys = type_hint_column_keys(&cond.pattern, &results);
+    let col_keys = type_hint_column_keys(&cond.pattern, &results, cond.type_hints_enabled);
     out.push_str("<table>\n<thead>\n<tr>\n");
     out.push_str("<th>");
     out.push_str(t.export_html_th_file());
@@ -910,7 +920,7 @@ pub fn export_xlsx_to_file(
     match layout {
         ResultsExportLayout::FullTable => {
             let results = materialized_results(results, cond.context_lines);
-            let col_keys = type_hint_column_keys(&cond.pattern, &results);
+            let col_keys = type_hint_column_keys(&cond.pattern, &results, cond.type_hints_enabled);
 
             let sheet = workbook.add_worksheet();
             sheet.set_name(t.export_xlsx_sheet_results())?;
@@ -964,7 +974,7 @@ pub fn export_xlsx_to_file(
                 .set_background_color(0x333333u32)
                 .set_font_color(0xFFFFFFu32);
 
-            match build_match_variation_report(&cond.pattern, results) {
+            match build_match_variation_report(&cond.pattern, results, cond.type_hints_enabled) {
                 None => {
                     sheet.write(0, 0, truncate_for_excel(t.summary_pattern_ineligible()))?;
                 }
@@ -1105,7 +1115,8 @@ pub fn results_to_json(
                 stats: StatsOutput,
                 match_variation_summary: Option<crate::search::MatchVariationReport>,
             }
-            let report = build_match_variation_report(&cond.pattern, results);
+            let report =
+                build_match_variation_report(&cond.pattern, results, cond.type_hints_enabled);
             let output = Output {
                 export_layout: "match_variation_summary",
                 search: cond,
@@ -1283,7 +1294,11 @@ pub fn batch_report_to_markdown(report: &BatchReport, lang: UiLanguage) -> Strin
             run.stats.hit_limit_reached,
         ));
         let results = materialized_results(&run.results, run.conditions.context_lines);
-        let col_keys = type_hint_column_keys(&run.conditions.pattern, &results);
+        let col_keys = type_hint_column_keys(
+            &run.conditions.pattern,
+            &results,
+            run.conditions.type_hints_enabled,
+        );
         if col_keys.is_empty() {
             out.push_str(t.export_md_table_header());
             out.push_str(&markdown_table_sep(5));
@@ -1425,7 +1440,7 @@ pub fn export_batch_xlsx_to_file(
         let cond = &run.conditions;
         let stats = &run.stats;
         let results = materialized_results(&run.results, cond.context_lines);
-        let col_keys = type_hint_column_keys(&cond.pattern, &results);
+        let col_keys = type_hint_column_keys(&cond.pattern, &results, cond.type_hints_enabled);
 
         let header_fmt = Format::new()
             .set_bold()

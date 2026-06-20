@@ -98,8 +98,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                             );
                             let block =
                                 m.program_with_context_for_file(file_result, app.context_lines);
-                            let column_keys =
-                                type_hint_column_keys(app.pattern.as_str(), &app.results);
+                            let column_keys = type_hint_column_keys(
+                                app.pattern.as_str(),
+                                &app.results,
+                                app.type_hints_enabled,
+                            );
                             let hover = if column_keys.is_empty() {
                                 block.clone()
                             } else {

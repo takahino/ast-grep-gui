@@ -1361,6 +1361,25 @@ impl Tr {
         }
     }
 
+    pub fn type_hints_enabled_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "型ヒントを推定",
+            UiLanguage::English => "Infer type hints",
+        }
+    }
+    pub fn type_hints_enabled_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "AST パターンのメタ変数（$VAR / $$$ARGS など）について、構文ベースで型ヒントを推定します\n\
+                 オフにすると検索は同じですが、表・サマリ・エクスポートの型列と C++ インクルード診断は表示されません"
+            }
+            UiLanguage::English => {
+                "Infer best-effort type hints for AST pattern meta-variables ($VAR / $$$ARGS, etc.)\n\
+                 When off, matching is unchanged; type columns, summary, and C++ include diagnostics are hidden"
+            }
+        }
+    }
+
     pub fn cpp_include_diagnostic_header(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "インクルードパス診断（C/C++）",
@@ -2567,6 +2586,20 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "C++ インクルードパス (-I)",
             UiLanguage::English => "C++ include paths (-I)",
+        }
+    }
+    pub fn export_cond_type_hints_enabled(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "型ヒント推定",
+            UiLanguage::English => "Type hint inference",
+        }
+    }
+    pub fn export_bool_yes_no(self, value: bool) -> &'static str {
+        match (self.0, value) {
+            (UiLanguage::Japanese, true) => "はい",
+            (UiLanguage::Japanese, false) => "いいえ",
+            (UiLanguage::English, true) => "Yes",
+            (UiLanguage::English, false) => "No",
         }
     }
     pub fn export_cond_search_mode(self) -> &'static str {
