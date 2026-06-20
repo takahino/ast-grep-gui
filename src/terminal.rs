@@ -165,7 +165,7 @@ impl TerminalState {
             UiLanguage::Japanese,
             crate::batch::SINGLE_SEARCH_JOB_ID,
             tx,
-            egui_ctx.clone(),
+            Some(egui_ctx.clone()),
         );
 
         let lines = Arc::clone(&self.lines);

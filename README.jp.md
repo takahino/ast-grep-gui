@@ -25,6 +25,8 @@ CLI に慣れていないユーザーでも、構造検索を視覚的に使い�
 - `chardetng` による自動文字コード判定と、`UTF-8` / `UTF-16 LE` / `UTF-16 BE` / `Shift_JIS` / `EUC-JP` / `JIS` / `GBK` / `Big5` / `EUC-KR` / `Latin1` 系の手動指定
 - PowerShell コマンドや `sg run` 風検索を使える内蔵ターミナル
 - コードビュー・**表ビュー**・ファイルプレビューでの **Ctrl+F ビュー内検索**（文字列のリテラル一致、大文字小文字の切り替え、↑↓で移動・スクロール追従、**一致箇所のハイライト**〈現在の一致を強調〉）
+- **同一 exe の `--batch` モード** による大量パターン一括検索（1 行 1 パターンのファイルから実行）
+- **GUI コマンドライン補助画面**（CLI コマンドの組み立て・コピー・GUI 内直接実行）
 
 ## 対応言語
 
@@ -64,6 +66,82 @@ Windows 向けリリースバイナリを明示的にビルドする場合:
 ```powershell
 cargo build --release --target x86_64-pc-windows-msvc
 ```
+
+CLI バッチモードは同一 exe から `--batch` で起動します（別バイナリは不要）。
+
+## コマンドライン一括検索
+
+GUI を開かずに、**1 行 1 パターン**のテキストファイルから大量の AST パターンを順次検索できます。
+
+### パターンファイル例 (`patterns.txt`)
+
+```text
+# コメント行は無視されます
+fn $NAME($$$ARGS)
+$VAR.unwrap()
+console.log($$$ARGS)
+```
+
+### 基本コマンド
+
+```powershell
+cargo run -- --batch `
+  --patterns patterns.txt `
+  --dir C:\path\to\repo `
+  --lang rust `
+  --view table `
+  --format json `
+  --output result.json
+```
+
+### 出力ビュー
+
+| ビュー | 説明 |
+|--------|------|
+| `code` | コードビュー相当（ファイル単位・前後コンテキスト付き） |
+| `table` | 表ビュー相当（型ヒント列を含むフルテーブル） |
+| `summary` | サマリー（型ヒントのバリエーション集計） |
+
+複数ビューは `--view code,summary` のように指定できます。Excel (`xlsx`) では **1 つのブック内にビュー別シート**が作られます。
+
+```powershell
+cargo run -- --batch `
+  --patterns patterns.txt `
+  --dir C:\path\to\repo `
+  --lang cpp `
+  --view code,summary `
+  --format xlsx `
+  --output report.xlsx
+```
+
+### 主なオプション
+
+| オプション | 説明 |
+|-----------|------|
+| `--patterns` | 1 行 1 パターンの入力ファイル |
+| `--dir` | 検索対象ルート |
+| `--lang` | 言語（`auto` / `rust` / `cpp` など） |
+| `--view` | `code` / `table` / `summary`（`,` 区切り可） |
+| `--format` | `text` / `json` / `markdown` / `html` / `xlsx` |
+| `--output` | 出力先（バッチモードでは必須） |
+| `--context` | コンテキスト行数（既定: 2） |
+| `--filter` | ファイル名フィルタ（`;` 区切り glob） |
+| `--skip-dirs` | スキップディレクトリ名（`;` 区切り） |
+| `--max-hits` | パターンごとのヒット上限（0 = 無制限） |
+| `--include-dirs` | C++ 型ヒント用インクルードパス（`;` 区切り） |
+| `--no-type-hints` | 型ヒント推定を無効化 |
+
+## GUI のコマンドライン補助
+
+ツールバーの **バッチジョブ** セクションにある **「⌨ CLI 補助」** から、上記 CLI と同等の条件を GUI で組み立てられます。
+
+1. **パターンファイル**と**出力ファイル**（任意、`xlsx` 時は必須）を指定
+2. **出力ビュー**（コード / 表 / サマリー）と**出力形式**を選択
+3. **コマンドプレビュー**を確認し、**コピー**または**この設定で実行**
+4. 実行時は GUI 内のバッチ検索として走り、**バッチレポート**画面で結果を確認
+5. 出力ファイルを指定していた場合、完了後に自動エクスポート
+
+検索ディレクトリ・言語・詳細設定などは、メイン画面のツールバー設定がそのまま使われます。
 
 ## 使い方
 
@@ -121,7 +199,10 @@ console.log($$$ARGS)
 ## ディレクトリ概要
 
 ```text
-src/main.rs              アプリ起動処理
+src/lib.rs               共有ライブラリ（GUI / CLI 共通）
+src/main.rs              GUI 起動
+src/cli_runner.rs         `--batch` CLI バッチ実行
+src/cli_config.rs        CLI / GUI 補助画面の共有設定
 src/app.rs               アプリ状態と UI 全体制御
 src/search.rs            バックグラウンド検索エンジン
 src/ast_pattern.rs       パターンコンパイル戦略（C/C++ コンテキスト補完など）
@@ -135,6 +216,7 @@ src/regex_visualizer.rs  正規表現ビジュアライザ用トークナイザ
 src/help_html.rs         埋め込み HTML ヘルプを OS ブラウザで開く
 src/terminal.rs          内蔵ターミナル状態管理
 src/sg_command.rs        `sg run` 風コマンドのパース
+src/ui/cli_builder_panel.rs  コマンドライン補助画面
 src/ui/                  GUI パネルとポップアップ
 assets/help/             埋め込みパターンヘルプ HTML
 ```

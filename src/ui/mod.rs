@@ -1,5 +1,6 @@
 pub mod batch_panel;
 pub mod batch_report_panel;
+pub mod cli_builder_panel;
 pub mod code_layout;
 pub mod code_panel;
 pub mod cpp_include_diagnostic;

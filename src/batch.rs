@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use crate::cli_config::BatchCommonOptions;
 use crate::file_encoding::FileEncodingPreference;
 use crate::lang::SupportedLanguage;
 use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
@@ -202,6 +203,77 @@ pub struct BatchRunnerState {
     pub started: std::time::Instant,
 }
 
+/// 1行1パターンのテキストファイルからパターン行を読み込む（空行・ `#` コメントを除外）
+pub fn read_patterns_file(path: &Path) -> anyhow::Result<Vec<String>> {
+    let s = std::fs::read_to_string(path)?;
+    Ok(parse_pattern_lines(&s))
+}
+
+/// 文字列からパターン行を抽出
+pub fn parse_pattern_lines(s: &str) -> Vec<String> {
+    s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 共通オプションとパターン列からジョブ一覧を作る
+pub fn jobs_from_pattern_lines(
+    patterns: &[String],
+    common: &BatchCommonOptions,
+) -> Vec<PatternJob> {
+    patterns
+        .iter()
+        .enumerate()
+        .map(|(i, pattern)| {
+            let id = i + 1;
+            PatternJob {
+                id,
+                label: format!("pattern-{id}"),
+                enabled: true,
+                pattern: pattern.clone(),
+                search_dir: common.search_dir.clone(),
+                selected_lang: common.selected_lang,
+                context_lines: common.context_lines,
+                file_filter: common.file_filter.clone(),
+                file_encoding_preference: common.file_encoding_preference,
+                max_file_size_mb: common.max_file_size_mb,
+                max_search_hits: common.max_search_hits,
+                skip_dirs: common.skip_dirs.clone(),
+                search_mode: common.search_mode,
+                plain_text_options: common.plain_text_options,
+                cpp_include_dirs: common.cpp_include_dirs.clone(),
+                type_hints_enabled: common.type_hints_enabled,
+            }
+        })
+        .collect()
+}
+
+/// 有効ジョブを逐次実行してバッチレポートを返す（CLI 同期実行用）
+pub fn run_batch_sync(
+    jobs: &[PatternJob],
+    ui_lang: crate::i18n::UiLanguage,
+) -> BatchReport {
+    let started = std::time::Instant::now();
+    let runs: Vec<BatchRunResult> = jobs
+        .iter()
+        .filter(|j| j.is_runnable())
+        .map(|job| {
+            crate::search::run_search_sync(
+                &job.to_conditions(),
+                job.id,
+                job.label.clone(),
+                ui_lang,
+            )
+        })
+        .collect();
+    BatchReport {
+        total_elapsed_ms: started.elapsed().as_millis() as u64,
+        runs,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +423,15 @@ mod tests {
         assert_eq!(parsed[0].pattern, "pattern1");
         assert!(!parsed[1].enabled);
         assert_eq!(next_id, 3);
+    }
+
+    #[test]
+    fn parse_pattern_lines_skips_comments_and_blanks() {
+        let text = "# comment\n\nfn $NAME()\nconsole.log($$$ARGS)\n";
+        let lines = parse_pattern_lines(text);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "fn $NAME()");
+        assert_eq!(lines[1], "console.log($$$ARGS)");
     }
 
     #[test]

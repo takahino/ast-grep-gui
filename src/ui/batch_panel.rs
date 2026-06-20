@@ -34,6 +34,13 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                 {
                     app.start_batch_search();
                 }
+                if ui
+                    .button(t.cli_builder_btn())
+                    .on_hover_text(t.cli_builder_btn_tooltip())
+                    .clicked()
+                {
+                    app.open_cli_builder();
+                }
             });
             ui.horizontal(|ui| {
                 if ui

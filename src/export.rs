@@ -19,6 +19,110 @@ pub enum ResultsExportLayout {
     MatchVariationSummary,
 }
 
+/// CLI / GUI 補助画面で選べる出力ビュー
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum OutputView {
+    /// コードビュー相当（ファイル単位・コンテキスト付き）
+    Code,
+    /// 表ビュー相当（型ヒント列を含むフルテーブル）
+    Table,
+    /// サマリー（型ヒントのバリエーション集計）
+    Summary,
+}
+
+impl OutputView {
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Table => "table",
+            Self::Summary => "summary",
+        }
+    }
+}
+
+/// 複数ビューの選択集合
+#[derive(Debug, Clone, Default)]
+pub struct OutputViewSet {
+    views: std::collections::BTreeSet<OutputView>,
+}
+
+impl OutputViewSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, view: OutputView) {
+        self.views.insert(view);
+    }
+
+    pub fn contains(&self, view: OutputView) -> bool {
+        self.views.contains(&view)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.views.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = OutputView> + '_ {
+        self.views.iter().copied()
+    }
+
+    pub fn is_default_table_only(&self) -> bool {
+        self.views.len() == 1 && self.views.contains(&OutputView::Table)
+    }
+
+    pub fn to_cli_arg(&self) -> String {
+        let mut names: Vec<_> = self.views.iter().map(|v| v.cli_name()).collect();
+        names.sort_unstable();
+        names.join(",")
+    }
+
+    pub fn to_layout(self, view: OutputView) -> ResultsExportLayout {
+        match view {
+            OutputView::Code | OutputView::Table => ResultsExportLayout::FullTable,
+            OutputView::Summary => ResultsExportLayout::MatchVariationSummary,
+        }
+    }
+}
+
+/// 出力ファイル形式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    Text,
+    #[default]
+    Json,
+    Markdown,
+    Html,
+    Xlsx,
+}
+
+impl OutputFormat {
+    pub fn cli_name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+            Self::Html => "html",
+            Self::Xlsx => "xlsx",
+        }
+    }
+
+    pub fn from_cli_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "text" | "txt" => Some(Self::Text),
+            "json" => Some(Self::Json),
+            "markdown" | "md" => Some(Self::Markdown),
+            "html" => Some(Self::Html),
+            "xlsx" | "excel" => Some(Self::Xlsx),
+            _ => None,
+        }
+    }
+
+    pub fn requires_output_file(self) -> bool {
+        matches!(self, Self::Xlsx)
+    }
+}
+
 /// 型ヒントセルを Markdown / HTML / Excel 用の文字列に（`·` / `?` はエスケープ不要）
 fn type_hint_cell_export(m: &MatchItem, key: &str) -> String {
     m.type_hint_cell(key).to_export_string()
@@ -1545,6 +1649,569 @@ pub fn export_batch_html_to_file(
 ) -> anyhow::Result<()> {
     std::fs::write(path, batch_report_to_html(report, lang))?;
     Ok(())
+}
+
+// ─── 複数ビュー対応バッチ出力 ───────────────────────────────────────────────
+
+fn run_text_for_view(
+    run: &crate::batch::BatchRunResult,
+    view: OutputView,
+    lang: UiLanguage,
+) -> String {
+    if run.error.is_some() {
+        return format!("ERROR: {}\n", run.error.as_deref().unwrap_or(""));
+    }
+    let layout = OutputViewSet::default().to_layout(view);
+    match view {
+        OutputView::Code => results_to_text(
+            &run.results,
+            &run.stats,
+            &run.conditions,
+            lang,
+        ),
+        OutputView::Table | OutputView::Summary => results_to_text_for_mode(
+            &run.results,
+            &run.stats,
+            &run.conditions,
+            run.conditions.search_mode,
+            lang,
+            layout,
+        ),
+    }
+}
+
+fn run_markdown_for_view(
+    run: &crate::batch::BatchRunResult,
+    view: OutputView,
+    lang: UiLanguage,
+) -> String {
+    if let Some(e) = &run.error {
+        return format!("**ERROR:** {e}\n\n");
+    }
+    match view {
+        OutputView::Code => {
+            let mut out = format!("## {} (code)\n\n", run.label);
+            out.push_str(&results_to_text(
+                &run.results,
+                &run.stats,
+                &run.conditions,
+                lang,
+            ));
+            out
+        }
+        OutputView::Table => {
+            let mut out = format!("## {} (table)\n\n", run.label);
+            out.push_str(&results_to_markdown(
+                &run.results,
+                &run.stats,
+                &run.conditions,
+                lang,
+                ResultsExportLayout::FullTable,
+            ));
+            out
+        }
+        OutputView::Summary => {
+            let mut out = format!("## {} (summary)\n\n", run.label);
+            out.push_str(&summary_variation_to_markdown(
+                &run.results,
+                &run.stats,
+                &run.conditions,
+                lang,
+            ));
+            out
+        }
+    }
+}
+
+pub fn batch_report_to_text_with_views(
+    report: &BatchReport,
+    views: &OutputViewSet,
+    lang: UiLanguage,
+) -> String {
+    let t = Tr(lang);
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# {}\n{}\n\n",
+        t.batch_report_title(),
+        t.batch_report_summary(
+            report.total_elapsed_ms,
+            report.total_matches(),
+            report.total_files(),
+            report.runs.len(),
+            report.failed_count(),
+        )
+    ));
+    for run in &report.runs {
+        for view in views.iter() {
+            out.push_str(&format!(
+                "\n\n=== {} [{}] ===\n",
+                run.label,
+                view.cli_name()
+            ));
+            out.push_str(&run_text_for_view(run, view, lang));
+        }
+    }
+    out
+}
+
+pub fn batch_report_to_json_with_views(
+    report: &BatchReport,
+    views: &OutputViewSet,
+) -> anyhow::Result<String> {
+    #[derive(serde::Serialize)]
+    struct StatsOutput {
+        total_matches: usize,
+        total_files: usize,
+        elapsed_ms: u64,
+        hit_limit_reached: bool,
+    }
+    #[derive(serde::Serialize)]
+    struct ViewPayload {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<ViewBody>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        table: Option<ViewBody>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<SummaryBody>,
+    }
+    #[derive(serde::Serialize)]
+    struct ViewBody {
+        stats: StatsOutput,
+        results: Vec<FileResult>,
+    }
+    #[derive(serde::Serialize)]
+    struct SummaryBody {
+        stats: StatsOutput,
+        match_variation_summary: Option<MatchVariationReport>,
+    }
+    #[derive(serde::Serialize)]
+    struct RunOut {
+        job_id: usize,
+        label: String,
+        search: SearchConditions,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        views: ViewPayload,
+    }
+    #[derive(serde::Serialize)]
+    struct Out {
+        total_elapsed_ms: u64,
+        views: Vec<&'static str>,
+        runs: Vec<RunOut>,
+    }
+
+    let view_names: Vec<_> = views.iter().map(|v| v.cli_name()).collect();
+
+    let runs = report
+        .runs
+        .iter()
+        .map(|run| {
+            let stats = || StatsOutput {
+                total_matches: run.stats.total_matches,
+                total_files: run.stats.total_files,
+                elapsed_ms: run.stats.elapsed_ms,
+                hit_limit_reached: run.stats.hit_limit_reached,
+            };
+            let materialized =
+                materialized_results(&run.results, run.conditions.context_lines);
+            let mut payload = ViewPayload {
+                code: None,
+                table: None,
+                summary: None,
+            };
+            if run.error.is_none() {
+                for view in views.iter() {
+                    match view {
+                        OutputView::Code => {
+                            payload.code = Some(ViewBody {
+                                stats: stats(),
+                                results: materialized.clone(),
+                            });
+                        }
+                        OutputView::Table => {
+                            payload.table = Some(ViewBody {
+                                stats: stats(),
+                                results: materialized.clone(),
+                            });
+                        }
+                        OutputView::Summary => {
+                            payload.summary = Some(SummaryBody {
+                                stats: stats(),
+                                match_variation_summary: build_match_variation_report(
+                                    &run.conditions.pattern,
+                                    &run.results,
+                                    run.conditions.type_hints_enabled,
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+            RunOut {
+                job_id: run.job_id,
+                label: run.label.clone(),
+                search: run.conditions.clone(),
+                error: run.error.clone(),
+                views: payload,
+            }
+        })
+        .collect();
+
+    Ok(serde_json::to_string_pretty(&Out {
+        total_elapsed_ms: report.total_elapsed_ms,
+        views: view_names,
+        runs,
+    })?)
+}
+
+pub fn batch_report_to_markdown_with_views(
+    report: &BatchReport,
+    views: &OutputViewSet,
+    lang: UiLanguage,
+) -> String {
+    let t = Tr(lang);
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", t.batch_report_title()));
+    out.push_str(&format!(
+        "{}\n\n",
+        t.batch_report_summary(
+            report.total_elapsed_ms,
+            report.total_matches(),
+            report.total_files(),
+            report.runs.len(),
+            report.failed_count(),
+        )
+    ));
+    for run in &report.runs {
+        for view in views.iter() {
+            out.push_str(&run_markdown_for_view(run, view, lang));
+        }
+    }
+    out
+}
+
+pub fn batch_report_to_html_with_views(
+    report: &BatchReport,
+    views: &OutputViewSet,
+    lang: UiLanguage,
+) -> String {
+    let t = Tr(lang);
+    let escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let mut out = String::new();
+    out.push_str("<!DOCTYPE html>\n<html lang=\"");
+    out.push_str(t.export_html_lang());
+    out.push_str("\">\n<head>\n<meta charset=\"UTF-8\">\n<title>");
+    out.push_str(t.batch_report_title());
+    out.push_str("</title></head>\n<body>\n<h1>");
+    out.push_str(t.batch_report_title());
+    out.push_str("</h1>\n<p>");
+    out.push_str(&escape(&t.batch_report_summary(
+        report.total_elapsed_ms,
+        report.total_matches(),
+        report.total_files(),
+        report.runs.len(),
+        report.failed_count(),
+    )));
+    out.push_str("</p>\n");
+
+    for run in &report.runs {
+        for view in views.iter() {
+            out.push_str(&format!(
+                "<h2>{} [{}]</h2>\n",
+                escape(&run.label),
+                view.cli_name()
+            ));
+            if let Some(e) = &run.error {
+                out.push_str(&format!("<p><strong>ERROR:</strong> {}</p>\n", escape(e)));
+                continue;
+            }
+            match view {
+                OutputView::Code | OutputView::Table => {
+                    out.push_str(&html_conditions_stats_table_fragment(
+                        &run.results,
+                        &run.stats,
+                        &run.conditions,
+                        lang,
+                    ));
+                }
+                OutputView::Summary => {
+                    out.push_str(&html_summary_variation_fragment(
+                        &run.results,
+                        &run.stats,
+                        &run.conditions,
+                        lang,
+                    ));
+                }
+            }
+        }
+    }
+    out.push_str("</body>\n</html>\n");
+    out
+}
+
+fn write_code_xlsx_sheet(
+    sheet: &mut rust_xlsxwriter::Worksheet,
+    results: &[FileResult],
+    t: Tr,
+) -> anyhow::Result<()> {
+    use rust_xlsxwriter::Format;
+    let header_fmt = Format::new()
+        .set_bold()
+        .set_background_color(0x333333u32)
+        .set_font_color(0xFFFFFFu32);
+    sheet.write_with_format(0, 0, t.export_xlsx_col_file(), &header_fmt)?;
+    sheet.write_with_format(0, 1, t.export_xlsx_col_line(), &header_fmt)?;
+    sheet.write_with_format(0, 2, t.export_xlsx_col_col(), &header_fmt)?;
+    sheet.write_with_format(0, 3, t.export_xlsx_col_match(), &header_fmt)?;
+    sheet.write_with_format(0, 4, t.export_xlsx_col_source_context(), &header_fmt)?;
+    sheet.set_column_width(0, 50)?;
+    sheet.set_column_width(1, 8)?;
+    sheet.set_column_width(2, 8)?;
+    sheet.set_column_width(3, 40)?;
+    sheet.set_column_width(4, 80)?;
+    let mut row = 1u32;
+    for file in results {
+        for m in &file.matches {
+            sheet.write(row, 0, truncate_for_excel(&file.relative_path))?;
+            sheet.write(row, 1, m.line_start as u32)?;
+            sheet.write(row, 2, m.col_start as u32)?;
+            sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
+            sheet.write(row, 4, truncate_for_excel(&m.program_with_context()))?;
+            row += 1;
+        }
+    }
+    Ok(())
+}
+
+fn write_table_xlsx_sheet(
+    sheet: &mut rust_xlsxwriter::Worksheet,
+    results: &[FileResult],
+    cond: &SearchConditions,
+    t: Tr,
+) -> anyhow::Result<()> {
+    use rust_xlsxwriter::Format;
+    let col_keys = type_hint_column_keys(&cond.pattern, results, cond.type_hints_enabled);
+    let header_fmt = Format::new()
+        .set_bold()
+        .set_background_color(0x333333u32)
+        .set_font_color(0xFFFFFFu32);
+    sheet.write_with_format(0, 0, t.export_xlsx_col_file(), &header_fmt)?;
+    sheet.write_with_format(0, 1, t.export_xlsx_col_line(), &header_fmt)?;
+    sheet.write_with_format(0, 2, t.export_xlsx_col_col(), &header_fmt)?;
+    sheet.write_with_format(0, 3, t.export_xlsx_col_match(), &header_fmt)?;
+    sheet.write_with_format(0, 4, t.export_xlsx_col_source_context(), &header_fmt)?;
+    for (i, key) in col_keys.iter().enumerate() {
+        sheet.write_with_format(0, 5 + i as u16, format!("${key}"), &header_fmt)?;
+    }
+    sheet.set_column_width(0, 50)?;
+    sheet.set_column_width(1, 8)?;
+    sheet.set_column_width(2, 8)?;
+    sheet.set_column_width(3, 40)?;
+    sheet.set_column_width(4, 80)?;
+    for i in 0..col_keys.len() {
+        sheet.set_column_width(5 + i as u16, 28)?;
+    }
+    let mut row = 1u32;
+    for file in results {
+        for m in &file.matches {
+            sheet.write(row, 0, truncate_for_excel(&file.relative_path))?;
+            sheet.write(row, 1, m.line_start as u32)?;
+            sheet.write(row, 2, m.col_start as u32)?;
+            sheet.write(row, 3, truncate_for_excel(&m.matched_text))?;
+            sheet.write(row, 4, truncate_for_excel(&m.program_with_context()))?;
+            for (i, key) in col_keys.iter().enumerate() {
+                sheet.write(row, 5 + i as u16, truncate_for_excel(&type_hint_cell_export(m, key)))?;
+            }
+            row += 1;
+        }
+    }
+    Ok(())
+}
+
+fn write_summary_xlsx_sheet(
+    sheet: &mut rust_xlsxwriter::Worksheet,
+    run: &crate::batch::BatchRunResult,
+    t: Tr,
+) -> anyhow::Result<()> {
+    use rust_xlsxwriter::Format;
+    let header_fmt = Format::new()
+        .set_bold()
+        .set_background_color(0x333333u32)
+        .set_font_color(0xFFFFFFu32);
+    match build_match_variation_report(
+        &run.conditions.pattern,
+        &run.results,
+        run.conditions.type_hints_enabled,
+    ) {
+        None => {
+            sheet.write(0, 0, truncate_for_excel(t.summary_pattern_ineligible()))?;
+        }
+        Some(report) => {
+            sheet.write(
+                0,
+                0,
+                truncate_for_excel(&t.summary_keys_explanation(
+                    &report.receiver_metavar,
+                    report.method_metavar.as_deref(),
+                    report.args_multi_metavar.as_deref(),
+                    &report.arg_single_metavars,
+                )),
+            )?;
+            if report.rows.is_empty() {
+                sheet.write(1, 0, truncate_for_excel(t.summary_no_match_rows()))?;
+            } else {
+                let has_method = report.method_metavar.is_some();
+                let max_arg = report.rows.iter().map(|r| r.arity).max().unwrap_or(0);
+                sheet.write_with_format(1, 0, t.summary_col_count(), &header_fmt)?;
+                sheet.write_with_format(1, 1, t.summary_col_receiver(), &header_fmt)?;
+                let arity_col: u16 = if has_method {
+                    sheet.write_with_format(1, 2, t.summary_col_method(), &header_fmt)?;
+                    sheet.write_with_format(1, 3, t.summary_col_arity(), &header_fmt)?;
+                    4
+                } else {
+                    sheet.write_with_format(1, 2, t.summary_col_arity(), &header_fmt)?;
+                    3
+                };
+                for i in 0..max_arg {
+                    sheet.write_with_format(1, arity_col + i as u16, t.summary_col_arg(i), &header_fmt)?;
+                }
+                let mut row = 2u32;
+                for vr in &report.rows {
+                    sheet.write(row, 0, vr.count as u32)?;
+                    sheet.write(row, 1, truncate_for_excel(&vr.receiver_display))?;
+                    if has_method {
+                        sheet.write(row, 2, truncate_for_excel(&vr.method_display))?;
+                        sheet.write(row, 3, vr.arity as u32)?;
+                        for i in 0..max_arg {
+                            let cell = if i < vr.arity {
+                                truncate_for_excel(&vr.arg_displays[i])
+                            } else {
+                                ""
+                            };
+                            sheet.write(row, 4 + i as u16, cell)?;
+                        }
+                    } else {
+                        sheet.write(row, 2, vr.arity as u32)?;
+                        for i in 0..max_arg {
+                            let cell = if i < vr.arity {
+                                truncate_for_excel(&vr.arg_displays[i])
+                            } else {
+                                ""
+                            };
+                            sheet.write(row, 3 + i as u16, cell)?;
+                        }
+                    }
+                    row += 1;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn export_batch_xlsx_with_views_to_file(
+    path: &std::path::Path,
+    report: &BatchReport,
+    views: &OutputViewSet,
+    lang: UiLanguage,
+) -> anyhow::Result<()> {
+    use rust_xlsxwriter::Workbook;
+
+    let t = Tr(lang);
+    let mut workbook = Workbook::new();
+    let mut sheet_index = 0usize;
+
+    for (i, run) in report.runs.iter().enumerate() {
+        if let Some(e) = &run.error {
+            let name = sanitize_excel_sheet_name(&format!("{i:02}_err_{}", run.label), sheet_index);
+            let sheet = workbook.add_worksheet();
+            sheet.set_name(&name)?;
+            sheet.write(0, 0, format!("ERROR: {e}"))?;
+            sheet_index += 1;
+            continue;
+        }
+
+        let results = materialized_results(&run.results, run.conditions.context_lines);
+
+        for view in views.iter() {
+            let suffix = view.cli_name();
+            let name = sanitize_excel_sheet_name(
+                &format!("{i:02}_{suffix}_{}", run.label),
+                sheet_index,
+            );
+            let sheet = workbook.add_worksheet();
+            sheet.set_name(&name)?;
+            match view {
+                OutputView::Code => write_code_xlsx_sheet(sheet, &results, t)?,
+                OutputView::Table => {
+                    write_table_xlsx_sheet(sheet, &results, &run.conditions, t)?
+                }
+                OutputView::Summary => write_summary_xlsx_sheet(sheet, run, t)?,
+            }
+            sheet_index += 1;
+        }
+    }
+
+    workbook.save(path)?;
+    Ok(())
+}
+
+/// ビュー指定付きでバッチレポートを出力する。`output` が None のとき文字列を返す（xlsx 除く）。
+pub fn export_batch_report_with_views(
+    report: &BatchReport,
+    views: &OutputViewSet,
+    format: OutputFormat,
+    lang: UiLanguage,
+    output: Option<&std::path::Path>,
+) -> anyhow::Result<Option<String>> {
+    match format {
+        OutputFormat::Text => {
+            let s = batch_report_to_text_with_views(report, views, lang);
+            if let Some(path) = output {
+                std::fs::write(path, s)?;
+                Ok(None)
+            } else {
+                Ok(Some(s))
+            }
+        }
+        OutputFormat::Json => {
+            let s = batch_report_to_json_with_views(report, views)?;
+            if let Some(path) = output {
+                std::fs::write(path, s)?;
+                Ok(None)
+            } else {
+                Ok(Some(s))
+            }
+        }
+        OutputFormat::Markdown => {
+            let s = batch_report_to_markdown_with_views(report, views, lang);
+            if let Some(path) = output {
+                std::fs::write(path, s)?;
+                Ok(None)
+            } else {
+                Ok(Some(s))
+            }
+        }
+        OutputFormat::Html => {
+            let s = batch_report_to_html_with_views(report, views, lang);
+            if let Some(path) = output {
+                std::fs::write(path, s)?;
+                Ok(None)
+            } else {
+                Ok(Some(s))
+            }
+        }
+        OutputFormat::Xlsx => {
+            let path = output.ok_or_else(|| anyhow::anyhow!("xlsx output requires --output"))?;
+            export_batch_xlsx_with_views_to_file(path, report, views, lang)?;
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]

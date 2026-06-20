@@ -8,6 +8,8 @@ use eframe::egui;
 use crate::batch::{
     BatchReport, BatchRunResult, BatchRunnerState, PatternJob, SINGLE_SEARCH_JOB_ID,
 };
+use crate::cli_config::BatchRunRequest;
+use crate::export::{export_batch_report_with_views, OutputFormat, OutputViewSet};
 use crate::file_encoding::{read_text_file_as, FileEncoding, FileEncodingPreference};
 use crate::highlight::Highlighter;
 use crate::i18n::{Tr, UiLanguage, UiLanguagePreference};
@@ -21,9 +23,9 @@ use crate::search::{
 };
 use crate::terminal::TerminalState;
 use crate::ui::{
-    batch_report_panel, code_panel, file_panel, help_popup, in_view_find::InViewFindState,
-    pattern_assist_popup, regex_visualizer_popup, rewrite_popup, status_bar, summary_panel,
-    table_panel, table_preview_popup, terminal_panel, toolbar,
+    batch_report_panel, cli_builder_panel, code_panel, file_panel, help_popup,
+    in_view_find::InViewFindState, pattern_assist_popup, regex_visualizer_popup, rewrite_popup,
+    status_bar, summary_panel, table_panel, table_preview_popup, terminal_panel, toolbar,
 };
 
 /// 表モードでダブルクリックしたファイルをコードビューと同じ表示で開く
@@ -210,6 +212,14 @@ impl Default for PersistedAppState {
 
 const APP_STATE_KEY: &str = "ast_grep_gui_app_state";
 
+/// バッチ完了後に自動エクスポートする設定（CLI 補助画面から）
+#[derive(Debug, Clone)]
+pub struct PendingBatchExport {
+    pub views: OutputViewSet,
+    pub format: OutputFormat,
+    pub output: PathBuf,
+}
+
 pub struct AstGrepApp {
     pub search_dir: String,
     pub pattern: String,
@@ -328,6 +338,12 @@ pub struct AstGrepApp {
     pub batch_report: Option<BatchReport>,
     /// `batch_jobs` のインデックス: ジョブ編集ウィンドウを開く
     pub batch_edit_list_index: Option<usize>,
+    /// コマンドライン補助画面
+    pub show_cli_builder: bool,
+    pub cli_builder: cli_builder_panel::CliBuilderState,
+    /// バッチ完了後の自動エクスポート
+    pub pending_batch_export: Option<PendingBatchExport>,
+    pub cli_export_note: Option<String>,
     /// 表モードの列幅（永続化と同期）
     pub table_column_widths: TableColumnWidths,
     /// コード／表／プレビュー内検索（Ctrl+F）
@@ -413,6 +429,10 @@ impl AstGrepApp {
             batch_runner: None,
             batch_report: None,
             batch_edit_list_index: None,
+            show_cli_builder: false,
+            cli_builder: cli_builder_panel::CliBuilderState::default(),
+            pending_batch_export: None,
+            cli_export_note: None,
             table_column_widths: persisted.table_column_widths,
             in_view_find: InViewFindState::default(),
             results_generation: 0,
@@ -562,7 +582,7 @@ impl AstGrepApp {
             self.ui_lang(),
             SINGLE_SEARCH_JOB_ID,
             tx,
-            ctx,
+            Some(ctx),
         );
     }
 
@@ -681,7 +701,7 @@ impl AstGrepApp {
             self.ui_lang(),
             job.id,
             tx,
-            ctx,
+            Some(ctx),
         );
     }
 
@@ -697,6 +717,70 @@ impl AstGrepApp {
         });
         self.search_state = SearchState::Done;
         self.view_mode = ViewMode::BatchReport;
+
+        if let (Some(report), Some(export)) =
+            (self.batch_report.as_ref(), self.pending_batch_export.take())
+        {
+            match export_batch_report_with_views(
+                report,
+                &export.views,
+                export.format,
+                self.ui_lang(),
+                Some(&export.output),
+            ) {
+                Ok(_) => {
+                    self.cli_export_note = Some(format!(
+                        "{} {}",
+                        self.tr().cli_builder_export_done(),
+                        export.output.display()
+                    ));
+                }
+                Err(e) => {
+                    self.cli_export_note = Some(format!(
+                        "{} {e}",
+                        self.tr().cli_builder_export_failed()
+                    ));
+                }
+            }
+        }
+    }
+
+    /// コマンドライン補助画面を開く
+    pub fn open_cli_builder(&mut self) {
+        self.cli_builder = cli_builder_panel::CliBuilderState::default();
+        self.show_cli_builder = true;
+    }
+
+    /// 補助画面の設定からバッチ検索を開始する
+    pub fn start_batch_from_cli_builder(
+        &mut self,
+        req: BatchRunRequest,
+    ) -> Result<(), String> {
+        if req.common.search_dir.trim().is_empty() {
+            return Err(self.tr().cli_builder_err_no_dir().to_string());
+        }
+        if req.format.requires_output_file() && req.output.is_none() {
+            return Err(self.tr().cli_builder_err_no_output().to_string());
+        }
+
+        let jobs = req
+            .jobs_from_patterns_file()
+            .map_err(|e| format!("{} {e}", self.tr().cli_builder_err_load_patterns()))?;
+        if jobs.is_empty() {
+            return Err(self.tr().cli_builder_err_no_patterns().to_string());
+        }
+
+        self.batch_jobs = jobs;
+        self.next_pattern_job_id = self.batch_jobs.len().saturating_add(1);
+
+        self.pending_batch_export = req.output.clone().map(|output| PendingBatchExport {
+            views: req.views.clone(),
+            format: req.format,
+            output,
+        });
+
+        self.start_batch_search();
+        Ok(())
     }
 
     /// 検索を停止する（チャンネルをドロップ）
@@ -1197,6 +1281,9 @@ impl eframe::App for AstGrepApp {
 
         // パターン支援ポップアップ
         pattern_assist_popup::show(self, ctx);
+
+        // コマンドライン補助
+        cli_builder_panel::show(self, ctx);
 
         // 正規表現 visualiser
         regex_visualizer_popup::show(self, ctx);

@@ -23,6 +23,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         report.runs.len(),
         report.failed_count(),
     ));
+    if let Some(note) = &app.cli_export_note {
+        ui.colored_label(egui::Color32::LIGHT_GREEN, note);
+    }
     ui.add_space(8.0);
 
     let sid = scroll_keyboard::scroll_area_persistent_id(ui, "batch_report_scroll");

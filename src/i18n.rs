@@ -2810,6 +2810,147 @@ impl Tr {
             UiLanguage::English => "Match any expression",
         }
     }
+
+    pub fn cli_builder_btn(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "⌨ CLI 補助",
+            UiLanguage::English => "⌨ CLI builder",
+        }
+    }
+    pub fn cli_builder_btn_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "1行1パターンのファイルから ast-grep-gui.exe --batch コマンドを組み立て、コピーまたは GUI 内で実行"
+            }
+            UiLanguage::English => {
+                "Build ast-grep-gui.exe --batch command from a one-pattern-per-line file; copy or run in GUI"
+            }
+        }
+    }
+    pub fn cli_builder_title(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "コマンドライン補助",
+            UiLanguage::English => "CLI builder",
+        }
+    }
+    pub fn cli_builder_description(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "パターンファイルと出力設定から ast-grep-gui.exe --batch コマンドを生成します。実行は GUI 内のバッチ検索として行われます。"
+            }
+            UiLanguage::English => {
+                "Generate an ast-grep-gui.exe --batch command from a pattern file and export settings. Run executes as in-GUI batch search."
+            }
+        }
+    }
+    pub fn cli_builder_patterns_file(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "パターンファイル",
+            UiLanguage::English => "Pattern file",
+        }
+    }
+    pub fn cli_builder_patterns_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "1行1パターン（# でコメント）",
+            UiLanguage::English => "One pattern per line (# comments)",
+        }
+    }
+    pub fn cli_builder_output_file(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "出力ファイル",
+            UiLanguage::English => "Output file",
+        }
+    }
+    pub fn cli_builder_output_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "省略可（xlsx は必須）",
+            UiLanguage::English => "Optional (required for xlsx)",
+        }
+    }
+    pub fn cli_builder_views_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "出力ビュー",
+            UiLanguage::English => "Output views",
+        }
+    }
+    pub fn cli_builder_format_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "出力形式",
+            UiLanguage::English => "Output format",
+        }
+    }
+    pub fn cli_builder_inherited_settings(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ツールバーの設定（ディレクトリ・言語など）を使用",
+            UiLanguage::English => "Uses toolbar settings (directory, language, etc.)",
+        }
+    }
+    pub fn cli_builder_command_preview(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "コマンドプレビュー",
+            UiLanguage::English => "Command preview",
+        }
+    }
+    pub fn cli_builder_copy(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "コピー",
+            UiLanguage::English => "Copy",
+        }
+    }
+    pub fn cli_builder_copied(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "クリップボードにコピーしました",
+            UiLanguage::English => "Copied to clipboard",
+        }
+    }
+    pub fn cli_builder_run(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "この設定で実行",
+            UiLanguage::English => "Run with these settings",
+        }
+    }
+    pub fn cli_builder_run_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "パターンファイルを読み込み、GUI 内でバッチ検索を開始",
+            UiLanguage::English => "Load pattern file and start batch search in GUI",
+        }
+    }
+    pub fn cli_builder_err_no_dir(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索ディレクトリを指定してください",
+            UiLanguage::English => "Set a search directory first",
+        }
+    }
+    pub fn cli_builder_err_no_output(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "xlsx 出力には出力ファイルが必要です",
+            UiLanguage::English => "Output file is required for xlsx",
+        }
+    }
+    pub fn cli_builder_err_load_patterns(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "パターンファイルの読み込みに失敗:",
+            UiLanguage::English => "Failed to read pattern file:",
+        }
+    }
+    pub fn cli_builder_err_no_patterns(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "有効なパターンがありません",
+            UiLanguage::English => "No valid patterns found",
+        }
+    }
+    pub fn cli_builder_export_done(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "エクスポート完了:",
+            UiLanguage::English => "Export complete:",
+        }
+    }
+    pub fn cli_builder_export_failed(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "エクスポート失敗:",
+            UiLanguage::English => "Export failed:",
+        }
+    }
 }
 
 impl From<UiLanguage> for Tr {

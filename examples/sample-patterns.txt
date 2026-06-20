@@ -1,0 +1,3 @@
+# Sample patterns for ast-grep-gui.exe --batch
+fn $NAME($$$ARGS)
+pub fn $NAME

@@ -554,9 +554,14 @@ pub fn spawn_search(
     ui_lang: UiLanguage,
     job_id: usize,
     tx: Sender<SearchMessage>,
-    egui_ctx: egui::Context,
+    egui_ctx: Option<egui::Context>,
 ) {
     std::thread::spawn(move || {
+        let repaint = |ctx: &Option<egui::Context>| {
+            if let Some(c) = ctx {
+                c.request_repaint();
+            }
+        };
         let start = Instant::now();
         let pattern_str = Arc::new(pattern);
         // 大文字小文字を区別しないときだけリテラル正規表現を使う（`regex` は look-around 非対応のため、
@@ -572,7 +577,7 @@ pub fn spawn_search(
                     Err(e) => {
                         let msg = Tr(ui_lang).err_regex_compile(e);
                         let _ = tx.send(SearchMessage::Error { job_id, msg });
-                        egui_ctx.request_repaint();
+                        repaint(&egui_ctx);
                         return;
                     }
                 }
@@ -592,7 +597,7 @@ pub fn spawn_search(
                 Err(e) => {
                     let msg = Tr(ui_lang).err_regex_compile(e);
                     let _ = tx.send(SearchMessage::Error { job_id, msg });
-                    egui_ctx.request_repaint();
+                    repaint(&egui_ctx);
                     return;
                 }
             }
@@ -608,7 +613,7 @@ pub fn spawn_search(
                     job_id,
                     msg: "パターンが空です".into(),
                 });
-                egui_ctx.request_repaint();
+                repaint(&egui_ctx);
                 return;
             }
             let regex_pattern = tokens
@@ -621,7 +626,7 @@ pub fn spawn_search(
                 Err(e) => {
                     let msg = Tr(ui_lang).err_regex_compile(e);
                     let _ = tx.send(SearchMessage::Error { job_id, msg });
-                    egui_ctx.request_repaint();
+                    repaint(&egui_ctx);
                     return;
                 }
             }
@@ -750,7 +755,7 @@ pub fn spawn_search(
                         job_id,
                         scanned: count,
                     });
-                    egui_ctx.request_repaint();
+                    repaint(&egui_ctx);
                 }
 
                 let lines: Vec<&str> = source.lines().collect();
@@ -1042,7 +1047,7 @@ pub fn spawn_search(
                             matches,
                         },
                     });
-                    egui_ctx.request_repaint();
+                    repaint(&egui_ctx);
                 }
             });
 
@@ -1059,8 +1064,78 @@ pub fn spawn_search(
             elapsed_ms,
             hit_limit_reached,
         });
-        egui_ctx.request_repaint();
+        repaint(&egui_ctx);
     });
+}
+
+/// 1ジョブ分の検索を同期的に実行し、結果を返す（CLI / バッチ同期実行用）
+pub fn run_search_sync(
+    cond: &SearchConditions,
+    job_id: usize,
+    label: String,
+    ui_lang: UiLanguage,
+) -> crate::batch::BatchRunResult {
+    let (tx, rx) = search_message_channel();
+    spawn_search(
+        cond.search_dir.clone(),
+        cond.pattern.clone(),
+        cond.selected_lang,
+        cond.search_mode,
+        cond.plain_text_options,
+        cond.context_lines,
+        cond.file_filter.clone(),
+        cond.file_encoding_preference,
+        cond.max_file_size_mb * 1024 * 1024,
+        cond.max_search_hits,
+        cond.skip_dirs.clone(),
+        cond.cpp_include_dirs.clone(),
+        cond.type_hints_enabled,
+        ui_lang,
+        job_id,
+        tx,
+        None,
+    );
+
+    let mut results = Vec::new();
+    let mut stats = SearchStats::default();
+    let mut error = None;
+
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            SearchMessage::FileResult { file, .. } => {
+                stats.total_matches += file.matches.len();
+                stats.total_files += 1;
+                results.push(file);
+            }
+            SearchMessage::Progress { scanned, .. } => {
+                stats.scanned = scanned;
+            }
+            SearchMessage::Done {
+                elapsed_ms,
+                hit_limit_reached,
+                ..
+            } => {
+                stats.elapsed_ms = elapsed_ms;
+                stats.hit_limit_reached = hit_limit_reached;
+                break;
+            }
+            SearchMessage::Error { msg, .. } => {
+                error = Some(msg);
+                break;
+            }
+        }
+    }
+
+    refresh_match_contexts(&mut results, cond.context_lines);
+
+    crate::batch::BatchRunResult {
+        job_id,
+        label,
+        conditions: cond.clone(),
+        results,
+        stats,
+        error,
+    }
 }
 
 /// 0-based の行範囲について、前後 `context_lines` 行分のコンテキストを取り出す
@@ -1769,7 +1844,7 @@ pub struct SearchConditions {
     pub type_hints_enabled: bool,
 }
 
-pub(crate) fn default_max_search_hits() -> usize {
+pub fn default_max_search_hits() -> usize {
     100_000
 }
 

@@ -25,6 +25,8 @@ It is designed to make structural code search easier for users who prefer a visu
 - Auto text encoding detection with `chardetng`, plus manual `UTF-8`, `UTF-16 LE`, `UTF-16 BE`, `Shift_JIS`, `EUC-JP`, `JIS`, `GBK`, `Big5`, `EUC-KR`, and `Latin1` family overrides
 - Built-in terminal panel for PowerShell commands and `sg run`-style searches
 - **In-document find** (**Ctrl+F**) in the code view, table view, and file preview popup: literal substring search (with optional case sensitivity), previous/next match, scroll sync, and **highlighting** of all hits (the active hit is emphasized)
+- **Single-exe `--batch` mode** for large-scale batch search from a one-pattern-per-line file
+- **GUI CLI builder** to compose CLI commands, copy them, or run the same settings inside the GUI
 
 ## Supported Languages
 
@@ -64,6 +66,82 @@ To build the Windows release binary explicitly:
 ```powershell
 cargo build --release --target x86_64-pc-windows-msvc
 ```
+
+Batch mode uses the same executable with `--batch` (no separate binary).
+
+## Command-Line Batch Search
+
+Run many AST patterns without opening the GUI. Provide **one pattern per line** in a text file.
+
+### Pattern file example (`patterns.txt`)
+
+```text
+# Comments and blank lines are ignored
+fn $NAME($$$ARGS)
+$VAR.unwrap()
+console.log($$$ARGS)
+```
+
+### Basic command
+
+```powershell
+cargo run -- --batch `
+  --patterns patterns.txt `
+  --dir C:\path\to\repo `
+  --lang rust `
+  --view table `
+  --format json `
+  --output result.json
+```
+
+### Output views
+
+| View | Description |
+|------|-------------|
+| `code` | Code-view style (per file, with surrounding context) |
+| `table` | Table view (full rows with type-hint columns) |
+| `summary` | Summary (type-hint variation aggregation) |
+
+Combine views with `--view code,summary`. For Excel (`xlsx`), **one workbook** contains separate sheets per view.
+
+```powershell
+cargo run -- --batch `
+  --patterns patterns.txt `
+  --dir C:\path\to\repo `
+  --lang cpp `
+  --view code,summary `
+  --format xlsx `
+  --output report.xlsx
+```
+
+### Main options
+
+| Option | Description |
+|--------|-------------|
+| `--patterns` | One-pattern-per-line input file |
+| `--dir` | Search root directory |
+| `--lang` | Language (`auto`, `rust`, `cpp`, …) |
+| `--view` | `code` / `table` / `summary` (comma-separated) |
+| `--format` | `text` / `json` / `markdown` / `html` / `xlsx` |
+| `--output` | Output path (required in batch mode) |
+| `--context` | Context lines (default: 2) |
+| `--filter` | File name filter (`;`-separated globs) |
+| `--skip-dirs` | Directory names to skip (`;`-separated) |
+| `--max-hits` | Max hits per pattern (0 = unlimited) |
+| `--include-dirs` | C++ include paths for type hints |
+| `--no-type-hints` | Disable type-hint inference |
+
+## GUI CLI Builder
+
+Open **⌨ CLI builder** in the toolbar **Batch jobs** section to compose the same CLI from the GUI.
+
+1. Choose a **pattern file** and optional **output file** (required for `xlsx`)
+2. Select **output views** (code / table / summary) and **format**
+3. Review the **command preview**, then **Copy** or **Run with these settings**
+4. Runs execute as in-GUI batch search; review results in **Batch report**
+5. If an output file was set, export runs automatically when the batch finishes
+
+Search directory, language, and advanced settings come from the main toolbar.
 
 ## Usage
 
@@ -121,7 +199,10 @@ When the pattern includes metavariables used for type hints, `JSON`, `Markdown`,
 ## Project Structure
 
 ```text
-src/main.rs              Application entry point
+src/lib.rs               Shared library for GUI and CLI
+src/main.rs              GUI entry point
+src/cli_runner.rs          `--batch` CLI batch runner
+src/cli_config.rs        Shared CLI / GUI builder settings
 src/app.rs               App state and main UI flow
 src/search.rs            Background search engine
 src/ast_pattern.rs       Pattern compilation strategies (contextual call support)
@@ -135,6 +216,7 @@ src/regex_visualizer.rs  Regex tokenizer for the visualizer feature
 src/help_html.rs         Opens embedded HTML help in the OS browser
 src/terminal.rs          Built-in terminal state
 src/sg_command.rs        Parses `sg run`-style terminal commands
+src/ui/cli_builder_panel.rs  CLI builder popup
 src/ui/                  GUI panels and popups
 assets/help/             Embedded pattern help HTML pages
 ```
