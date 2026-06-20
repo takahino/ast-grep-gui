@@ -19,6 +19,7 @@ use crate::file_encoding::{
 use crate::i18n::{Tr, UiLanguage};
 use crate::lang::SupportedLanguage;
 use crate::receiver_hint;
+use crate::type_hint_config::TypeHintConfig;
 
 /// 検索モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -619,6 +620,7 @@ pub fn spawn_search(
     // C++ 型ヒント用（`;` 区切り）。空なら `#include` は従来どおりソースの親のみ。
     cpp_include_dirs_str: String,
     type_hints_enabled: bool,
+    type_hint_config: Arc<TypeHintConfig>,
     ui_lang: UiLanguage,
     job_id: usize,
     tx: Sender<SearchMessage>,
@@ -717,6 +719,7 @@ pub fn spawn_search(
                 .map(PathBuf::from)
                 .collect(),
         );
+        let type_hint_config = Arc::clone(&type_hint_config);
 
         let hint_job_cache = Arc::new(receiver_hint::RecvHintJobCache::new());
 
@@ -922,6 +925,7 @@ pub fn spawn_search(
                                         source: source.as_str(),
                                         cpp_include_dirs: cpp_include_paths.as_ref().as_slice(),
                                         job_cache: Some(hint_cache.as_ref()),
+                                        type_hint_config: Some(type_hint_config.as_ref()),
                                     };
                                     let mut updates = Vec::with_capacity(out.len());
                                     for (idx, node) in
@@ -1147,6 +1151,7 @@ pub fn run_search_sync(
     job_id: usize,
     label: String,
     ui_lang: UiLanguage,
+    type_hint_config: Arc<TypeHintConfig>,
 ) -> crate::batch::BatchRunResult {
     let mut cond = cond.clone();
     match crate::remote_fetch::resolve_search_dir_from_conditions(&cond, false) {
@@ -1178,6 +1183,7 @@ pub fn run_search_sync(
         cond.skip_dirs.clone(),
         cond.cpp_include_dirs.clone(),
         cond.type_hints_enabled,
+        type_hint_config,
         ui_lang,
         job_id,
         tx,

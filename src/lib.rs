@@ -20,5 +20,6 @@ pub mod search_target;
 pub mod sg_command;
 pub mod svn_remote;
 pub mod terminal;
+pub mod type_hint_config;
 pub mod ui;
 pub mod vcs_cache;

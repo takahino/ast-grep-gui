@@ -16,7 +16,7 @@ It is designed to make structural code search easier for users who prefer a visu
 - Search modes for `AST`, `Token`, plain text, and regex
 - Auto language detection by file extension for mixed-language repositories
 - Code view, table view (with double-click preview popup), **Summary** view (aggregates type-hint variations: receiver type, call arity, and per-argument types—plus a method column when the pattern exposes one), and **batch report** view (run multiple patterns with per-job settings, then review an aggregated report)
-- Best-effort type hints in search results for supported languages: one column per single metavariable (`$NAME`), and for multi-node captures (`$$$ARGS`, etc.) a count column (`ARGS#arity`) plus one column per captured node (`ARGS#0`, `ARGS#1`, …). **C++** can follow `#include` into headers on disk; **Advanced settings** (AST-related modes) let you add semicolon-separated **include directories** (compiler `-I` equivalent) so system or SDK headers resolve for hints.
+- Best-effort type hints in search results for supported languages: one column per single metavariable (`$NAME`), and for multi-node captures (`$$$ARGS`, etc.) a count column (`ARGS#arity`) plus one column per captured node (`ARGS#0`, `ARGS#1`, …). **C++** can follow `#include` into headers on disk; **Advanced settings** (AST-related modes) let you add semicolon-separated **include directories** (compiler `-I` equivalent) so system or SDK headers resolve for hints. **Type-hint assist rules** (YAML) let you register method return types, macros, constants, fields, binary operators, and more.
 - Pattern help, presets, snippet-based pattern assist, and **pattern input history** (up to 30 entries)
 - Optional **incremental search** that automatically reruns after you stop typing for a short delay
 - Built-in **regex visualizer** to inspect and test regular expressions interactively
@@ -206,7 +206,7 @@ With the code panel, table view, or file preview focused, press **Ctrl+F** to op
 ### AST Pattern Tips
 
 - Use meta variables such as `$VAR`, `$$$ARGS`, and `$_`
-- When a pattern includes metavariables that capture code, the app computes type hints (syntax-based, best-effort): single metavariables (`$RECV`, `$VAR`, …) get one column each; multi-node metavariables (`$$$ARGS`, …) get a `NAME#arity` column (number of captured nodes, e.g. call arity) and `NAME#0`, `NAME#1`, … for each captured node’s inferred type. Anonymous `$$$` / `$$$_` are not listed as columns. For **C++**, set **include directories** in Advanced settings if types exist only in headers outside the current file’s directory (e.g. `#include <vector>`).
+- When a pattern includes metavariables that capture code, the app computes type hints (syntax-based, best-effort): single metavariables (`$RECV`, `$VAR`, …) get one column each; multi-node metavariables (`$$$ARGS`, …) get a `NAME#arity` column (number of captured nodes, e.g. call arity) and `NAME#0`, `NAME#1`, … for each captured node’s inferred type. Anonymous `$$$` / `$$$_` are not listed as columns. For **C++**, set **include directories** in Advanced settings if types exist only in headers outside the current file’s directory (e.g. `#include <vector>`). Right-click a type-hint cell in the **table** or **summary** view and choose **Add type-hint rule…** to open the settings window with fields prefilled from the hit—both unresolved cells (`?`, including parenthesized expressions such as `(1 + 2)` for `$RECV`) and inferred **class.method** labels such as `CTime.Format`. For **methods** rules, **arity** and argument types are prefilled from the same row when available.
 - Open the built-in help popup for examples and presets
 - Use the pattern assist dialog to generate candidate patterns from a code snippet
 
@@ -217,6 +217,66 @@ fn $NAME($$$ARGS)
 $VAR.unwrap()
 console.log($$$ARGS)
 ```
+
+### Type-hint assist rules (C++ / YAML)
+
+When type hints are enabled in AST-related modes, open **Type-hint assist…** under **Advanced settings** to edit C++ assist rules in the GUI. The same window supports **Load** / **Save** YAML files. Rules persist across app restarts (the last saved YAML path is remembered when you save manually). In the editor, enter **`params` one type per line** (e.g. `LPCTSTR` on its own line); YAML files still use a `params` array.
+
+| Category | Example use |
+|----------|-------------|
+| `methods` | `CString.GetLength` → `int` (overload resolution via `arity` / `params`) |
+| `functions` | `MAKEINTRESOURCE(int)` → `LPCTSTR` |
+| `macros` | `_T("abc")` → `LPCTSTR` |
+| `constants` | `IDC_OK` → `int`, `WM_USER` → `UINT` |
+| `fields` | `CWnd.m_hWnd` → `HWND` |
+| `binary_ops` | `"abc" + CString` → `CString`, `LPCTSTR + CString` → `CString` |
+
+Example config (`type-hint-config.yaml`):
+
+```yaml
+version: 1
+cpp:
+  methods:
+    - class: CString
+      method: GetLength
+      arity: 0
+      returns: int
+    - class: CTime
+      method: Format
+      params: [LPCTSTR]
+      returns: CString
+  functions:
+    - name: MAKEINTRESOURCE
+      params: [int]
+      returns: LPCTSTR
+  macros:
+    - name: _T
+      arity: 1
+      returns: LPCTSTR
+  constants:
+    - name: IDC_OK
+      type: int
+    - name: WM_USER
+      type: UINT
+  fields:
+    - class: CWnd
+      field: m_hWnd
+      type: HWND
+  binary_ops:
+    - op: "+"
+      lhs: StringLiteral
+      rhs: CString
+      returns: CString
+    - op: "+"
+      lhs: LPCTSTR
+      rhs: CString
+      returns: CString
+```
+
+- YAML rules take **priority** over source/header inference (the built-in logic still applies as a fallback).
+- Numeric binary expressions such as `(nSel + 1) * 100` are inferred as `int` when local variable types are known (no rule required in many cases).
+- Expressions like `"abc" + x` can be pointer arithmetic in C++; use `binary_ops` explicitly, or rely on resolution only when one side’s type is known.
+- **Re-run the search** after changing rules so type-hint columns update.
 
 ## Search Modes
 
@@ -257,7 +317,8 @@ src/vcs_cache.rs         Remote fetch cache paths and markers
 src/git_remote.rs        Git clone via gix (no git CLI)
 src/svn_remote.rs        SVN export via svn crate / WebDAV (no svn CLI)
 src/ast_pattern.rs       Pattern compilation strategies (contextual call support)
-src/receiver_hint.rs     Best-effort metavariable type hints (per language; C++ can use extra include paths)
+src/receiver_hint.rs     Best-effort metavariable type hints (per language; C++ can use extra include paths and assist YAML)
+src/type_hint_config.rs  Type-hint assist rule YAML schema, lookup, and draft generation
 src/lang.rs              Language definitions and presets
 src/pattern_assist.rs    Snippet-to-pattern suggestions
 src/export.rs            Exporters
@@ -268,6 +329,7 @@ src/help_html.rs         Opens embedded HTML help in the OS browser
 src/terminal.rs          Built-in terminal state
 src/sg_command.rs        Parses `sg run`-style terminal commands
 src/ui/cli_builder_panel.rs  CLI builder popup
+src/ui/type_hint_config_panel.rs  Type-hint assist settings window
 src/ui/                  GUI panels and popups
 assets/help/             Embedded pattern help HTML pages
 ```
@@ -276,7 +338,7 @@ assets/help/             Embedded pattern help HTML pages
 
 - The app currently targets Windows-focused distribution.
 - Column offsets for highlighted matches are byte-based, so multibyte text can still have edge cases.
-- Search settings, remote URL/ref/subdir, C++ include paths (Advanced), and pattern history are persisted between launches.
+- Search settings, remote URL/ref/subdir, C++ include paths (Advanced), **type-hint assist rules** (YAML content and last saved path), and pattern history are persisted between launches.
 - Remote fetch cache lives under `%LOCALAPPDATA%\ast-grep-gui\vcs-cache` on Windows.
 
 ## Recent updates (excerpt)
@@ -286,6 +348,7 @@ User-facing changes from recent development (see `git log` for the full history)
 - **Remote Git/SVN search:** search by remote URL without a local clone/checkout; optional ref/revision and subdirectory; local cache with refresh.
 - **Open in default app:** open matched files from the file list, code header, or table action column.
 - **C++ type hints:** optional **include directories** (`-I`-style, semicolon-separated) in Advanced settings so `#include` resolution can reach system or SDK headers.
+- **Type-hint assist rules:** register C++ method/macro/constant/field/binary-op types via YAML; GUI editor, YAML load/save, and right-click from **table** or **summary** type-hint cells (unresolved or inferred `Class.Method` labels) to open the settings window with prefilled fields (including arity/params for methods). GUI `params` use one type per line.
 - **Summary view:** aggregates inferred receiver types, arity, and per-argument types (and a method column when the pattern exposes one).
 - **Table view:** resizable type-hint columns, sticky header, keyboard horizontal scroll, and clearer empty vs unknown hint cells.
 - **In-document find (Ctrl+F):** search within the current code, table, or preview; hit highlighting and navigation between matches.

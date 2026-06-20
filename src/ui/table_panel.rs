@@ -3,7 +3,20 @@ use egui::{Align, Color32, FontId, Label, Rect, RichText, Sense, Ui, Vec2};
 use crate::app::{AstGrepApp, TableColumnWidths, TablePreviewState, TableRowRef};
 use crate::highlight::build_layout_job_from_line;
 use crate::search::{FileResult, MatchItem, TypeHintCell, UnknownHintDetail};
+use crate::type_hint_config::{
+    call_context_from_column_keys, draft_from_hint_cell, enrich_method_draft_from_call_context,
+    hint_rule_draft_source_from_display,
+};
 use crate::ui::{code_layout, in_view_find, scroll_keyboard};
+
+struct TableHintCellUi {
+    display: RichText,
+    tooltip: String,
+    column_key: String,
+    can_add_type_hint_rule: bool,
+    rule_draft_kind_label: String,
+    rule_draft_snippet: String,
+}
 
 /// 列間のドラッグ用（Excel の境界に相当）
 const RESIZE_HANDLE_W: f32 = 6.0;
@@ -188,6 +201,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let mut send_to_assist: Option<String> = None;
     let mut open_external_path: Option<std::path::PathBuf> = None;
     let mut open_table_preview: Option<TablePreviewState> = None;
+    let mut open_type_hint_draft: Option<crate::type_hint_config::PendingTypeHintRuleDraft> = None;
 
     ui.label(
         egui::RichText::new(t.table_double_click_hint())
@@ -379,7 +393,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                 )
                             };
 
-                            let hint_cells: Vec<(RichText, String)> = column_keys
+                            let hint_cells: Vec<TableHintCellUi> = column_keys
                                 .iter()
                                 .map(|key| match m.type_hint_cell(key) {
                                     TypeHintCell::Inferred(s) => {
@@ -388,19 +402,35 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         } else {
                                             s.clone()
                                         };
-                                        (
-                                            RichText::new(display)
+                                        let src = hint_rule_draft_source_from_display(&s);
+                                        let can_add = src.is_some();
+                                        TableHintCellUi {
+                                            display: RichText::new(display)
                                                 .monospace()
                                                 .color(Color32::from_rgb(220, 200, 100)),
-                                            s,
-                                        )
+                                            tooltip: s.clone(),
+                                            column_key: key.clone(),
+                                            can_add_type_hint_rule: can_add,
+                                            rule_draft_kind_label: src
+                                                .as_ref()
+                                                .map(|x| x.kind_label.clone())
+                                                .unwrap_or_default(),
+                                            rule_draft_snippet: src
+                                                .as_ref()
+                                                .map(|x| x.snippet.clone())
+                                                .unwrap_or_default(),
+                                        }
                                     }
-                                    TypeHintCell::NoSlot => (
-                                        RichText::new("·")
-                                            .monospace()
-                                            .color(Color32::from_rgb(130, 135, 150)),
-                                        t.table_type_hint_no_slot_tooltip(key),
-                                    ),
+                                    TypeHintCell::NoSlot => TableHintCellUi {
+                                            display: RichText::new("·")
+                                                .monospace()
+                                                .color(Color32::from_rgb(130, 135, 150)),
+                                            tooltip: t.table_type_hint_no_slot_tooltip(key),
+                                            column_key: key.clone(),
+                                            can_add_type_hint_rule: false,
+                                            rule_draft_kind_label: String::new(),
+                                            rule_draft_snippet: String::new(),
+                                        },
                                     TypeHintCell::Unknown(detail) => {
                                         let q = Color32::from_rgb(200, 145, 90);
                                         let (rt, hover_body) = match &detail {
@@ -425,7 +455,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         } else {
                                             format!("{tip_base}\n\n{hover_body}")
                                         };
-                                        (rt, tip)
+                                        let (draft_kind, draft_snippet) = match &detail {
+                                            None => (String::new(), String::new()),
+                                            Some(d) => (d.kind_label.clone(), d.source_snippet.clone()),
+                                        };
+                                        TableHintCellUi {
+                                            display: rt,
+                                            tooltip: tip,
+                                            column_key: key.clone(),
+                                            can_add_type_hint_rule: true,
+                                            rule_draft_kind_label: draft_kind,
+                                            rule_draft_snippet: draft_snippet,
+                                        }
                                     }
                                 })
                                 .collect();
@@ -487,13 +528,50 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     resize_spacer(ui, row_height);
 
                                     let mut r_hint_cols: Vec<egui::Response> = Vec::new();
-                                    for (hi, (disp, hov)) in hint_cells.iter().enumerate() {
-                                        let hw = flat[5 + hi];
-                                        r_hint_cols.push(
-                                            label_cell(ui, hw, disp.clone(), Sense::click())
-                                                .on_hover_text(hov.as_str()),
-                                        );
-                                        if hi + 1 < hint_cells.len() {
+                                    for cell in &hint_cells {
+                                        let hw = flat[5 + r_hint_cols.len()];
+                                        let response = label_cell(
+                                            ui,
+                                            hw,
+                                            cell.display.clone(),
+                                            Sense::click(),
+                                        )
+                                        .on_hover_text(cell.tooltip.as_str());
+                                        if cell.can_add_type_hint_rule {
+                                            let col_key = cell.column_key.clone();
+                                            let kind_label = cell.rule_draft_kind_label.clone();
+                                            let snippet = cell.rule_draft_snippet.clone();
+                                            let rel = relative_path.clone();
+                                            let line = line_start;
+                                            let keys = column_keys.clone();
+                                            let match_item = m.clone();
+                                            response.context_menu(|ui| {
+                                                if ui
+                                                    .button(t.table_add_type_hint_rule())
+                                                    .on_hover_text(t.table_add_type_hint_rule_tooltip())
+                                                    .clicked()
+                                                {
+                                                    let mut draft = draft_from_hint_cell(
+                                                        &col_key,
+                                                        &kind_label,
+                                                        &snippet,
+                                                        &rel,
+                                                        line,
+                                                    );
+                                                    let (arity, args) = call_context_from_column_keys(
+                                                        &keys,
+                                                        |k| match_item.type_hint_display_value(k),
+                                                    );
+                                                    enrich_method_draft_from_call_context(
+                                                        &mut draft, arity, &args,
+                                                    );
+                                                    open_type_hint_draft = Some(draft);
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                        }
+                                        r_hint_cols.push(response);
+                                        if r_hint_cols.len() < hint_cells.len() {
                                             resize_spacer(ui, row_height);
                                         }
                                     }
@@ -594,5 +672,9 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 
     if let Some(preview) = open_table_preview {
         app.table_preview = Some(preview);
+    }
+
+    if let Some(draft) = open_type_hint_draft {
+        app.open_type_hint_config_with_draft(draft);
     }
 }

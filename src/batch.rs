@@ -1,12 +1,14 @@
 //! 複数パターンのバッチ検索用のデータモデル
 
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::cli_config::BatchCommonOptions;
 use crate::file_encoding::FileEncodingPreference;
 use crate::lang::SupportedLanguage;
 use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
 use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+use crate::type_hint_config::TypeHintConfig;
 
 /// 単一検索で使う予約 `job_id`（バッチジョブは 1 から採番）
 pub const SINGLE_SEARCH_JOB_ID: usize = 0;
@@ -290,6 +292,7 @@ pub fn jobs_from_pattern_lines(
 pub fn run_batch_sync(
     jobs: &[PatternJob],
     ui_lang: crate::i18n::UiLanguage,
+    type_hint_config: Arc<TypeHintConfig>,
 ) -> BatchReport {
     let started = std::time::Instant::now();
     let runs: Vec<BatchRunResult> = jobs
@@ -301,6 +304,7 @@ pub fn run_batch_sync(
                 job.id,
                 job.label.clone(),
                 ui_lang,
+                Arc::clone(&type_hint_config),
             )
         })
         .collect();

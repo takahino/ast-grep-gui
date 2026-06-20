@@ -11,6 +11,7 @@ use ast_grep_core::{Doc, Node};
 use ast_grep_language::{LanguageExt, SupportLang};
 
 use crate::lang::SupportedLanguage;
+use crate::type_hint_config::TypeHintConfig;
 
 macro_rules! cpp_ast_grep_with_profile {
     ($cache:expr, $source:expr) => {{
@@ -257,6 +258,8 @@ pub struct RecvHintContext<'a> {
     pub cpp_include_dirs: &'a [PathBuf],
     /// 検索ジョブ内共有キャッシュ（C++ include 読み込み・メンバ検索の再利用）。
     pub job_cache: Option<&'a RecvHintJobCache>,
+    /// YAML 等で読み込んだ型ヒント補助ルール。
+    pub type_hint_config: Option<&'a TypeHintConfig>,
 }
 
 /// パターンの `$RECV` に対応するノードから型ヒント文字列を返す。
@@ -378,6 +381,21 @@ fn infer_capture_type_inner<D: Doc>(
     if lang == SupportedLanguage::Auto {
         return None;
     }
+    if lang == SupportedLanguage::Cpp {
+        if node.kind().as_ref() == "parenthesized_expression" {
+            if let Some(inner) = node.children().find(|c| c.is_named()) {
+                return infer_capture_type_inner(lang, _capture_name, &inner, ctx);
+            }
+        }
+        if let Some(c) = ctx {
+            if let Some(ty) = cpp_config_call_return(node, c) {
+                return Some(ty);
+            }
+            if let Some(ty) = cpp_binary_result_type(node, Some(c)) {
+                return Some(ty);
+            }
+        }
+    }
     // `$RECV` が `time.Format(...)` のような `call_expression` のときは、左端の `CTime` ではなく `CTime.Format` を優先
     if lang == SupportedLanguage::Cpp && _capture_name == "RECV" {
         if let Some(l) = cpp_recv_receiver_method_label(node, ctx) {
@@ -447,6 +465,11 @@ fn cpp_field_type_for_class_in_sources(
     class_name: &str,
     field_name: &str,
 ) -> Option<String> {
+    if let Some(config) = ctx.type_hint_config {
+        if let Some(ty) = config.lookup_cpp_field_type(class_name, field_name) {
+            return Some(ty);
+        }
+    }
     if let Some(cache) = ctx.job_cache {
         if let Some(cached) = cache.lookup_field(ctx.file_path, class_name, field_name, true) {
             return cached;
@@ -630,7 +653,13 @@ fn cpp_method_return_for_class_in_sources(
     ctx: &RecvHintContext<'_>,
     class_name: &str,
     method_name: &str,
+    arg_types: &[String],
 ) -> Option<String> {
+    if let Some(config) = ctx.type_hint_config {
+        if let Some(ty) = config.lookup_cpp_method_return(class_name, method_name, arg_types) {
+            return Some(ty);
+        }
+    }
     if let Some(cache) = ctx.job_cache {
         if let Some(cached) = cache.lookup_method(ctx.file_path, class_name, method_name, true) {
             return cached;
@@ -690,6 +719,9 @@ fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) 
         return cpp_field_type_for_class_in_sources(ctx, class_name.as_str(), field_name.as_str());
     }
     if k == "call_expression" {
+        if let Some(ty) = cpp_config_call_return(node, ctx) {
+            return Some(ty);
+        }
         let func = node.field("function")?;
         if func.kind().as_ref() == "field_expression" {
             let arg = func.field("argument")?;
@@ -697,10 +729,12 @@ fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) 
             let method_name = field.text().trim().to_string();
             let arg_ty = cpp_chain_result_type(&arg, ctx).or_else(|| cpp_hint(&arg, Some(ctx)))?;
             let class_name = cpp_simplify_type_name(&arg_ty);
+            let arg_types = cpp_collect_call_arg_types(node, ctx);
             return cpp_method_return_for_class_in_sources(
                 ctx,
                 class_name.as_str(),
                 method_name.as_str(),
+                arg_types.as_slice(),
             );
         }
     }
@@ -2080,6 +2114,18 @@ fn cpp_field_from_included_headers<D: Doc>(
 }
 
 fn cpp_hint<D: Doc>(recv: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Option<String> {
+    let kind_k = recv.kind();
+    let k = kind_k.as_ref();
+    if matches!(k, "identifier" | "qualified_identifier" | "field_identifier") {
+        let name = recv.text().trim().to_string();
+        if let Some(ctx) = ctx {
+            if let Some(config) = ctx.type_hint_config {
+                if let Some(ty) = config.lookup_cpp_constant_type(name.as_str()) {
+                    return Some(ty);
+                }
+            }
+        }
+    }
     let t = cpp_recv_base_name(recv);
     if t == "this" {
         return cpp_class_name(recv);
@@ -2097,8 +2143,222 @@ fn cpp_hint<D: Doc>(recv: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Op
         if let Some(ty) = cpp_field_from_included_headers(ctx, recv, &t) {
             return Some(ty);
         }
+        if let Some(config) = ctx.type_hint_config {
+            if let Some(ty) = config.lookup_cpp_constant_type(t.as_str()) {
+                return Some(ty);
+            }
+        }
     }
     None
+}
+
+fn cpp_config_call_return<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: &RecvHintContext<'_>,
+) -> Option<String> {
+    let config = ctx.type_hint_config?;
+    if node.kind().as_ref() != "call_expression" {
+        return None;
+    }
+    let func = node.field("function")?;
+    let arg_types = cpp_collect_call_arg_types(node, ctx);
+    if func.kind().as_ref() == "field_expression" {
+        let arg = func.field("argument")?;
+        let field = func.field("field")?;
+        let method_name = field.text().trim().to_string();
+        let class_ty = cpp_type_of_direct_receiver_expr(&arg, Some(ctx))?;
+        let class_name = cpp_simplify_type_name(&class_ty);
+        return config.lookup_cpp_method_return(class_name.as_str(), method_name.as_str(), &arg_types);
+    }
+    let name = func.text().trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    config
+        .lookup_cpp_macro_return(name.as_str(), &arg_types)
+        .or_else(|| config.lookup_cpp_function_return(name.as_str(), &arg_types))
+}
+
+fn cpp_collect_call_arg_types<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: &RecvHintContext<'_>,
+) -> Vec<String> {
+    let Some(args) = node.field("arguments") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for c in args.children() {
+        if !c.is_named() {
+            continue;
+        }
+        let expr = if c.kind().as_ref() == "argument" {
+            if let Some(inner) = c.children().find(|x| x.is_named()) {
+                inner
+            } else {
+                continue;
+            }
+        } else {
+            c
+        };
+        if let Some(ty) = cpp_expr_type_label_for_config(&expr, ctx) {
+            out.push(ty);
+        } else {
+            out.push("?".to_string());
+        }
+    }
+    out
+}
+
+fn cpp_expr_type_label_for_config<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: &RecvHintContext<'_>,
+) -> Option<String> {
+    if let Some(lit) = syntax_kind_literal_hint(node) {
+        return Some(lit);
+    }
+    let kind_k = node.kind();
+    let k = kind_k.as_ref();
+    if matches!(k, "identifier" | "qualified_identifier" | "field_identifier") {
+        return cpp_hint(node, Some(ctx));
+    }
+    if k == "call_expression" {
+        if let Some(ty) = cpp_config_call_return(node, ctx) {
+            return Some(ty);
+        }
+    }
+    if k == "parenthesized_expression" {
+        if let Some(inner) = node.children().find(|c| c.is_named()) {
+            return cpp_expr_type_label_for_config(&inner, ctx);
+        }
+    }
+    if k == "binary_expression" {
+        return cpp_binary_result_type(node, Some(ctx));
+    }
+    if k == "field_expression" {
+        let arg = node.field("argument")?;
+        let field = node.field("field")?;
+        let field_name = field.text().trim().to_string();
+        let arg_ty = cpp_expr_type_label_for_config(&arg, ctx)?;
+        let class_name = cpp_simplify_type_name(&arg_ty);
+        if let Some(config) = ctx.type_hint_config {
+            if let Some(ty) = config.lookup_cpp_field_type(class_name.as_str(), field_name.as_str()) {
+                return Some(ty);
+            }
+        }
+        return cpp_field_type_for_class_in_sources(ctx, class_name.as_str(), field_name.as_str());
+    }
+    cpp_hint(node, Some(ctx))
+}
+
+fn cpp_binary_operator_text<D: Doc>(node: &Node<'_, D>) -> Option<String> {
+    let left = node.field("left")?;
+    let right = node.field("right")?;
+    let full = node.text().trim().to_string();
+    let lt = left.text().trim().to_string();
+    let rt = right.text().trim().to_string();
+    let li = full.find(lt.as_str())?;
+    let after_left = li + lt.len();
+    let ri = full[after_left..].find(rt.as_str())?;
+    let op = full[after_left..after_left + ri].trim();
+    if op.is_empty() {
+        None
+    } else {
+        Some(op.to_string())
+    }
+}
+
+fn cpp_normalize_binary_operand_label(ty: &str) -> String {
+    match ty {
+        "NumberLiteral"
+        | "DecimalLiteral"
+        | "HexadecimalLiteral"
+        | "BinaryLiteral"
+        | "OctalLiteral" => "IntegerLiteral".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn cpp_binary_result_type<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
+    if node.kind().as_ref() != "binary_expression" {
+        return None;
+    }
+    let left = node.field("left")?;
+    let right = node.field("right")?;
+    let op = cpp_binary_operator_text(node)?;
+    let lhs_ty = ctx
+        .and_then(|c| cpp_expr_type_label_for_config(&left, c))
+        .or_else(|| syntax_kind_literal_hint(&left))?;
+    let rhs_ty = ctx
+        .and_then(|c| cpp_expr_type_label_for_config(&right, c))
+        .or_else(|| syntax_kind_literal_hint(&right))?;
+    if let Some(c) = ctx {
+        if let Some(config) = c.type_hint_config {
+            let lhs_cfg = cpp_normalize_binary_operand_label(lhs_ty.as_str());
+            let rhs_cfg = cpp_normalize_binary_operand_label(rhs_ty.as_str());
+            if let Some(ty) =
+                config.lookup_cpp_binary_op_return(op.as_str(), &lhs_cfg, &rhs_cfg)
+            {
+                return Some(ty);
+            }
+        }
+    }
+    cpp_default_binary_type(lhs_ty.as_str(), rhs_ty.as_str(), op.as_str())
+}
+
+fn cpp_default_binary_type(lhs: &str, rhs: &str, op: &str) -> Option<String> {
+    if matches!(op, "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||") {
+        return Some("bool".to_string());
+    }
+    if cpp_is_floating_label(lhs) || cpp_is_floating_label(rhs) {
+        if matches!(op, "+" | "-" | "*" | "/" | "%") {
+            return Some("double".to_string());
+        }
+    }
+    if cpp_is_numeric_label(lhs) && cpp_is_numeric_label(rhs) {
+        if matches!(op, "+" | "-" | "*" | "/" | "%") {
+            return Some("int".to_string());
+        }
+    }
+    if matches!(op, "+" | "-" | "*" | "/" | "%") {
+        if cpp_is_numeric_label(lhs) && cpp_looks_integral_type(rhs) {
+            return Some(rhs.to_string());
+        }
+        if cpp_is_numeric_label(rhs) && cpp_looks_integral_type(lhs) {
+            return Some(lhs.to_string());
+        }
+    }
+    None
+}
+
+fn cpp_is_numeric_label(s: &str) -> bool {
+    matches!(
+        s,
+        "IntegerLiteral"
+            | "NumberLiteral"
+            | "FloatingPointLiteral"
+            | "int"
+            | "long"
+            | "short"
+            | "double"
+            | "float"
+            | "size_t"
+            | "UINT"
+            | "DWORD"
+            | "bool"
+    )
+}
+
+fn cpp_is_floating_label(s: &str) -> bool {
+    matches!(s, "FloatingPointLiteral" | "double" | "float")
+}
+
+fn cpp_looks_integral_type(s: &str) -> bool {
+    !matches!(s, "?" | "StringLiteral" | "void*" | "bool")
+        && !s.ends_with('*')
+        && s != "FloatingPointLiteral"
 }
 
 fn c_hint<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
@@ -2498,6 +2758,7 @@ void f() {
             source: src,
             cpp_include_dirs: &[],
             job_cache: None,
+            type_hint_config: None,
         };
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("Inner"));
@@ -2570,6 +2831,7 @@ void f() {
             source: src,
             cpp_include_dirs: &[],
             job_cache: None,
+            type_hint_config: None,
         };
         let hint = infer_capture_type(SupportedLanguage::Cpp, "B", b, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("CTime.Format"));
@@ -2605,6 +2867,7 @@ void f() {
             source: src,
             cpp_include_dirs: &[],
             job_cache: None,
+            type_hint_config: None,
         };
         let hint1 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[1], Some(&ctx));
         let hint2 = infer_capture_type(SupportedLanguage::Cpp, "A", &caps[2], Some(&ctx));
@@ -2633,6 +2896,7 @@ void f() {
             source: src,
             cpp_include_dirs: &extra,
             job_cache: None,
+            type_hint_config: None,
         };
 
         let grep = SupportLang::Cpp.ast_grep(src);
@@ -2645,6 +2909,151 @@ void f() {
         let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("Inner"));
+    }
+
+    use crate::type_hint_config::{
+        CppBinaryOpRule, CppCallableRule, CppConstantRule, CppFieldRule, CppMethodRule,
+        CppTypeHintRules, TypeHintConfig, TypeHintConfigFile,
+    };
+
+    fn cpp_infer_pattern(
+        src: &str,
+        pattern: &str,
+        config: &TypeHintConfig,
+    ) -> Option<String> {
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new(pattern, SupportLang::Cpp).unwrap();
+        let m = grep.root().find_all(&pat).next()?;
+        let node = m.get_node();
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: Some(config),
+        };
+        infer_capture_type(SupportedLanguage::Cpp, "X", &node, Some(&ctx))
+    }
+
+    fn sample_type_hint_config() -> TypeHintConfig {
+        TypeHintConfig::from_file(TypeHintConfigFile::new(CppTypeHintRules {
+            methods: vec![CppMethodRule {
+                class: "CString".into(),
+                method: "GetLength".into(),
+                arity: Some(0),
+                params: vec![],
+                returns: "int".into(),
+                enabled: true,
+            }],
+            macros: vec![CppCallableRule {
+                name: "_T".into(),
+                arity: Some(1),
+                params: vec![],
+                returns: "LPCTSTR".into(),
+                enabled: true,
+            }],
+            constants: vec![CppConstantRule {
+                name: "IDC_OK".into(),
+                ty: "int".into(),
+                enabled: true,
+            }],
+            fields: vec![CppFieldRule {
+                class: "CWnd".into(),
+                field: "m_hWnd".into(),
+                ty: "HWND".into(),
+                enabled: true,
+            }],
+            binary_ops: vec![
+                CppBinaryOpRule {
+                    op: "+".into(),
+                    lhs: "StringLiteral".into(),
+                    rhs: "CString".into(),
+                    returns: "CString".into(),
+                    enabled: true,
+                },
+                CppBinaryOpRule {
+                    op: "+".into(),
+                    lhs: "LPCTSTR".into(),
+                    rhs: "CString".into(),
+                    returns: "CString".into(),
+                    enabled: true,
+                },
+            ],
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn cpp_config_method_return_overrides_label() {
+        let src = "void f() { CString s; s.GetLength(); }";
+        let cfg = sample_type_hint_config();
+        let hint = cpp_infer_pattern(src, "s.GetLength()", &cfg);
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_config_macro_return() {
+        let src = r#"void f() { _T("abc"); }"#;
+        let cfg = sample_type_hint_config();
+        let hint = cpp_infer_pattern(src, r#"_T("abc")"#, &cfg);
+        assert_eq!(hint.as_deref(), Some("LPCTSTR"));
+    }
+
+    #[test]
+    fn cpp_config_constant_type() {
+        let src = "void f() { int x = IDC_OK; }";
+        let cfg = sample_type_hint_config();
+        let hint = cpp_infer_pattern(src, "IDC_OK", &cfg);
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_config_field_type() {
+        let src = "void f() { CWnd w; w.m_hWnd; }";
+        let cfg = sample_type_hint_config();
+        let hint = cpp_infer_pattern(src, "w.m_hWnd", &cfg);
+        assert_eq!(hint.as_deref(), Some("HWND"));
+    }
+
+    #[test]
+    fn cpp_config_binary_string_plus() {
+        let src = r#"void f(CString s) { "abc" + s; }"#;
+        let cfg = sample_type_hint_config();
+        let hint = cpp_infer_pattern(src, r#""abc" + s"#, &cfg);
+        assert_eq!(hint.as_deref(), Some("CString"));
+    }
+
+    #[test]
+    fn cpp_default_binary_int_chain() {
+        let src = "void f() { int nSel; (nSel + 1) * 100; }";
+        let cfg = TypeHintConfig::default();
+        let hint = cpp_infer_pattern(src, "(nSel + 1) * 100", &cfg);
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_default_binary_int_add() {
+        let src = "void f() { int nSel; nSel + 1; }";
+        let cfg = TypeHintConfig::default();
+        let hint = cpp_infer_pattern(src, "nSel + 1", &cfg);
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_parenthesized_binary_uses_config_rule() {
+        let src = "void f() { (1 + 2); }";
+        let cfg = TypeHintConfig::from_file(TypeHintConfigFile::new(CppTypeHintRules {
+            binary_ops: vec![CppBinaryOpRule {
+                op: "+".into(),
+                lhs: "IntegerLiteral".into(),
+                rhs: "IntegerLiteral".into(),
+                returns: "CNumber".into(),
+                enabled: true,
+            }],
+            ..Default::default()
+        }));
+        let hint = cpp_infer_pattern(src, "(1 + 2)", &cfg);
+        assert_eq!(hint.as_deref(), Some("CNumber"));
     }
 
     #[test]

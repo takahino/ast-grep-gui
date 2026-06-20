@@ -579,6 +579,26 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     .on_hover_text(t.cpp_include_dirs_tooltip());
                 });
                 cpp_include_diagnostic::show_collapsing(app, ui);
+                ui.horizontal(|ui| {
+                    if ui.button(t.type_hint_config_open_btn()).clicked() {
+                        app.show_type_hint_config = true;
+                    }
+                    let summary = if app.type_hint_config_path.is_empty() {
+                        format!(
+                            "{}: {}",
+                            t.type_hint_config_rule_count_label(),
+                            app.type_hint_config.rule_count()
+                        )
+                    } else {
+                        format!(
+                            "{} ({}: {})",
+                            app.type_hint_config_path,
+                            t.type_hint_config_rule_count_label(),
+                            app.type_hint_config.rule_count()
+                        )
+                    };
+                    ui.label(egui::RichText::new(summary).small());
+                });
             });
         }
     });

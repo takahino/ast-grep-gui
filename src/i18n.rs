@@ -1499,6 +1499,175 @@ impl Tr {
         }
     }
 
+    pub fn type_hint_config_open_btn(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "型補助設定...",
+            UiLanguage::English => "Type hint rules...",
+        }
+    }
+    pub fn type_hint_config_window_title(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "型ヒント補助設定",
+            UiLanguage::English => "Type hint assist rules",
+        }
+    }
+    pub fn type_hint_config_no_file(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "(未保存)",
+            UiLanguage::English => "(unsaved)",
+        }
+    }
+    pub fn type_hint_config_rule_count_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ルール数",
+            UiLanguage::English => "Rules",
+        }
+    }
+    pub fn type_hint_config_unsaved(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "未保存",
+            UiLanguage::English => "Unsaved",
+        }
+    }
+    pub fn type_hint_config_from_result_banner(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "検索結果から追加:",
+            UiLanguage::English => "Add from search result:",
+        }
+    }
+    pub fn type_hint_config_load_yaml(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "YML読み込み",
+            UiLanguage::English => "Load YAML",
+        }
+    }
+    pub fn type_hint_config_save_yaml(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "YML保存",
+            UiLanguage::English => "Save YAML",
+        }
+    }
+    pub fn type_hint_config_add(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "新規",
+            UiLanguage::English => "New",
+        }
+    }
+    pub fn type_hint_config_delete(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "削除",
+            UiLanguage::English => "Delete",
+        }
+    }
+    pub fn type_hint_config_duplicate(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "複製",
+            UiLanguage::English => "Duplicate",
+        }
+    }
+    pub fn type_hint_config_revert(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "フォームをクリア",
+            UiLanguage::English => "Clear form",
+        }
+    }
+    pub fn type_hint_config_enabled(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "有効",
+            UiLanguage::English => "Enabled",
+        }
+    }
+    pub fn type_hint_config_apply(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "適用",
+            UiLanguage::English => "Apply",
+        }
+    }
+    pub fn type_hint_config_params_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "1 行に 1 型（例: LPCTSTR）",
+            UiLanguage::English => "One type per line (e.g. LPCTSTR)",
+        }
+    }
+    pub fn type_hint_config_empty_list(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "(ルールなし)",
+            UiLanguage::English => "(no rules)",
+        }
+    }
+    pub fn type_hint_config_research_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "ルールを変更したら、型ヒントを反映するために再検索してください。",
+            UiLanguage::English => "After changing rules, run search again to refresh type hints.",
+        }
+    }
+    pub fn type_hint_config_loaded_ok(self) -> String {
+        match self.0 {
+            UiLanguage::Japanese => "YMLを読み込みました".to_string(),
+            UiLanguage::English => "YAML loaded".to_string(),
+        }
+    }
+    pub fn type_hint_config_saved_ok(self) -> String {
+        match self.0 {
+            UiLanguage::Japanese => "YMLを保存しました".to_string(),
+            UiLanguage::English => "YAML saved".to_string(),
+        }
+    }
+    pub fn type_hint_config_applied_ok(self) -> String {
+        match self.0 {
+            UiLanguage::Japanese => "ルールを適用しました".to_string(),
+            UiLanguage::English => "Rule applied".to_string(),
+        }
+    }
+    pub fn type_hint_config_validation_error(self) -> String {
+        match self.0 {
+            UiLanguage::Japanese => "必須項目を入力してください".to_string(),
+            UiLanguage::English => "Please fill required fields".to_string(),
+        }
+    }
+    pub fn type_hint_config_error_fmt(self, msg: &str) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("エラー: {msg}"),
+            UiLanguage::English => format!("Error: {msg}"),
+        }
+    }
+    pub fn type_hint_config_tab_methods(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Methods",
+            UiLanguage::English => "Methods",
+        }
+    }
+    pub fn type_hint_config_tab_functions(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Functions",
+            UiLanguage::English => "Functions",
+        }
+    }
+    pub fn type_hint_config_tab_macros(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Macros",
+            UiLanguage::English => "Macros",
+        }
+    }
+    pub fn type_hint_config_tab_constants(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Constants",
+            UiLanguage::English => "Constants",
+        }
+    }
+    pub fn type_hint_config_tab_fields(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Fields",
+            UiLanguage::English => "Fields",
+        }
+    }
+    pub fn type_hint_config_tab_binary_ops(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Binary Ops",
+            UiLanguage::English => "Binary Ops",
+        }
+    }
+
     pub fn cpp_include_diagnostic_header(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "インクルードパス診断（C/C++）",
@@ -2363,6 +2532,23 @@ impl Tr {
             UiLanguage::English => format!(
                 "This match has no capture for `{column_key}` (the column exists to align with wider matches elsewhere)"
             ),
+        }
+    }
+
+    pub fn table_add_type_hint_rule(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "型補助ルールを追加...",
+            UiLanguage::English => "Add type hint rule...",
+        }
+    }
+    pub fn table_add_type_hint_rule_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "この型ヒントから補助ルール設定画面を開きます（分かる項目は自動入力。`CTime.Format` のようなクラスメソッド表示にも対応）"
+            }
+            UiLanguage::English => {
+                "Open the type-hint assist settings from this cell with fields prefilled where possible (including inferred labels such as `CTime.Format`)"
+            }
         }
     }
 

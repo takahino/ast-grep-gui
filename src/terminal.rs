@@ -14,6 +14,7 @@ use crate::search::{
     TERMINAL_MAX_SEARCH_HITS,
 };
 use crate::sg_command::{is_sg_command, parse_sg_run};
+use crate::type_hint_config::TypeHintConfig;
 
 /// ターミナル行の種別（表示色の切り替えに使用）
 #[derive(Debug, Clone)]
@@ -162,6 +163,7 @@ impl TerminalState {
             ".git;target;node_modules".to_string(),
             String::new(),
             true,
+            Arc::new(TypeHintConfig::default()),
             UiLanguage::Japanese,
             crate::batch::SINGLE_SEARCH_JOB_ID,
             tx,

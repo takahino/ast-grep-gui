@@ -1,6 +1,7 @@
 //! `ast-grep-gui.exe --batch ...` による CLI バッチ実行
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 
@@ -212,7 +213,7 @@ fn run_batch(args: BatchCli) -> anyhow::Result<()> {
         anyhow::bail!("no patterns found in pattern file");
     }
 
-    let report = run_batch_sync(&jobs, req.ui_lang);
+    let report = run_batch_sync(&jobs, req.ui_lang, Arc::new(crate::type_hint_config::TypeHintConfig::default()));
 
     export_batch_report_with_views(
         &report,

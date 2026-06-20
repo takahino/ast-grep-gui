@@ -26,11 +26,14 @@ use crate::search_target::{
     RemoteCachePolicy, RemoteFetchRequest, RemoteTargetConfig, SearchTargetMode,
 };
 use crate::terminal::TerminalState;
+use crate::type_hint_config::{PendingTypeHintRuleDraft, TypeHintConfig, TypeHintRuleKind};
 use crate::ui::{
     batch_report_panel, cli_builder_panel, code_panel, file_panel, help_popup,
     in_view_find::InViewFindState, pattern_assist_popup, regex_visualizer_popup, rewrite_popup,
     status_bar, summary_panel, table_panel, table_preview_popup, terminal_panel, toolbar,
+    type_hint_config_panel,
 };
+use crate::ui::type_hint_config_panel::TypeHintConfigEditForm;
 
 /// 表モードでダブルクリックしたファイルをコードビューと同じ表示で開く
 #[derive(Debug, Clone)]
@@ -151,6 +154,12 @@ struct PersistedAppState {
     /// 表モードの列幅
     #[serde(default)]
     table_column_widths: TableColumnWidths,
+    /// 型ヒント補助ルール（C++）
+    #[serde(default)]
+    type_hint_config_cpp: crate::type_hint_config::CppTypeHintRules,
+    /// 最後に読み込んだ型ヒント補助 YML パス
+    #[serde(default)]
+    type_hint_config_path: String,
 }
 
 fn default_next_pattern_job_id() -> usize {
@@ -218,6 +227,8 @@ impl Default for PersistedAppState {
             batch_jobs: Vec::new(),
             next_pattern_job_id: 1,
             table_column_widths: TableColumnWidths::default(),
+            type_hint_config_cpp: crate::type_hint_config::CppTypeHintRules::default(),
+            type_hint_config_path: String::new(),
         }
     }
 }
@@ -283,6 +294,19 @@ pub struct AstGrepApp {
     pub cpp_include_dirs: String,
     /// メタ変数の型ヒント推定を行う
     pub type_hints_enabled: bool,
+    /// 型ヒント補助ルール
+    pub type_hint_config: TypeHintConfig,
+    /// 型ヒント補助 YML パス
+    pub type_hint_config_path: String,
+    /// 型ヒント補助設定に未保存の変更がある
+    pub type_hint_config_dirty: bool,
+    /// 型ヒント補助設定ウィンドウ
+    pub show_type_hint_config: bool,
+    pub type_hint_config_kind: TypeHintRuleKind,
+    pub type_hint_config_selected: Option<(TypeHintRuleKind, usize)>,
+    pub type_hint_config_edit: TypeHintConfigEditForm,
+    pub pending_type_hint_rule_draft: Option<PendingTypeHintRuleDraft>,
+    pub type_hint_config_status: Option<String>,
     /// 検索モード（AstGrep / PlainText / Regex）
     pub search_mode: SearchMode,
     /// 文字列検索モードのオプション（大文字小文字・単語単位）
@@ -424,6 +448,17 @@ impl AstGrepApp {
             skip_dirs: persisted.skip_dirs,
             cpp_include_dirs: persisted.cpp_include_dirs,
             type_hints_enabled: persisted.type_hints_enabled,
+            type_hint_config: TypeHintConfig {
+                cpp: persisted.type_hint_config_cpp,
+            },
+            type_hint_config_path: persisted.type_hint_config_path,
+            type_hint_config_dirty: false,
+            show_type_hint_config: false,
+            type_hint_config_kind: TypeHintRuleKind::Methods,
+            type_hint_config_selected: None,
+            type_hint_config_edit: TypeHintConfigEditForm::default(),
+            pending_type_hint_rule_draft: None,
+            type_hint_config_status: None,
             search_mode: persisted.search_mode,
             plain_text_options: persisted.plain_text_options,
             ui_language_preference: persisted.ui_language_preference,
@@ -553,7 +588,21 @@ impl AstGrepApp {
             batch_jobs: self.batch_jobs.clone(),
             next_pattern_job_id: self.next_pattern_job_id,
             table_column_widths: self.table_column_widths.clone(),
+            type_hint_config_cpp: self.type_hint_config.cpp.clone(),
+            type_hint_config_path: self.type_hint_config_path.clone(),
         }
+    }
+
+    pub fn type_hint_config_arc(&self) -> Arc<TypeHintConfig> {
+        Arc::new(self.type_hint_config.clone())
+    }
+
+    pub fn open_type_hint_config_with_draft(&mut self, draft: PendingTypeHintRuleDraft) {
+        self.type_hint_config_kind = draft.kind;
+        self.type_hint_config_edit = TypeHintConfigEditForm::from_draft(&draft);
+        self.pending_type_hint_rule_draft = Some(draft);
+        self.type_hint_config_selected = None;
+        self.show_type_hint_config = true;
     }
 
     /// 検索を開始する（履歴に追加する）
@@ -710,6 +759,7 @@ impl AstGrepApp {
                 .unwrap_or_else(|| self.cpp_include_dirs.clone()),
             job.map(|j| j.type_hints_enabled)
                 .unwrap_or(self.type_hints_enabled),
+            self.type_hint_config_arc(),
             self.ui_lang(),
             job_id,
             tx,
@@ -1578,6 +1628,9 @@ impl eframe::App for AstGrepApp {
 
         // パターン支援ポップアップ
         pattern_assist_popup::show(self, ctx);
+
+        // 型ヒント補助設定
+        type_hint_config_panel::show(self, ctx);
 
         // コマンドライン補助
         cli_builder_panel::show(self, ctx);

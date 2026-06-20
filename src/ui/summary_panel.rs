@@ -1,9 +1,13 @@
 //! 検索ヒットの型バリエーション集計（受信・（任意で）メソッド・引数数・各引数の型）
 
-use egui::{Label, RichText, Ui};
+use egui::{Label, RichText, Sense, Ui};
 
 use crate::app::AstGrepApp;
 use crate::search::build_match_variation_report;
+use crate::type_hint_config::{
+    PendingTypeHintRuleDraft, draft_from_hint_cell, enrich_method_draft_from_call_context,
+    hint_rule_draft_source_from_display,
+};
 use crate::ui::scroll_keyboard;
 
 fn summary_column_widths(has_method: bool, max_arg_cols: usize) -> Vec<f32> {
@@ -14,6 +18,56 @@ fn summary_column_widths(has_method: bool, max_arg_cols: usize) -> Vec<f32> {
     };
     v.extend(std::iter::repeat(140.0).take(max_arg_cols));
     v
+}
+
+fn summary_arg_column_key(
+    args_multi_metavar: Option<&str>,
+    arg_single_metavars: &[String],
+    arg_index: usize,
+) -> String {
+    if let Some(name) = args_multi_metavar {
+        format!("{name}#{arg_index}")
+    } else if let Some(name) = arg_single_metavars.get(arg_index) {
+        name.clone()
+    } else {
+        format!("ARG#{arg_index}")
+    }
+}
+
+fn hint_cell_with_context_menu(
+    ui: &mut Ui,
+    width: f32,
+    row_h: f32,
+    display: &str,
+    column_key: &str,
+    row_arity: usize,
+    arg_displays: &[String],
+    t: crate::i18n::Tr,
+    open_type_hint_draft: &mut Option<PendingTypeHintRuleDraft>,
+) {
+    let response = ui.add_sized(
+        [width, row_h],
+        Label::new(display).truncate().sense(Sense::click()),
+    );
+    let Some(src) = hint_rule_draft_source_from_display(display) else {
+        return;
+    };
+    let col_key = column_key.to_string();
+    let kind_label = src.kind_label.clone();
+    let snippet = src.snippet.clone();
+    let arg_labels: Vec<String> = arg_displays.iter().take(row_arity).cloned().collect();
+    response.context_menu(|ui| {
+        if ui
+            .button(t.table_add_type_hint_rule())
+            .on_hover_text(t.table_add_type_hint_rule_tooltip())
+            .clicked()
+        {
+            let mut draft = draft_from_hint_cell(&col_key, &kind_label, &snippet, "", 0);
+            enrich_method_draft_from_call_context(&mut draft, row_arity, &arg_labels);
+            *open_type_hint_draft = Some(draft);
+            ui.close_menu();
+        }
+    });
 }
 
 pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
@@ -58,6 +112,13 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         .text_style_height(&egui::TextStyle::Body)
         .max(ui.spacing().interact_size.y);
     let header_h = row_h.max(ui.spacing().interact_size.y);
+
+    let receiver_key = report.receiver_metavar.clone();
+    let method_key = report.method_metavar.clone();
+    let args_multi = report.args_multi_metavar.clone();
+    let arg_singles = report.arg_single_metavars.clone();
+
+    let mut open_type_hint_draft: Option<PendingTypeHintRuleDraft> = None;
 
     let table_interact_rect = ui.available_rect_before_wrap();
     let ctx_table = ui.ctx().clone();
@@ -127,7 +188,6 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     .auto_shrink([false, false])
                     .show(ui_v, |ui| {
                         ui.set_min_width(total_w);
-                        // ヘッダと同じ固定幅でセルを並べる（Grid だと列幅が一致せずずれる）
                         for (ri, row) in report.rows.iter().enumerate() {
                             let frame = if ri % 2 == 1 {
                                 egui::Frame::none()
@@ -144,15 +204,36 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         Label::new(RichText::new(row.count.to_string()).strong())
                                             .truncate(),
                                     );
-                                    ui.add_sized(
-                                        [widths[1], row_h],
-                                        Label::new(&row.receiver_display).truncate(),
+                                    hint_cell_with_context_menu(
+                                        ui,
+                                        widths[1],
+                                        row_h,
+                                        &row.receiver_display,
+                                        &receiver_key,
+                                        row.arity,
+                                        &row.arg_displays,
+                                        t,
+                                        &mut open_type_hint_draft,
                                     );
                                     if show_method {
-                                        ui.add_sized(
-                                            [widths[2], row_h],
-                                            Label::new(&row.method_display).truncate(),
-                                        );
+                                        if let Some(ref mk) = method_key {
+                                            hint_cell_with_context_menu(
+                                                ui,
+                                                widths[2],
+                                                row_h,
+                                                &row.method_display,
+                                                mk,
+                                                row.arity,
+                                                &row.arg_displays,
+                                                t,
+                                                &mut open_type_hint_draft,
+                                            );
+                                        } else {
+                                            ui.add_sized(
+                                                [widths[2], row_h],
+                                                Label::new(&row.method_display).truncate(),
+                                            );
+                                        }
                                     }
                                     let arity_wi = if show_method { 3 } else { 2 };
                                     ui.add_sized(
@@ -161,15 +242,29 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                     );
                                     for i in 0..max_arg_cols {
                                         let wi = num_fixed + i;
-                                        let cell = if i < row.arity {
-                                            row.arg_displays[i].as_str()
+                                        if i < row.arity {
+                                            let col_key = summary_arg_column_key(
+                                                args_multi.as_deref(),
+                                                &arg_singles,
+                                                i,
+                                            );
+                                            hint_cell_with_context_menu(
+                                                ui,
+                                                widths[wi],
+                                                row_h,
+                                                &row.arg_displays[i],
+                                                &col_key,
+                                                row.arity,
+                                                &row.arg_displays,
+                                                t,
+                                                &mut open_type_hint_draft,
+                                            );
                                         } else {
-                                            ""
-                                        };
-                                        ui.add_sized(
-                                            [widths[wi], row_h],
-                                            Label::new(cell).truncate(),
-                                        );
+                                            ui.add_sized(
+                                                [widths[wi], row_h],
+                                                Label::new("").truncate(),
+                                            );
+                                        }
                                     }
                                 });
                             });
@@ -189,4 +284,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         &scroll_h_out,
         table_interact_rect,
     );
+
+    if let Some(draft) = open_type_hint_draft {
+        app.open_type_hint_config_with_draft(draft);
+    }
 }
