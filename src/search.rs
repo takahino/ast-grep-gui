@@ -1426,6 +1426,9 @@ pub struct MatchVariationRow {
 pub struct MatchVariationReport {
     /// パターン先頭の単一メタ（受信側の型ヒント）
     pub receiver_metavar: String,
+    /// 単一メタが無いリテラル呼び出し（例: `AfxMessageBox($$$ARGS)`）の関数名
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub literal_callee: Option<String>,
     /// 2 番目の単一メタ（メソッド側）。無い場合は `None`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub method_metavar: Option<String>,
@@ -1446,6 +1449,14 @@ enum ArgsBinding {
     Multi(String),
     /// `$A` や `$A,$B` の単一メタ列
     Singles(Vec<String>),
+}
+
+/// [`parse_summary_pattern`] の戻り値（内部用）
+struct ParsedSummaryPattern {
+    receiver_metavar: Option<String>,
+    literal_callee: Option<String>,
+    method_metavar: Option<String>,
+    args_binding: ArgsBinding,
 }
 
 fn skip_ascii_ws(pattern: &str, mut i: usize) -> usize {
@@ -1530,6 +1541,80 @@ fn parse_balanced_paren_arg_metas(pattern: &str, open_paren: usize) -> Option<Ve
     None
 }
 
+/// `open_paren` の `(` に対応する閉じ `)` のインデックス。
+fn parse_balanced_paren_close(pattern: &str, open_paren: usize) -> Option<usize> {
+    let bytes = pattern.as_bytes();
+    if open_paren >= bytes.len() || bytes[open_paren] != b'(' {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut i = open_paren + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `AfxMessageBox($$$ARGS)` や `console.log($$$ARGS)` のようなリテラル呼び出しを解析する。
+fn parse_literal_call_binding(pattern: &str) -> Option<String> {
+    let bytes = pattern.as_bytes();
+    let mut p = skip_ascii_ws(pattern, 0);
+    if p >= bytes.len() || bytes[p] == b'$' {
+        return None;
+    }
+    if !bytes[p].is_ascii_alphabetic() && bytes[p] != b'_' {
+        return None;
+    }
+    let start = p;
+    while p < bytes.len() && (bytes[p].is_ascii_alphanumeric() || bytes[p] == b'_') {
+        p += 1;
+    }
+    loop {
+        p = skip_ascii_ws(pattern, p);
+        if p < bytes.len() && bytes[p] == b'.' {
+            p += 1;
+            p = skip_ascii_ws(pattern, p);
+            if p >= bytes.len()
+                || bytes[p] == b'$'
+                || (!bytes[p].is_ascii_alphabetic() && bytes[p] != b'_')
+            {
+                return None;
+            }
+            while p < bytes.len() && (bytes[p].is_ascii_alphanumeric() || bytes[p] == b'_') {
+                p += 1;
+            }
+        } else {
+            break;
+        }
+    }
+    let callee_end = p;
+    p = skip_ascii_ws(pattern, p);
+    if p >= bytes.len() || bytes[p] != b'(' {
+        return None;
+    }
+    let close = parse_balanced_paren_close(pattern, p)?;
+    let paren_section = &pattern[p..=close];
+    let multis = pattern_multi_metavariables(pattern);
+    if multis.len() != 1 || !paren_section.contains(&format!("$$${}", multis[0])) {
+        return None;
+    }
+    p = skip_ascii_ws(pattern, close + 1);
+    if p < pattern.len() && pattern[p..].chars().any(|c| !c.is_whitespace()) {
+        return None;
+    }
+    Some(pattern[start..callee_end].to_string())
+}
+
 /// `$RECV` の直後からメンバ呼び出しを解釈する（`$$$` 無しのとき）。
 ///
 /// - `$RECV($A)` → メソッド列なし、引数は括弧内の単一メタ
@@ -1589,29 +1674,64 @@ fn parse_summary_call_binding(pattern: &str) -> Option<(Option<String>, ArgsBind
     Some((method_metavar, ArgsBinding::Singles(args)))
 }
 
-fn parse_summary_args(pattern: &str) -> Option<(Option<String>, ArgsBinding)> {
+fn parse_summary_pattern(pattern: &str) -> Option<ParsedSummaryPattern> {
     let singles = pattern_single_metavariables(pattern);
     let multis = pattern_multi_metavariables(pattern);
+
     if singles.is_empty() {
-        return None;
+        if multis.is_empty() {
+            return None;
+        }
+        let callee = parse_literal_call_binding(pattern)?;
+        return Some(ParsedSummaryPattern {
+            receiver_metavar: None,
+            literal_callee: Some(callee),
+            method_metavar: None,
+            args_binding: ArgsBinding::Multi(multis[0].clone()),
+        });
     }
 
     if !multis.is_empty() {
         let method = singles.get(1).cloned();
-        return Some((method, ArgsBinding::Multi(multis[0].clone())));
+        return Some(ParsedSummaryPattern {
+            receiver_metavar: Some(singles[0].clone()),
+            literal_callee: None,
+            method_metavar: method,
+            args_binding: ArgsBinding::Multi(multis[0].clone()),
+        });
     }
 
-    if let Some(parsed) = parse_summary_call_binding(pattern) {
-        return Some(parsed);
+    if let Some((method_metavar, args_binding)) = parse_summary_call_binding(pattern) {
+        return Some(ParsedSummaryPattern {
+            receiver_metavar: Some(singles[0].clone()),
+            literal_callee: None,
+            method_metavar,
+            args_binding,
+        });
     }
 
     match singles.len() {
-        1 => Some((None, ArgsBinding::None)),
-        2 => Some((None, ArgsBinding::Singles(vec![singles[1].clone()]))),
+        1 => Some(ParsedSummaryPattern {
+            receiver_metavar: Some(singles[0].clone()),
+            literal_callee: None,
+            method_metavar: None,
+            args_binding: ArgsBinding::None,
+        }),
+        2 => Some(ParsedSummaryPattern {
+            receiver_metavar: Some(singles[0].clone()),
+            literal_callee: None,
+            method_metavar: None,
+            args_binding: ArgsBinding::Singles(vec![singles[1].clone()]),
+        }),
         n if n >= 3 => {
             let method = singles[1].clone();
             let rest: Vec<String> = singles[2..].to_vec();
-            Some((Some(method), ArgsBinding::Singles(rest)))
+            Some(ParsedSummaryPattern {
+                receiver_metavar: Some(singles[0].clone()),
+                literal_callee: None,
+                method_metavar: Some(method),
+                args_binding: ArgsBinding::Singles(rest),
+            })
         }
         _ => None,
     }
@@ -1619,7 +1739,8 @@ fn parse_summary_args(pattern: &str) -> Option<(Option<String>, ArgsBinding)> {
 
 /// 現在のパターンと検索結果から型バリエーションのサマリーを構築する。
 ///
-/// 単一メタが先頭に少なくとも 1 つ（受信）必要。引数は次のいずれか:
+/// 受信側は単一メタ（例: `$RECV`）またはリテラル呼び出し（例: `AfxMessageBox($$$ARGS)`）。
+/// 引数は次のいずれか:
 /// - 複数ノード `$$$M`（`M#arity` / `M#i`）
 /// - `$$$` が無く単一メタが 2 つ: 受信 + 第 2 が 1 引数（例: `$RECV.Format($A)`）
 /// - 単一メタ 1 つのみ: 引数なし（例: `$RECV.Format()`）
@@ -1633,13 +1754,13 @@ pub fn build_match_variation_report(
     if !effective_type_hints_enabled(type_hints_enabled, pattern) {
         return None;
     }
-    let singles = pattern_single_metavariables(pattern);
-    if singles.is_empty() {
-        return None;
-    }
-
-    let receiver_metavar = singles[0].clone();
-    let (method_metavar, args_binding) = parse_summary_args(pattern)?;
+    let parsed = parse_summary_pattern(pattern)?;
+    let ParsedSummaryPattern {
+        receiver_metavar,
+        literal_callee,
+        method_metavar,
+        args_binding,
+    } = parsed;
 
     let args_multi_metavar = match &args_binding {
         ArgsBinding::Multi(name) => Some(name.clone()),
@@ -1654,7 +1775,11 @@ pub fn build_match_variation_report(
 
     for file in results {
         for item in &file.matches {
-            let receiver_display = item.type_hint_display_value(&receiver_metavar);
+            let receiver_display = if let Some(callee) = &literal_callee {
+                callee.clone()
+            } else {
+                item.type_hint_display_value(receiver_metavar.as_ref().expect("receiver or literal"))
+            };
             let method_display = match &method_metavar {
                 Some(m) => item.type_hint_display_value(m),
                 None => String::new(),
@@ -1706,7 +1831,8 @@ pub fn build_match_variation_report(
     });
 
     Some(MatchVariationReport {
-        receiver_metavar,
+        receiver_metavar: receiver_metavar.unwrap_or_default(),
+        literal_callee,
         method_metavar,
         args_multi_metavar,
         arg_single_metavars,
@@ -2341,5 +2467,58 @@ mod tests {
         assert_eq!(report.rows.len(), 1);
         assert_eq!(report.rows[0].arity, 0);
         assert!(report.rows[0].arg_displays.is_empty());
+    }
+
+    #[test]
+    fn match_variation_report_literal_call_multi_args() {
+        let pattern = "AfxMessageBox($$$ARGS)";
+        assert!(super::pattern_single_metavariables(pattern).is_empty());
+        assert_eq!(
+            super::pattern_multi_metavariables(pattern),
+            vec!["ARGS".to_string()]
+        );
+
+        let mut sig_a = BTreeMap::new();
+        sig_a.insert("ARGS#arity".to_string(), "2".to_string());
+        sig_a.insert("ARGS#0".to_string(), "LPCTSTR".to_string());
+        sig_a.insert("ARGS#1".to_string(), "UINT".to_string());
+
+        let mut sig_b = BTreeMap::new();
+        sig_b.insert("ARGS#arity".to_string(), "1".to_string());
+        sig_b.insert("ARGS#0".to_string(), "LPCTSTR".to_string());
+
+        let results = vec![file_result_one(vec![
+            match_with_hints(sig_a.clone()),
+            match_with_hints(sig_a),
+            match_with_hints(sig_b),
+        ])];
+
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
+        assert!(report.receiver_metavar.is_empty());
+        assert_eq!(report.literal_callee.as_deref(), Some("AfxMessageBox"));
+        assert_eq!(report.method_metavar, None);
+        assert_eq!(report.args_multi_metavar.as_deref(), Some("ARGS"));
+        assert!(report.arg_single_metavars.is_empty());
+        assert_eq!(report.rows.len(), 2);
+        assert_eq!(report.rows[0].count, 2);
+        assert_eq!(report.rows[0].receiver_display, "AfxMessageBox");
+        assert_eq!(report.rows[0].arity, 2);
+        assert_eq!(report.rows[0].arg_displays, vec!["LPCTSTR", "UINT"]);
+        assert_eq!(report.rows[1].count, 1);
+        assert_eq!(report.rows[1].arity, 1);
+        assert_eq!(report.rows[1].arg_displays, vec!["LPCTSTR"]);
+    }
+
+    #[test]
+    fn match_variation_report_literal_qualified_call() {
+        let pattern = "console.log($$$ARGS)";
+        let mut hints = BTreeMap::new();
+        hints.insert("ARGS#arity".to_string(), "1".to_string());
+        hints.insert("ARGS#0".to_string(), "string".to_string());
+        let results = vec![file_result_one(vec![match_with_hints(hints)])];
+        let report = super::build_match_variation_report(pattern, &results, true).unwrap();
+        assert_eq!(report.literal_callee.as_deref(), Some("console.log"));
+        assert_eq!(report.rows[0].receiver_display, "console.log");
+        assert_eq!(report.rows[0].arg_displays, vec!["string"]);
     }
 }

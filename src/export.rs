@@ -435,6 +435,7 @@ fn summary_variation_to_plain_text(
         Some(report) => {
             out.push_str(&t.summary_keys_explanation(
                 &report.receiver_metavar,
+                report.literal_callee.as_deref(),
                 report.method_metavar.as_deref(),
                 report.args_multi_metavar.as_deref(),
                 &report.arg_single_metavars,
@@ -523,6 +524,7 @@ pub fn summary_variation_to_markdown(
             out.push_str("## ");
             out.push_str(&t.summary_keys_explanation(
                 &report.receiver_metavar,
+                report.literal_callee.as_deref(),
                 report.method_metavar.as_deref(),
                 report.args_multi_metavar.as_deref(),
                 &report.arg_single_metavars,
@@ -769,6 +771,7 @@ fn html_summary_variation_fragment(
             out.push_str("<p><strong>");
             out.push_str(&escape(&t.summary_keys_explanation(
                 &report.receiver_metavar,
+                report.literal_callee.as_deref(),
                 report.method_metavar.as_deref(),
                 report.args_multi_metavar.as_deref(),
                 &report.arg_single_metavars,
@@ -1088,6 +1091,7 @@ pub fn export_xlsx_to_file(
                         0,
                         truncate_for_excel(&t.summary_keys_explanation(
                             &report.receiver_metavar,
+                            report.literal_callee.as_deref(),
                             report.method_metavar.as_deref(),
                             report.args_multi_metavar.as_deref(),
                             &report.arg_single_metavars,
@@ -2057,6 +2061,7 @@ fn write_summary_xlsx_sheet(
                 0,
                 truncate_for_excel(&t.summary_keys_explanation(
                     &report.receiver_metavar,
+                    report.literal_callee.as_deref(),
                     report.method_metavar.as_deref(),
                     report.args_multi_metavar.as_deref(),
                     &report.arg_single_metavars,

@@ -928,11 +928,22 @@ impl Tr {
     pub fn summary_keys_explanation(
         self,
         recv: &str,
+        literal_callee: Option<&str>,
         method: Option<&str>,
         args_multi: Option<&str>,
         arg_singles: &[String],
     ) -> String {
         if let Some(multi) = args_multi {
+            if let Some(callee) = literal_callee {
+                return match self.0 {
+                    UiLanguage::Japanese => format!(
+                        "リテラル呼び出し {callee} と $$$ {multi} の #arity / #i（各引数の型）を集計しています。"
+                    ),
+                    UiLanguage::English => format!(
+                        "Literal call {callee}; $$$ {multi} uses #arity / #i for each argument type."
+                    ),
+                };
+            }
             return match (self.0, method) {
                 (UiLanguage::Japanese, None) => format!(
                     "単一メタ ${}（受信側）と $$$ {} の #arity / #i（各引数の型）を集計しています。",
@@ -1041,10 +1052,10 @@ impl Tr {
     pub fn summary_pattern_ineligible(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {
-                "このサマリーには、パターンに単一メタ変数が1つ以上（受信側）必要です（例: $RECV、$RECV.Format($A)、$RECV.Format()）。"
+                "このサマリーには、パターンに単一メタ変数（受信側）またはリテラル呼び出し + $$$ 引数が必要です（例: $RECV、$RECV.Format($A)、AfxMessageBox($$$ARGS)）。"
             }
             UiLanguage::English => {
-                "This summary needs at least one single metavar for the receiver (e.g. $RECV, $RECV.Format($A), $RECV.Format())."
+                "This summary needs a receiver single metavar or a literal call with $$$ arguments (e.g. $RECV, $RECV.Format($A), AfxMessageBox($$$ARGS))."
             }
         }
     }

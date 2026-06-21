@@ -89,6 +89,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     ui.heading(t.summary_title());
     ui.label(t.summary_keys_explanation(
         &report.receiver_metavar,
+        report.literal_callee.as_deref(),
         report.method_metavar.as_deref(),
         report.args_multi_metavar.as_deref(),
         &report.arg_single_metavars,
@@ -114,6 +115,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     let header_h = row_h.max(ui.spacing().interact_size.y);
 
     let receiver_key = report.receiver_metavar.clone();
+    let literal_callee = report.literal_callee.clone();
     let method_key = report.method_metavar.clone();
     let args_multi = report.args_multi_metavar.clone();
     let arg_singles = report.arg_single_metavars.clone();
@@ -204,17 +206,24 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         Label::new(RichText::new(row.count.to_string()).strong())
                                             .truncate(),
                                     );
-                                    hint_cell_with_context_menu(
-                                        ui,
-                                        widths[1],
-                                        row_h,
-                                        &row.receiver_display,
-                                        &receiver_key,
-                                        row.arity,
-                                        &row.arg_displays,
-                                        t,
-                                        &mut open_type_hint_draft,
-                                    );
+                                    if literal_callee.is_some() {
+                                        ui.add_sized(
+                                            [widths[1], row_h],
+                                            Label::new(&row.receiver_display).truncate(),
+                                        );
+                                    } else {
+                                        hint_cell_with_context_menu(
+                                            ui,
+                                            widths[1],
+                                            row_h,
+                                            &row.receiver_display,
+                                            &receiver_key,
+                                            row.arity,
+                                            &row.arg_displays,
+                                            t,
+                                            &mut open_type_hint_draft,
+                                        );
+                                    }
                                     if show_method {
                                         if let Some(ref mk) = method_key {
                                             hint_cell_with_context_menu(
