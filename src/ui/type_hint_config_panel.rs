@@ -78,23 +78,33 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
     let mut duplicate_selected = false;
     let mut revert = false;
 
+    const PANEL_W: f32 = 480.0;
+    const FIELD_W: f32 = 200.0;
+
     egui::Window::new(t.type_hint_config_window_title())
+        .id(egui::Id::new("type_hint_config_panel_narrow_v2"))
         .open(&mut open)
-        .default_size([960.0, 620.0])
+        .default_width(PANEL_W)
+        .max_width(520.0)
         .resizable(true)
         .show(ctx, |ui| {
+            ui.set_width(PANEL_W);
+
+            let path = if app.type_hint_config_path.is_empty() {
+                t.type_hint_config_no_file()
+            } else {
+                app.type_hint_config_path.as_str()
+            };
             ui.horizontal(|ui| {
-                let path = if app.type_hint_config_path.is_empty() {
-                    t.type_hint_config_no_file()
-                } else {
-                    app.type_hint_config_path.as_str()
-                };
-                ui.label(format!(
-                    "{}  |  {}: {}",
-                    path,
-                    t.type_hint_config_rule_count_label(),
-                    app.type_hint_config.rule_count()
-                ));
+                ui.add(
+                    egui::Label::new(format!(
+                        "{}  |  {}: {}",
+                        path,
+                        t.type_hint_config_rule_count_label(),
+                        app.type_hint_config.rule_count()
+                    ))
+                    .truncate(),
+                );
                 if app.type_hint_config_dirty {
                     ui.label(
                         egui::RichText::new(t.type_hint_config_unsaved())
@@ -108,10 +118,16 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                     .fill(egui::Color32::from_rgb(40, 48, 62))
                     .show(ui, |ui| {
                         ui.label(t.type_hint_config_from_result_banner());
-                        ui.monospace(format!(
-                            "{}  [{}]  {}",
-                            draft.column_key, draft.kind_label, draft.source_snippet
-                        ));
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "{}  [{}]  {}",
+                                    draft.column_key, draft.kind_label, draft.source_snippet
+                                ))
+                                .monospace(),
+                            )
+                            .truncate(),
+                        );
                         if !draft.file.is_empty() {
                             ui.small(format!("{}:{}", draft.file, draft.line));
                         }
@@ -122,7 +138,7 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                 ui.colored_label(egui::Color32::from_rgb(140, 200, 140), msg);
             }
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button(t.type_hint_config_load_yaml()).clicked() {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("YAML", &["yaml", "yml"])
@@ -170,41 +186,41 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
 
             ui.separator();
 
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(280.0);
-                    for kind in [
-                        TypeHintRuleKind::Methods,
-                        TypeHintRuleKind::Functions,
-                        TypeHintRuleKind::Macros,
-                        TypeHintRuleKind::Constants,
-                        TypeHintRuleKind::Fields,
-                        TypeHintRuleKind::BinaryOps,
-                    ] {
-                        let label = kind_label(t, kind);
-                        let selected = app.type_hint_config_kind == kind;
-                        if ui.selectable_label(selected, label).clicked() {
-                            app.type_hint_config_kind = kind;
-                            app.type_hint_config_selected = None;
-                            load_form_from_selection(app);
-                        }
+            const RULE_KINDS: [TypeHintRuleKind; 6] = [
+                TypeHintRuleKind::Methods,
+                TypeHintRuleKind::Functions,
+                TypeHintRuleKind::Macros,
+                TypeHintRuleKind::Constants,
+                TypeHintRuleKind::Fields,
+                TypeHintRuleKind::BinaryOps,
+            ];
+
+            let prev_kind = app.type_hint_config_kind;
+            egui::ComboBox::from_id_salt("type_hint_config_kind")
+                .selected_text(kind_label(t, app.type_hint_config_kind))
+                .show_ui(ui, |ui| {
+                    for kind in RULE_KINDS {
+                        ui.selectable_value(
+                            &mut app.type_hint_config_kind,
+                            kind,
+                            kind_label(t, kind),
+                        );
                     }
                 });
+            if app.type_hint_config_kind != prev_kind {
+                app.type_hint_config_selected = None;
+                load_form_from_selection(app);
+            }
 
-                ui.separator();
-
-                ui.vertical(|ui| {
-                    ui.set_min_width(520.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(220.0)
-                        .show(ui, |ui| {
-                            list_rules(ui, app, t);
-                        });
-
-                    ui.separator();
-                    show_edit_form(ui, app, t);
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    list_rules(ui, app, t);
                 });
-            });
+
+            ui.separator();
+            show_edit_form(ui, app, t, FIELD_W);
 
             ui.separator();
             ui.label(t.type_hint_config_research_hint());
@@ -288,6 +304,16 @@ fn kind_label(t: crate::i18n::Tr, kind: TypeHintRuleKind) -> &'static str {
     }
 }
 
+fn select_rule_row(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
+    let text = if selected {
+        egui::RichText::new(label).strong()
+    } else {
+        egui::RichText::new(label)
+    };
+    ui.add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
+        .on_hover_text(label)
+}
+
 fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
     let kind = app.type_hint_config_kind;
     match kind {
@@ -300,12 +326,12 @@ fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
                     r.method,
                     r.returns
                 );
-                if ui
-                    .selectable_label(
-                        app.type_hint_config_selected == Some((kind, i)),
-                        label,
-                    )
-                    .clicked()
+                if select_rule_row(
+                    ui,
+                    app.type_hint_config_selected == Some((kind, i)),
+                    &label,
+                )
+                .clicked()
                 {
                     app.type_hint_config_selected = Some((kind, i));
                     load_form_from_rule(&mut app.type_hint_config_edit, r);
@@ -320,12 +346,12 @@ fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
                     r.name,
                     r.returns
                 );
-                if ui
-                    .selectable_label(
-                        app.type_hint_config_selected == Some((kind, i)),
-                        label,
-                    )
-                    .clicked()
+                if select_rule_row(
+                    ui,
+                    app.type_hint_config_selected == Some((kind, i)),
+                    &label,
+                )
+                .clicked()
                 {
                     app.type_hint_config_selected = Some((kind, i));
                     load_form_from_callable(&mut app.type_hint_config_edit, r);
@@ -340,12 +366,12 @@ fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
                     r.name,
                     r.returns
                 );
-                if ui
-                    .selectable_label(
-                        app.type_hint_config_selected == Some((kind, i)),
-                        label,
-                    )
-                    .clicked()
+                if select_rule_row(
+                    ui,
+                    app.type_hint_config_selected == Some((kind, i)),
+                    &label,
+                )
+                .clicked()
                 {
                     app.type_hint_config_selected = Some((kind, i));
                     load_form_from_callable(&mut app.type_hint_config_edit, r);
@@ -360,12 +386,12 @@ fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
                     r.name,
                     r.ty
                 );
-                if ui
-                    .selectable_label(
-                        app.type_hint_config_selected == Some((kind, i)),
-                        label,
-                    )
-                    .clicked()
+                if select_rule_row(
+                    ui,
+                    app.type_hint_config_selected == Some((kind, i)),
+                    &label,
+                )
+                .clicked()
                 {
                     app.type_hint_config_selected = Some((kind, i));
                     app.type_hint_config_edit = TypeHintConfigEditForm {
@@ -386,12 +412,12 @@ fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
                     r.field,
                     r.ty
                 );
-                if ui
-                    .selectable_label(
-                        app.type_hint_config_selected == Some((kind, i)),
-                        label,
-                    )
-                    .clicked()
+                if select_rule_row(
+                    ui,
+                    app.type_hint_config_selected == Some((kind, i)),
+                    &label,
+                )
+                .clicked()
                 {
                     app.type_hint_config_selected = Some((kind, i));
                     app.type_hint_config_edit = TypeHintConfigEditForm {
@@ -414,12 +440,12 @@ fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
                     r.rhs,
                     r.returns
                 );
-                if ui
-                    .selectable_label(
-                        app.type_hint_config_selected == Some((kind, i)),
-                        label,
-                    )
-                    .clicked()
+                if select_rule_row(
+                    ui,
+                    app.type_hint_config_selected == Some((kind, i)),
+                    &label,
+                )
+                .clicked()
                 {
                     app.type_hint_config_selected = Some((kind, i));
                     app.type_hint_config_edit = TypeHintConfigEditForm {
@@ -439,8 +465,31 @@ fn list_rules(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
     }
 }
 
-fn show_edit_form(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
-    const FIELD_W: f32 = 400.0;
+fn add_clipped_field(ui: &mut egui::Ui, text: &mut String, w: f32, h: f32) {
+    ui.add_sized(
+        [w, h],
+        egui::TextEdit::singleline(text)
+            .desired_width(w)
+            .clip_text(true),
+    );
+}
+
+fn add_clipped_multiline(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    w: f32,
+    h: f32,
+    rows: usize,
+) -> egui::Response {
+    ui.add_sized(
+        [w, h],
+        egui::TextEdit::multiline(text)
+            .desired_width(w)
+            .desired_rows(rows),
+    )
+}
+
+fn show_edit_form(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr, field_w: f32) {
     const PARAMS_H: f32 = 72.0;
 
     let form = &mut app.type_hint_config_edit;
@@ -452,108 +501,55 @@ fn show_edit_form(ui: &mut egui::Ui, app: &mut AstGrepApp, t: crate::i18n::Tr) {
         .num_columns(2)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
+            let row_h = ui.spacing().interact_size.y;
             match app.type_hint_config_kind {
                 TypeHintRuleKind::Methods => {
                     ui.label("class");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.class),
-                    );
+                    add_clipped_field(ui, &mut form.class, field_w, row_h);
                     ui.label("method");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.method),
-                    );
+                    add_clipped_field(ui, &mut form.method, field_w, row_h);
                     ui.label("arity");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.arity),
-                    );
+                    add_clipped_field(ui, &mut form.arity, field_w, row_h);
                     ui.label("params");
-                    ui.add_sized(
-                        [FIELD_W, PARAMS_H],
-                        egui::TextEdit::multiline(&mut form.params).desired_rows(3),
-                    )
-                    .on_hover_text(t.type_hint_config_params_hint());
+                    add_clipped_multiline(ui, &mut form.params, field_w, PARAMS_H, 3)
+                        .on_hover_text(t.type_hint_config_params_hint());
                     ui.label("returns");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.returns),
-                    );
+                    add_clipped_field(ui, &mut form.returns, field_w, row_h);
                 }
                 TypeHintRuleKind::Functions | TypeHintRuleKind::Macros => {
                     ui.label("name");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.name),
-                    );
+                    add_clipped_field(ui, &mut form.name, field_w, row_h);
                     ui.label("arity");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.arity),
-                    );
+                    add_clipped_field(ui, &mut form.arity, field_w, row_h);
                     ui.label("params");
-                    ui.add_sized(
-                        [FIELD_W, PARAMS_H],
-                        egui::TextEdit::multiline(&mut form.params).desired_rows(3),
-                    )
-                    .on_hover_text(t.type_hint_config_params_hint());
+                    add_clipped_multiline(ui, &mut form.params, field_w, PARAMS_H, 3)
+                        .on_hover_text(t.type_hint_config_params_hint());
                     ui.label("returns");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.returns),
-                    );
+                    add_clipped_field(ui, &mut form.returns, field_w, row_h);
                 }
                 TypeHintRuleKind::Constants => {
                     ui.label("name");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.name),
-                    );
+                    add_clipped_field(ui, &mut form.name, field_w, row_h);
                     ui.label("type");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.ty),
-                    );
+                    add_clipped_field(ui, &mut form.ty, field_w, row_h);
                 }
                 TypeHintRuleKind::Fields => {
                     ui.label("class");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.class),
-                    );
+                    add_clipped_field(ui, &mut form.class, field_w, row_h);
                     ui.label("field");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.field),
-                    );
+                    add_clipped_field(ui, &mut form.field, field_w, row_h);
                     ui.label("type");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.ty),
-                    );
+                    add_clipped_field(ui, &mut form.ty, field_w, row_h);
                 }
                 TypeHintRuleKind::BinaryOps => {
                     ui.label("op");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.op),
-                    );
+                    add_clipped_field(ui, &mut form.op, field_w, row_h);
                     ui.label("lhs");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.lhs),
-                    );
+                    add_clipped_field(ui, &mut form.lhs, field_w, row_h);
                     ui.label("rhs");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.rhs),
-                    );
+                    add_clipped_field(ui, &mut form.rhs, field_w, row_h);
                     ui.label("returns");
-                    ui.add_sized(
-                        [FIELD_W, ui.spacing().interact_size.y],
-                        egui::TextEdit::singleline(&mut form.returns),
-                    );
+                    add_clipped_field(ui, &mut form.returns, field_w, row_h);
                 }
             }
         });
