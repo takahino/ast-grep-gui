@@ -73,6 +73,10 @@ fn context_match_item(m: &MatchItem) -> MatchItem {
         context_before: Vec::new(),
         context_after: Vec::new(),
         type_hints: m.type_hints.clone(),
+        rule_id: m.rule_id.clone(),
+        rule_message: m.rule_message.clone(),
+        severity: m.severity.clone(),
+        replacement: m.replacement.clone(),
     }
 }
 
@@ -503,6 +507,19 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         Sense::click(),
                                     );
                                     resize_spacer(ui, row_height);
+                                    let matched_hover = if let (Some(id), Some(sev), Some(msg)) = (
+                                        m.rule_id.as_deref(),
+                                        m.severity.as_deref(),
+                                        m.rule_message.as_deref(),
+                                    ) {
+                                        format!(
+                                            "{}\n\n{}",
+                                            app.tr().table_rule_hover(id, sev, msg),
+                                            matched_text
+                                        )
+                                    } else {
+                                        matched_text.clone()
+                                    };
                                     let r_matched = left_aligned_text_cell(
                                         ui,
                                         match_w,
@@ -514,7 +531,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                                         Color32::from_rgb(220, 200, 100),
                                         Sense::click(),
                                     )
-                                    .on_hover_text(&matched_text);
+                                    .on_hover_text(&matched_hover);
                                     resize_spacer(ui, row_height);
                                     let r_src = code_layout::paint_split_layout_job_cell(
                                         ui,

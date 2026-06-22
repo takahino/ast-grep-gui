@@ -161,7 +161,44 @@ fn search_mode_label(t: Tr, mode: SearchMode) -> &'static str {
         SearchMode::TokenSearch => t.mode_token(),
         SearchMode::PlainText => t.mode_plain(),
         SearchMode::Regex => t.mode_regex(),
+        SearchMode::YamlRule => t.mode_yaml(),
     }
+}
+
+fn append_yaml_rule_conditions(t: Tr, cond: &SearchConditions, s: &mut String, markdown: bool) {
+    if cond.search_mode != SearchMode::YamlRule {
+        return;
+    }
+    let opts = &cond.yaml_rule_options;
+    let lines = [
+        (t.export_cond_yaml_config(), opts.config_path.as_str()),
+        (t.export_cond_yaml_rule_file(), opts.rule_file.as_str()),
+        (
+            t.export_cond_yaml_rule_filter(),
+            opts.rule_filter.as_str(),
+        ),
+    ];
+    for (label, value) in lines {
+        if markdown {
+            s.push_str(&format!("- **{label}**: {value}\n"));
+        } else {
+            s.push_str(&format!("- {label}: {value}\n"));
+        }
+    }
+}
+
+#[cfg(test)]
+fn match_has_rule_metadata(m: &MatchItem) -> bool {
+    m.rule_id.is_some()
+}
+
+#[cfg(test)]
+fn rule_metadata_export_cells(m: &MatchItem) -> (String, String, String) {
+    (
+        m.rule_id.clone().unwrap_or_default(),
+        m.severity.clone().unwrap_or_default(),
+        m.rule_message.clone().unwrap_or_default(),
+    )
 }
 
 pub fn plain_text_options_export_value(t: Tr, cond: &SearchConditions) -> String {
@@ -266,6 +303,7 @@ fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLangua
         t.export_cond_plain_text_options(),
         plain_text_options_export_value(t, cond)
     ));
+    append_yaml_rule_conditions(t, cond, &mut s, false);
     s.push('\n');
     s
 }
@@ -345,6 +383,7 @@ pub fn format_search_conditions_markdown(
         t.export_cond_plain_text_options(),
         plain_text_options_export_value(t, cond)
     ));
+    append_yaml_rule_conditions(t, cond, &mut s, true);
     s.push('\n');
     s
 }
@@ -2265,5 +2304,82 @@ mod tests {
     fn markdown_table_sep_zero_columns() {
         // vec!["---"; 0].join("|") is "", so the result is "||\n"
         assert_eq!(markdown_table_sep(0), "||\n");
+    }
+
+    #[test]
+    fn yaml_rule_conditions_in_plain_export() {
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::i18n::{Tr, UiLanguage};
+        use crate::lang::SupportedLanguage;
+        use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, YamlRuleOptions};
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+
+        let cond = SearchConditions {
+            search_dir: "/tmp".into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: String::new(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 2,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::Auto,
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_file: "rules/test.yml".into(),
+                rule_filter: "my-rule".into(),
+                ..Default::default()
+            },
+        };
+        let text = format_search_conditions_plain(Tr(UiLanguage::English), &cond, UiLanguage::English);
+        assert!(text.contains("rules/test.yml"));
+        assert!(text.contains("my-rule"));
+        assert!(text.contains("YAML"));
+    }
+
+    #[test]
+    fn yaml_rule_metadata_serializes_in_match_item_json() {
+        use crate::lang::SupportedLanguage;
+        use std::path::PathBuf;
+
+        let m = MatchItem {
+            line_start: 1,
+            col_start: 0,
+            line_end: 1,
+            col_end: 3,
+            byte_start: 0,
+            byte_end: 3,
+            matched_text: "fn x".into(),
+            span_lines_text: String::new(),
+            context_before: vec![],
+            context_after: vec![],
+            type_hints: Default::default(),
+            rule_id: Some("test-rule".into()),
+            rule_message: Some("found fn".into()),
+            severity: Some("Warning".into()),
+            replacement: Some("pub fn x".into()),
+        };
+        assert!(match_has_rule_metadata(&m));
+        let (id, sev, msg) = rule_metadata_export_cells(&m);
+        assert_eq!(id, "test-rule");
+        assert_eq!(sev, "Warning");
+        assert_eq!(msg, "found fn");
+
+        let file = FileResult {
+            path: PathBuf::from("main.rs"),
+            relative_path: "main.rs".into(),
+            source_language: SupportedLanguage::Rust,
+            text_encoding: crate::file_encoding::FileEncoding::Utf8,
+            matches: vec![m],
+        };
+        let json = serde_json::to_string(&file).unwrap();
+        assert!(json.contains("test-rule"));
+        assert!(json.contains("found fn"));
+        assert!(json.contains("Warning"));
     }
 }

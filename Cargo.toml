@@ -1,6 +1,6 @@
 [package]
 name = "ast-grep-gui"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 
 [lib]
@@ -44,6 +44,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 svn = { version = "=0.1.6", default-features = true }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 quick-xml = "0.37"
+ast-grep-config = "0.42"
 
 [build-dependencies]
 winres = "0.1"

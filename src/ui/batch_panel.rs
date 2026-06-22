@@ -229,6 +229,11 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                             SearchMode::Regex,
                             t.mode_regex(),
                         );
+                        ui.selectable_value(
+                            &mut job.search_mode,
+                            SearchMode::YamlRule,
+                            t.mode_yaml(),
+                        );
                     });
 
                     if job.search_mode.is_ast_mode() {
@@ -248,6 +253,35 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                         });
                     }
 
+                    if job.search_mode == SearchMode::YamlRule {
+                        ui.horizontal(|ui| {
+                            ui.label(t.yaml_config_path_label())
+                                .on_hover_text(t.yaml_config_path_tooltip());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut job.yaml_rule_options.config_path)
+                                    .desired_width(280.0)
+                                    .hint_text(t.yaml_config_path_hint()),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(t.yaml_rule_file_label())
+                                .on_hover_text(t.yaml_rule_file_tooltip());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut job.yaml_rule_options.rule_file)
+                                    .desired_width(280.0)
+                                    .hint_text(t.yaml_rule_file_hint()),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(t.yaml_rule_filter_label())
+                                .on_hover_text(t.yaml_rule_filter_tooltip());
+                            ui.add(
+                                egui::TextEdit::singleline(&mut job.yaml_rule_options.rule_filter)
+                                    .desired_width(200.0)
+                                    .hint_text(t.yaml_rule_filter_hint()),
+                            );
+                        });
+                    } else {
                     let (pattern_tooltip, pattern_hint) = match job.search_mode {
                         SearchMode::AstGrep => {
                             (t.pattern_label_tooltip_ast(), t.pattern_hint_ast())
@@ -261,6 +295,7 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                         SearchMode::Regex => {
                             (t.pattern_label_tooltip_regex(), t.pattern_hint_regex())
                         }
+                        SearchMode::YamlRule => unreachable!(),
                     };
                     ui.horizontal(|ui| {
                         ui.label(t.pattern_colon()).on_hover_text(pattern_tooltip);
@@ -270,6 +305,7 @@ pub fn show_job_section(app: &mut AstGrepApp, ui: &mut Ui) {
                                 .hint_text(pattern_hint),
                         );
                     });
+                    }
 
                     if job.search_mode == SearchMode::PlainText {
                         ui.horizontal(|ui| {

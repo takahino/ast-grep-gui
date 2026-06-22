@@ -20,6 +20,7 @@ use crate::i18n::{Tr, UiLanguage};
 use crate::lang::SupportedLanguage;
 use crate::receiver_hint;
 use crate::type_hint_config::TypeHintConfig;
+pub use crate::yaml_rule::YamlRuleOptions;
 
 /// 検索モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -32,11 +33,13 @@ pub enum SearchMode {
     PlainText,
     /// 正規表現検索
     Regex,
+    /// 内蔵 ast-grep YAML rule（外部 CLI 不要）
+    YamlRule,
 }
 
 impl SearchMode {
     pub fn is_ast_mode(self) -> bool {
-        matches!(self, Self::AstGrep)
+        matches!(self, Self::AstGrep | Self::YamlRule)
     }
 }
 
@@ -240,6 +243,18 @@ pub struct MatchItem {
     #[serde(default)]
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub type_hints: BTreeMap<String, String>,
+    /// YAML rule id（`SearchMode::YamlRule` のみ）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    /// YAML rule message
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_message: Option<String>,
+    /// YAML rule severity
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    /// YAML rule fix / replacement（表示用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
 }
 
 impl MatchItem {
@@ -611,6 +626,7 @@ pub fn spawn_search(
     lang: SupportedLanguage,
     search_mode: SearchMode,
     plain_text_options: PlainTextSearchOptions,
+    yaml_rule_options: YamlRuleOptions,
     _context_lines: usize,
     file_filter: String,
     file_encoding_preference: FileEncodingPreference,
@@ -704,6 +720,23 @@ pub fn spawn_search(
             None
         };
 
+        let yaml_rule_set: Option<Arc<crate::yaml_rule::YamlRuleSet>> =
+            if search_mode == SearchMode::YamlRule {
+                match crate::yaml_rule::load_yaml_rules(
+                    search_dir_path.as_path(),
+                    &yaml_rule_options,
+                ) {
+                    Ok(set) => Some(Arc::new(set)),
+                    Err(msg) => {
+                        let _ = tx.send(SearchMessage::Error { job_id, msg });
+                        repaint(&egui_ctx);
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+
         // スキップディレクトリを HashSet に変換（O(1) ルックアップ）
         let skip_dirs: std::collections::HashSet<String> = skip_dirs_str
             .split(';')
@@ -725,12 +758,25 @@ pub fn spawn_search(
 
         // ファイルフィルタの解析
         let custom_patterns = parse_file_filter(&file_filter);
-        // PlainText/Regex でファイルフィルタ未指定の場合は全ファイルを対象にする
-        let use_lang_filter = search_mode.is_ast_mode() && custom_patterns.is_none();
-        let ext_set: std::collections::HashSet<&str> = if use_lang_filter {
+        // AstGrep / YamlRule でファイルフィルタ未指定の場合は言語拡張子でフィルタ
+        let use_lang_filter =
+            search_mode.is_ast_mode() && custom_patterns.is_none();
+        let ext_set: std::collections::HashSet<String> = if search_mode == SearchMode::YamlRule {
+            yaml_rule_set
+                .as_ref()
+                .map(|s| s.extensions.clone())
+                .unwrap_or_default()
+        } else if use_lang_filter {
             match lang {
-                SupportedLanguage::Auto => SupportedLanguage::union_extensions_for_auto_filter(),
-                _ => lang.extensions().iter().copied().collect(),
+                SupportedLanguage::Auto => SupportedLanguage::union_extensions_for_auto_filter()
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                _ => lang
+                    .extensions()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
             }
         } else {
             std::collections::HashSet::new()
@@ -761,11 +807,11 @@ pub fn spawn_search(
                     // カスタムパターンに1つでもマッチすれば対象
                     patterns.iter().any(|re| re.is_match(&file_name))
                 } else if use_lang_filter {
-                    // AstGrep モードのみ言語拡張子でフィルタ
+                    // AstGrep / YamlRule モードのみ言語拡張子でフィルタ
                     e.path()
                         .extension()
                         .and_then(|ext| ext.to_str())
-                        .map(|ext| ext_set.contains(ext))
+                        .map(|ext| ext_set.contains(&ext.to_lowercase()))
                         .unwrap_or(false)
                 } else {
                     // PlainText/Regex はすべてのファイルを対象
@@ -794,7 +840,18 @@ pub fn spawn_search(
                     .to_string_lossy()
                     .to_string();
 
-                let file_lang = if lang == SupportedLanguage::Auto {
+                let file_lang = if search_mode == SearchMode::YamlRule {
+                    let Some(set) = yaml_rule_set.as_ref() else {
+                        return;
+                    };
+                    let Some(support) =
+                        set.resolve_file_language(&path, &relative_path, lang)
+                    else {
+                        return;
+                    };
+                    crate::yaml_rule::support_lang_to_supported_language(support)
+                        .unwrap_or(SupportedLanguage::Rust)
+                } else if lang == SupportedLanguage::Auto {
                     match SupportedLanguage::from_path(&path) {
                         Some(l) => l,
                         None => {
@@ -1105,6 +1162,82 @@ pub fn spawn_search(
                         }
                         out
                     }
+                    SearchMode::YamlRule => {
+                        if let Some(set) = yaml_rule_set.as_ref() {
+                            let applicable =
+                                set.rules_for_file(&path, &relative_path, lang);
+                            if !applicable.is_empty() {
+                                let ast_lang = applicable[0].language;
+                                let root = ast_lang.ast_grep(&source);
+                                let mut out = Vec::new();
+                                for rule in applicable {
+                                    for node in root.root().find_all(&rule.matcher) {
+                                        if !try_accept_hit(
+                                            &hits_acc,
+                                            max_search_hits,
+                                            &limit_flag,
+                                        ) {
+                                            break;
+                                        }
+                                        let matched_node = node.get_node().clone();
+                                        let display_node = if matched_node.kind()
+                                            == "function_declarator"
+                                        {
+                                            matched_node
+                                                .parent()
+                                                .filter(|p| p.kind() == "function_definition")
+                                                .unwrap_or_else(|| matched_node.clone())
+                                        } else {
+                                            matched_node.clone()
+                                        };
+                                        let node_range = display_node.range();
+                                        let matched_end =
+                                            node_range.end.min(source.len());
+                                        let (line_start, col_start) = line_index
+                                            .byte_offset_to_line_col(
+                                                &source,
+                                                node_range.start,
+                                            );
+                                        let (line_end, col_end) = line_index
+                                            .byte_offset_to_line_col(&source, matched_end);
+                                        let (rule_id, rule_message, severity, replacement) =
+                                            crate::yaml_rule::rule_metadata(rule);
+                                        out.push(build_yaml_match_item(
+                                            line_start,
+                                            col_start,
+                                            line_end,
+                                            col_end,
+                                            node_range.start,
+                                            matched_end,
+                                            rule_id,
+                                            rule_message,
+                                            severity,
+                                            replacement,
+                                        ));
+                                    }
+                                }
+                                if !out.is_empty() {
+                                    let _ = tx.send(SearchMessage::FileResult {
+                                        job_id,
+                                        file: FileResult {
+                                            path: path.to_path_buf(),
+                                            relative_path: relative_path.clone(),
+                                            source_language: file_lang,
+                                            text_encoding: text_encoding.clone(),
+                                            matches: out.clone(),
+                                        },
+                                    });
+                                    file_result_sent = true;
+                                    repaint(&egui_ctx);
+                                }
+                                out
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    }
                 };
 
                 if !matches.is_empty() && !file_result_sent {
@@ -1175,6 +1308,7 @@ pub fn run_search_sync(
         cond.selected_lang,
         cond.search_mode,
         cond.plain_text_options,
+        cond.yaml_rule_options.clone(),
         cond.context_lines,
         cond.file_filter.clone(),
         cond.file_encoding_preference,
@@ -1869,6 +2003,41 @@ fn build_match_item(
         context_before: vec![],
         context_after: vec![],
         type_hints,
+        rule_id: None,
+        rule_message: None,
+        severity: None,
+        replacement: None,
+    }
+}
+
+fn build_yaml_match_item(
+    line_start: usize,
+    col_start: usize,
+    line_end: usize,
+    col_end: usize,
+    byte_start: usize,
+    byte_end: usize,
+    rule_id: String,
+    rule_message: String,
+    severity: String,
+    replacement: Option<String>,
+) -> MatchItem {
+    MatchItem {
+        line_start: line_start + 1,
+        col_start,
+        line_end: line_end + 1,
+        col_end,
+        byte_start,
+        byte_end,
+        matched_text: String::new(),
+        span_lines_text: String::new(),
+        context_before: vec![],
+        context_after: vec![],
+        type_hints: BTreeMap::new(),
+        rule_id: Some(rule_id),
+        rule_message: Some(rule_message),
+        severity: Some(severity),
+        replacement,
     }
 }
 
@@ -2088,6 +2257,9 @@ pub struct SearchConditions {
     /// メタ変数の型ヒント推定を行う（AST モード・メタ変数ありのとき）
     #[serde(default = "default_type_hints_enabled")]
     pub type_hints_enabled: bool,
+    /// YAML rule モードのオプション
+    #[serde(default)]
+    pub yaml_rule_options: YamlRuleOptions,
 }
 
 pub fn default_max_search_hits() -> usize {
@@ -2193,6 +2365,10 @@ mod tests {
                 context_before: vec![],
                 context_after: vec![],
                 type_hints: hints,
+                rule_id: None,
+                rule_message: None,
+                severity: None,
+                replacement: None,
             }],
             source_language: crate::lang::SupportedLanguage::Rust,
             text_encoding: crate::file_encoding::FileEncoding::Utf8,
@@ -2215,6 +2391,10 @@ mod tests {
             context_before: vec![],
             context_after: vec![],
             type_hints: BTreeMap::new(),
+            rule_id: None,
+            rule_message: None,
+            severity: None,
+            replacement: None,
         };
         m.type_hints
             .insert("ARGS#arity".to_string(), "2".to_string());
@@ -2242,6 +2422,10 @@ mod tests {
             context_before: vec![],
             context_after: vec![],
             type_hints: BTreeMap::new(),
+            rule_id: None,
+            rule_message: None,
+            severity: None,
+            replacement: None,
         };
         m.type_hints
             .insert("ARGS#arity".to_string(), "2".to_string());
@@ -2270,6 +2454,10 @@ mod tests {
             context_before: vec![],
             context_after: vec![],
             type_hints: BTreeMap::new(),
+            rule_id: None,
+            rule_message: None,
+            severity: None,
+            replacement: None,
         };
         m.type_hints
             .insert("ARGS#arity".to_string(), "2".to_string());
@@ -2336,6 +2524,10 @@ mod tests {
             context_before: vec![],
             context_after: vec![],
             type_hints: hints,
+            rule_id: None,
+            rule_message: None,
+            severity: None,
+            replacement: None,
         }
     }
 

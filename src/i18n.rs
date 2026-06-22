@@ -398,6 +398,94 @@ impl Tr {
         }
     }
 
+    pub fn mode_yaml(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "YAML",
+            UiLanguage::English => "YAML",
+        }
+    }
+    pub fn mode_yaml_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "ast-grep の rule YAML を exe 内蔵エンジンで実行します\n\
+                 sgconfig.yml / rule ファイル / rule id フィルタを指定\n\
+                 customLanguages は非対応（内蔵言語のみ）"
+            }
+            UiLanguage::English => {
+                "Run ast-grep rule YAML with the built-in engine (no external CLI)\n\
+                 Set sgconfig.yml, a rule file, and optional rule id filter\n\
+                 customLanguages is not supported (built-in languages only)"
+            }
+        }
+    }
+
+    pub fn yaml_config_path_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "sgconfig:",
+            UiLanguage::English => "sgconfig:",
+        }
+    }
+    pub fn yaml_config_path_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "sgconfig.yml のパス（空なら検索ルートから自動検出）\n\
+                 ruleDirs / utilDirs / languageGlobs を読み込みます"
+            }
+            UiLanguage::English => {
+                "Path to sgconfig.yml (auto-detect upward from search root if empty)\n\
+                 Loads ruleDirs, utilDirs, and languageGlobs"
+            }
+        }
+    }
+    pub fn yaml_config_path_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "空=自動",
+            UiLanguage::English => "empty=auto",
+        }
+    }
+    pub fn yaml_rule_file_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule:",
+            UiLanguage::English => "rule:",
+        }
+    }
+    pub fn yaml_rule_file_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "単一 rule YAML ファイル（任意）\n\
+                 空のときは sgconfig の ruleDirs を使用"
+            }
+            UiLanguage::English => {
+                "Single rule YAML file (optional)\n\
+                 If empty, uses ruleDirs from sgconfig"
+            }
+        }
+    }
+    pub fn yaml_rule_file_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "任意",
+            UiLanguage::English => "optional",
+        }
+    }
+    pub fn yaml_rule_filter_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule id:",
+            UiLanguage::English => "rule id:",
+        }
+    }
+    pub fn yaml_rule_filter_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule id の正規表現フィルタ（空なら全 rule）",
+            UiLanguage::English => "Regex filter on rule id (empty = all rules)",
+        }
+    }
+    pub fn yaml_rule_filter_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "正規表現",
+            UiLanguage::English => "regex",
+        }
+    }
+
     pub fn search_lang_label(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "言語:",
@@ -707,6 +795,16 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "正規表現検索を開始します（Enter キーでも可）",
             UiLanguage::English => "Start regex search (Enter also works)",
+        }
+    }
+    pub fn search_tooltip_yaml(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "YAML rule 検索を開始します（sgconfig または rule ファイルが必要）"
+            }
+            UiLanguage::English => {
+                "Start YAML rule search (requires sgconfig or a rule file)"
+            }
         }
     }
 
@@ -1850,6 +1948,60 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "ファイルフィルタと詳細設定で対象を絞り込めます",
             UiLanguage::English => "Use file filter and advanced settings to narrow targets",
+        }
+    }
+    pub fn footer_hint_yaml(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "sgconfig.yml または rule YAML を指定して検索します。表のマッチ行に rule id / severity をホバー表示"
+            }
+            UiLanguage::English => {
+                "Set sgconfig.yml or a rule YAML file. Hover matches for rule id / severity"
+            }
+        }
+    }
+
+    pub fn export_cond_yaml_config(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "sgconfig",
+            UiLanguage::English => "sgconfig",
+        }
+    }
+    pub fn export_cond_yaml_rule_file(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule ファイル",
+            UiLanguage::English => "rule file",
+        }
+    }
+    pub fn export_cond_yaml_rule_filter(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule id フィルタ",
+            UiLanguage::English => "rule id filter",
+        }
+    }
+    pub fn export_col_rule_id(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule id",
+            UiLanguage::English => "rule id",
+        }
+    }
+    pub fn export_col_rule_severity(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "severity",
+            UiLanguage::English => "severity",
+        }
+    }
+    pub fn export_col_rule_message(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "message",
+            UiLanguage::English => "message",
+        }
+    }
+    pub fn table_rule_hover(self, id: &str, severity: &str, message: &str) -> String {
+        match self.0 {
+            UiLanguage::Japanese | UiLanguage::English => {
+                format!("rule: {id}\nseverity: {severity}\nmessage: {message}")
+            }
         }
     }
 

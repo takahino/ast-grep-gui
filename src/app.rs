@@ -20,7 +20,7 @@ use crate::rewrite::{RewriteMessage, RewritePreview};
 use crate::search::{
     refresh_match_contexts, search_message_channel, spawn_search, FileResult, MatchItem,
     PlainTextSearchOptions, SearchConditions, SearchMessage, SearchMode, SearchStats,
-    SEARCH_MESSAGES_PER_FRAME,
+    YamlRuleOptions, SEARCH_MESSAGES_PER_FRAME,
 };
 use crate::search_target::{
     RemoteCachePolicy, RemoteFetchRequest, RemoteTargetConfig, SearchTargetMode,
@@ -160,6 +160,9 @@ struct PersistedAppState {
     /// 最後に読み込んだ型ヒント補助 YML パス
     #[serde(default)]
     type_hint_config_path: String,
+    /// YAML rule モードのオプション
+    #[serde(default)]
+    yaml_rule_options: YamlRuleOptions,
 }
 
 fn default_next_pattern_job_id() -> usize {
@@ -217,6 +220,7 @@ impl Default for PersistedAppState {
             skip_dirs: ".git;.hg;.svn;target;node_modules;dist;build;.cache;.next;vendor;__pycache__;venv;.venv".to_string(),
             search_mode: SearchMode::AstGrep,
             plain_text_options: PlainTextSearchOptions::default(),
+            yaml_rule_options: YamlRuleOptions::default(),
             ui_language_preference: UiLanguagePreference::default(),
             pattern_history: Vec::new(),
             regex_visualizer_test_text: String::new(),
@@ -311,6 +315,8 @@ pub struct AstGrepApp {
     pub search_mode: SearchMode,
     /// 文字列検索モードのオプション（大文字小文字・単語単位）
     pub plain_text_options: PlainTextSearchOptions,
+    /// YAML rule モードのオプション
+    pub yaml_rule_options: YamlRuleOptions,
     /// UI 表示言語
     pub ui_language_preference: UiLanguagePreference,
     /// パターン支援ポップアップに転送するスニペット（Some のとき反映しパターン生成まで実行）
@@ -461,6 +467,7 @@ impl AstGrepApp {
             type_hint_config_status: None,
             search_mode: persisted.search_mode,
             plain_text_options: persisted.plain_text_options,
+            yaml_rule_options: persisted.yaml_rule_options,
             ui_language_preference: persisted.ui_language_preference,
             pending_pattern_assist_snippet: None,
             table_preview: None,
@@ -559,6 +566,7 @@ impl AstGrepApp {
             plain_text_options: self.plain_text_options,
             cpp_include_dirs: self.cpp_include_dirs.clone(),
             type_hints_enabled: self.type_hints_enabled,
+            yaml_rule_options: self.yaml_rule_options.clone(),
         }
     }
 
@@ -590,6 +598,7 @@ impl AstGrepApp {
             table_column_widths: self.table_column_widths.clone(),
             type_hint_config_cpp: self.type_hint_config.cpp.clone(),
             type_hint_config_path: self.type_hint_config_path.clone(),
+            yaml_rule_options: self.yaml_rule_options.clone(),
         }
     }
 
@@ -616,7 +625,7 @@ impl AstGrepApp {
     }
 
     fn start_search_impl(&mut self, add_history: bool) {
-        if self.pattern.is_empty() || !self.can_start_search_target() {
+        if !self.search_input_ready() {
             return;
         }
 
@@ -671,6 +680,28 @@ impl AstGrepApp {
             SearchTargetMode::Directory => !self.search_dir.trim().is_empty(),
             mode => self.remote_target.is_remote_ready(mode),
         }
+    }
+
+    /// パターンまたは YAML rule 設定が揃い、検索を開始できるか
+    pub fn search_input_ready(&self) -> bool {
+        if !self.can_start_search_target() {
+            return false;
+        }
+        match self.search_mode {
+            SearchMode::YamlRule => crate::yaml_rule::yaml_rule_input_ready(
+                self.search_dir_for_yaml_rules().as_str(),
+                &self.yaml_rule_options,
+            ),
+            _ => !self.pattern.trim().is_empty(),
+        }
+    }
+
+    fn search_dir_for_yaml_rules(&self) -> String {
+        self.resolved_search_dir
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(self.search_dir.as_str())
+            .to_string()
     }
 
     pub fn effective_search_dir_display(&self) -> String {
@@ -743,6 +774,8 @@ impl AstGrepApp {
             job.map(|j| j.search_mode).unwrap_or(self.search_mode),
             job.map(|j| j.plain_text_options)
                 .unwrap_or(self.plain_text_options),
+            job.map(|j| j.yaml_rule_options.clone())
+                .unwrap_or_else(|| self.yaml_rule_options.clone()),
             job.map(|j| j.context_lines)
                 .unwrap_or(self.context_lines),
             job.map(|j| j.file_filter.clone())
@@ -850,6 +883,7 @@ impl AstGrepApp {
             self.plain_text_options,
             self.cpp_include_dirs.clone(),
             self.type_hints_enabled,
+            self.yaml_rule_options.clone(),
         ));
     }
 
@@ -1562,8 +1596,7 @@ impl eframe::App for AstGrepApp {
                         self.search_state,
                         SearchState::Running | SearchState::FetchingRemote(_)
                     )
-                    && self.can_start_search_target()
-                    && !self.pattern.is_empty()
+                    && self.search_input_ready()
                 {
                     self.pattern_last_changed = None;
                     self.start_search_no_history();

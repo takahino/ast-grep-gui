@@ -10,8 +10,8 @@ use crate::file_encoding::{read_text_file_as, FileEncodingPreference};
 use crate::i18n::UiLanguage;
 use crate::search::{
     join_span_lines, search_message_channel, slice_context_lines, spawn_search, FileResult,
-    MatchItem, PlainTextSearchOptions, SearchMessage, SearchMode, TERMINAL_MAX_LINES,
-    TERMINAL_MAX_SEARCH_HITS,
+    MatchItem, PlainTextSearchOptions, SearchMessage, SearchMode, YamlRuleOptions,
+    TERMINAL_MAX_LINES, TERMINAL_MAX_SEARCH_HITS,
 };
 use crate::sg_command::{is_sg_command, parse_sg_run};
 use crate::type_hint_config::TypeHintConfig;
@@ -155,6 +155,7 @@ impl TerminalState {
             args.lang,
             SearchMode::AstGrep,
             PlainTextSearchOptions::default(),
+            YamlRuleOptions::default(),
             context_lines,
             String::new(),
             self.file_encoding_preference,

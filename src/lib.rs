@@ -23,3 +23,4 @@ pub mod terminal;
 pub mod type_hint_config;
 pub mod ui;
 pub mod vcs_cache;
+pub mod yaml_rule;

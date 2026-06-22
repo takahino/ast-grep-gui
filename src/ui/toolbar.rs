@@ -129,10 +129,12 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             .on_hover_text(t.mode_plain_tooltip());
         ui.selectable_value(&mut app.search_mode, SearchMode::Regex, t.mode_regex())
             .on_hover_text(t.mode_regex_tooltip());
+        ui.selectable_value(&mut app.search_mode, SearchMode::YamlRule, t.mode_yaml())
+            .on_hover_text(t.mode_yaml_tooltip());
 
         ui.separator();
 
-        // AST モードのみ言語選択を表示
+        // AST / YAML rule モードのみ言語選択を表示
         if app.search_mode.is_ast_mode() {
             ui.label(t.search_lang_label())
                 .on_hover_text(t.search_lang_tooltip());
@@ -258,11 +260,52 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     }
 
     ui.horizontal(|ui| {
+        if app.search_mode == SearchMode::YamlRule {
+            ui.label(t.yaml_config_path_label())
+                .on_hover_text(t.yaml_config_path_tooltip());
+            ui.add(
+                egui::TextEdit::singleline(&mut app.yaml_rule_options.config_path)
+                    .desired_width(220.0)
+                    .hint_text(t.yaml_config_path_hint()),
+            );
+            if ui.button(t.browse()).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("YAML", &["yml", "yaml"])
+                    .pick_file()
+                {
+                    app.yaml_rule_options.config_path =
+                        path.to_string_lossy().to_string();
+                }
+            }
+            ui.label(t.yaml_rule_file_label())
+                .on_hover_text(t.yaml_rule_file_tooltip());
+            ui.add(
+                egui::TextEdit::singleline(&mut app.yaml_rule_options.rule_file)
+                    .desired_width(220.0)
+                    .hint_text(t.yaml_rule_file_hint()),
+            );
+            if ui.button(t.browse()).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("YAML", &["yml", "yaml"])
+                    .pick_file()
+                {
+                    app.yaml_rule_options.rule_file = path.to_string_lossy().to_string();
+                }
+            }
+            ui.label(t.yaml_rule_filter_label())
+                .on_hover_text(t.yaml_rule_filter_tooltip());
+            ui.add(
+                egui::TextEdit::singleline(&mut app.yaml_rule_options.rule_filter)
+                    .desired_width(140.0)
+                    .hint_text(t.yaml_rule_filter_hint()),
+            );
+        } else {
         let (pattern_label_tooltip, pattern_hint) = match app.search_mode {
             SearchMode::AstGrep => (t.pattern_label_tooltip_ast(), t.pattern_hint_ast()),
             SearchMode::TokenSearch => (t.pattern_label_tooltip_token(), t.pattern_hint_token()),
             SearchMode::PlainText => (t.pattern_label_tooltip_plain(), t.pattern_hint_plain()),
             SearchMode::Regex => (t.pattern_label_tooltip_regex(), t.pattern_hint_regex()),
+            SearchMode::YamlRule => unreachable!(),
         };
 
         ui.label(t.pattern_colon())
@@ -287,7 +330,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         }
 
         // AST / Regex モードのみ履歴サジェストを表示
-        let show_suggest = app.search_mode.is_ast_mode() || app.search_mode == SearchMode::Regex;
+        let show_suggest =
+            app.search_mode == SearchMode::AstGrep || app.search_mode == SearchMode::Regex;
 
         let popup_id = ui.make_persistent_id("pattern_autocomplete");
 
@@ -386,6 +430,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             }
             app.start_search();
         }
+        }
 
         let is_running = matches!(
             app.search_state,
@@ -406,9 +451,11 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                 SearchMode::TokenSearch => t.search_tooltip_token(),
                 SearchMode::PlainText => t.search_tooltip_plain(),
                 SearchMode::Regex => t.search_tooltip_regex(),
+                SearchMode::YamlRule => t.search_tooltip_yaml(),
             };
+            let can_search = app.search_input_ready();
             if ui
-                .button(t.search_btn())
+                .add_enabled(can_search, egui::Button::new(t.search_btn()))
                 .on_hover_text(search_tooltip)
                 .clicked()
             {
@@ -427,8 +474,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             app.clear_results();
         }
 
-        // ASTモードのときのみヘルプ・パターン支援を表示
-        if app.search_mode.is_ast_mode() {
+        // AST パターンモードのときのみヘルプ・パターン支援を表示
+        if app.search_mode == SearchMode::AstGrep {
             if ui
                 .button(t.help_btn())
                 .on_hover_text(t.help_btn_tooltip())
@@ -606,16 +653,16 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
     batch_panel::show_job_section(app, ui);
 
     ui.horizontal(|ui| {
-        let hint = if app.search_mode.is_ast_mode() {
-            t.footer_hint_ast()
-        } else {
-            t.footer_hint_non_ast()
+        let hint = match app.search_mode {
+            SearchMode::AstGrep => t.footer_hint_ast(),
+            SearchMode::YamlRule => t.footer_hint_yaml(),
+            _ => t.footer_hint_non_ast(),
         };
         ui.label(egui::RichText::new(hint).small().color(egui::Color32::GRAY));
     });
 
-    // AST モード: 置換テンプレート（--rewrite 相当）とプレビュー
-    if app.search_mode.is_ast_mode() {
+    // AST パターンモード: 置換テンプレート（--rewrite 相当）とプレビュー
+    if app.search_mode == SearchMode::AstGrep {
         ui.horizontal(|ui| {
             ui.label(t.rewrite_template_label())
                 .on_hover_text(t.rewrite_template_tooltip());

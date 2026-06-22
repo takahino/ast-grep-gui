@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::cli_config::BatchCommonOptions;
 use crate::file_encoding::FileEncodingPreference;
 use crate::lang::SupportedLanguage;
-use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
+use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats, YamlRuleOptions};
 use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
 use crate::type_hint_config::TypeHintConfig;
 
@@ -35,6 +35,9 @@ pub struct PatternJob {
     pub search_mode: SearchMode,
     #[serde(default)]
     pub plain_text_options: PlainTextSearchOptions,
+    /// YAML rule モードのオプション
+    #[serde(default)]
+    pub yaml_rule_options: YamlRuleOptions,
     /// C++ 型ヒント用（`-I` 相当、`;` 区切り）
     #[serde(default)]
     pub cpp_include_dirs: String,
@@ -61,6 +64,7 @@ impl PatternJob {
             plain_text_options: self.plain_text_options,
             cpp_include_dirs: self.cpp_include_dirs.clone(),
             type_hints_enabled: self.type_hints_enabled,
+            yaml_rule_options: self.yaml_rule_options.clone(),
         }
     }
 
@@ -83,6 +87,7 @@ impl PatternJob {
         plain_text_options: PlainTextSearchOptions,
         cpp_include_dirs: String,
         type_hints_enabled: bool,
+        yaml_rule_options: YamlRuleOptions,
     ) -> Self {
         Self {
             id,
@@ -101,13 +106,23 @@ impl PatternJob {
             skip_dirs,
             search_mode,
             plain_text_options,
+            yaml_rule_options,
             cpp_include_dirs,
             type_hints_enabled,
         }
     }
 
     pub fn is_runnable(&self) -> bool {
-        if !self.enabled || self.pattern.trim().is_empty() {
+        if !self.enabled {
+            return false;
+        }
+        let input_ready = match self.search_mode {
+            SearchMode::YamlRule => {
+                crate::yaml_rule::yaml_rule_input_ready(&self.search_dir, &self.yaml_rule_options)
+            }
+            _ => !self.pattern.trim().is_empty(),
+        };
+        if !input_ready {
             return false;
         }
         match self.search_target_mode {
@@ -281,6 +296,7 @@ pub fn jobs_from_pattern_lines(
                 skip_dirs: common.skip_dirs.clone(),
                 search_mode: common.search_mode,
                 plain_text_options: common.plain_text_options,
+                yaml_rule_options: YamlRuleOptions::default(),
                 cpp_include_dirs: common.cpp_include_dirs.clone(),
                 type_hints_enabled: common.type_hints_enabled,
             }
@@ -319,7 +335,7 @@ mod tests {
     use super::*;
     use crate::file_encoding::FileEncodingPreference;
     use crate::lang::SupportedLanguage;
-    use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats};
+    use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats, YamlRuleOptions};
     use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
 
     fn make_job(id: usize, enabled: bool, pattern: &str, search_dir: &str) -> PatternJob {
@@ -340,6 +356,7 @@ mod tests {
             skip_dirs: String::new(),
             search_mode: SearchMode::AstGrep,
             plain_text_options: PlainTextSearchOptions::default(),
+            yaml_rule_options: YamlRuleOptions::default(),
             cpp_include_dirs: String::new(),
             type_hints_enabled: crate::search::default_type_hints_enabled(),
         }
@@ -365,6 +382,7 @@ mod tests {
                 plain_text_options: PlainTextSearchOptions::default(),
                 cpp_include_dirs: String::new(),
                 type_hints_enabled: crate::search::default_type_hints_enabled(),
+                yaml_rule_options: YamlRuleOptions::default(),
             },
             results: vec![],
             stats: SearchStats {
