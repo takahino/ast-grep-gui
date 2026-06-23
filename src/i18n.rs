@@ -453,11 +453,13 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => {
                 "単一 rule YAML ファイル（任意）\n\
-                 空のときは sgconfig の ruleDirs を使用"
+                 空のときは sgconfig の ruleDirs を使用\n\
+                 下の rule 本文欄に入力がある場合は本文が優先されます"
             }
             UiLanguage::English => {
                 "Single rule YAML file (optional)\n\
-                 If empty, uses ruleDirs from sgconfig"
+                 If empty, uses ruleDirs from sgconfig\n\
+                 Inline rule text below takes priority when non-empty"
             }
         }
     }
@@ -483,6 +485,33 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "正規表現",
             UiLanguage::English => "regex",
+        }
+    }
+
+    pub fn yaml_rule_text_label(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule 本文:",
+            UiLanguage::English => "rule text:",
+        }
+    }
+    pub fn yaml_rule_text_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "ast-grep rule YAML を直接入力します\n\
+                 入力がある場合は rule ファイル指定より優先されます\n\
+                 `---` で複数 rule を区切れます"
+            }
+            UiLanguage::English => {
+                "Enter ast-grep rule YAML directly\n\
+                 Takes priority over rule file when non-empty\n\
+                 Separate multiple rules with `---`"
+            }
+        }
+    }
+    pub fn yaml_rule_text_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "id: my-rule\nlanguage: Rust\nrule:\n  pattern: ...",
+            UiLanguage::English => "id: my-rule\nlanguage: Rust\nrule:\n  pattern: ...",
         }
     }
 
@@ -1953,10 +1982,10 @@ impl Tr {
     pub fn footer_hint_yaml(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {
-                "sgconfig.yml または rule YAML を指定して検索します。表のマッチ行に rule id / severity をホバー表示"
+                "sgconfig.yml / rule ファイル / rule 本文欄のいずれかで検索します。表のマッチ行に rule id / severity をホバー表示"
             }
             UiLanguage::English => {
-                "Set sgconfig.yml or a rule YAML file. Hover matches for rule id / severity"
+                "Search via sgconfig.yml, a rule file, or inline rule text. Hover matches for rule id / severity"
             }
         }
     }
@@ -1977,6 +2006,24 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "rule id フィルタ",
             UiLanguage::English => "rule id filter",
+        }
+    }
+    pub fn export_cond_yaml_rule_text(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "rule 本文（インライン）",
+            UiLanguage::English => "rule text (inline)",
+        }
+    }
+    pub fn export_cond_yaml_rule_text_inline(self, chars: usize) -> String {
+        match self.0 {
+            UiLanguage::Japanese => format!("使用中（{chars} 文字）"),
+            UiLanguage::English => format!("in use ({chars} chars)"),
+        }
+    }
+    pub fn export_cond_yaml_rule_text_empty(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "（未使用）",
+            UiLanguage::English => "(not used)",
         }
     }
     pub fn export_col_rule_id(self) -> &'static str {

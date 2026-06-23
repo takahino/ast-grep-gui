@@ -2871,4 +2871,60 @@ message: log
         assert_eq!(result.results.len(), 1);
         assert!(result.results[0].relative_path.replace('\\', "/").contains("src/"));
     }
+
+    #[test]
+    fn yaml_run_search_sync_inline_rule_text() {
+        use std::sync::Arc;
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::lang::SupportedLanguage;
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+        use super::{PlainTextSearchOptions, SearchMode, YamlRuleOptions};
+
+        let dir = yaml_search_temp_dir("search-yaml-inline");
+        std::fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let cond = super::SearchConditions {
+            search_dir: dir.to_string_lossy().into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: String::new(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 0,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::default(),
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_text: r#"
+id: rust-fn
+language: Rust
+rule:
+  kind: function_item
+  pattern: fn $NAME
+message: fn
+"#
+                .into(),
+                ..Default::default()
+            },
+        };
+        let result = super::run_search_sync(
+            &cond,
+            1,
+            "yaml-inline".into(),
+            crate::i18n::UiLanguage::Japanese,
+            Arc::new(crate::type_hint_config::TypeHintConfig::default()),
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.stats.total_matches, 1);
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(
+            result.results[0].matches[0].rule_id.as_deref(),
+            Some("rust-fn")
+        );
+    }
 }

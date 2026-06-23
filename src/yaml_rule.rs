@@ -22,6 +22,9 @@ pub struct YamlRuleOptions {
     /// 単一 rule YAML ファイル（空なら `ruleDirs` を使用）
     #[serde(default)]
     pub rule_file: String,
+    /// GUI 上で直接入力する rule YAML 本文（非空なら `rule_file` より優先）
+    #[serde(default)]
+    pub rule_text: String,
     /// rule id の正規表現フィルタ（空なら全 rule）
     #[serde(default)]
     pub rule_filter: String,
@@ -29,7 +32,13 @@ pub struct YamlRuleOptions {
 
 impl YamlRuleOptions {
     pub fn is_configured(&self) -> bool {
-        !self.config_path.trim().is_empty() || !self.rule_file.trim().is_empty()
+        !self.config_path.trim().is_empty()
+            || !self.rule_file.trim().is_empty()
+            || !self.rule_text.trim().is_empty()
+    }
+
+    pub fn uses_inline_rule_text(&self) -> bool {
+        !self.rule_text.trim().is_empty()
     }
 }
 
@@ -347,8 +356,12 @@ pub fn load_yaml_rules(
         )
     };
 
+    let rule_text = options.rule_text.trim();
     let rule_file = options.rule_file.trim();
-    let (globals, project, config_root) = if rule_file.is_empty() {
+    let (globals, project, config_root) = if !rule_text.is_empty() || !rule_file.is_empty() {
+        let globals = GlobalRules::default();
+        (globals, None, search_dir.to_path_buf())
+    } else {
         let config_path = resolve_config_path(search_dir, options)?;
         let config_root = config_path
             .parent()
@@ -373,9 +386,6 @@ pub fn load_yaml_rules(
             .collect();
         let globals = load_global_rules(&util_dirs)?;
         (globals, Some(project), config_root)
-    } else {
-        let globals = GlobalRules::default();
-        (globals, None, search_dir.to_path_buf())
     };
 
     let language_globs = project
@@ -383,7 +393,9 @@ pub fn load_yaml_rules(
         .map(|p| p.language_globs.clone())
         .unwrap_or_default();
 
-    let rules = if !rule_file.is_empty() {
+    let rules = if !rule_text.is_empty() {
+        load_rules_from_text(rule_text, &globals, id_filter.as_ref())?
+    } else if !rule_file.is_empty() {
         let path = PathBuf::from(rule_file);
         if !path.is_file() {
             return Err(format!("rule file not found: {rule_file}"));
@@ -643,6 +655,61 @@ mod tests {
     }
 
     #[test]
+    fn load_inline_rule_text() {
+        let dir = temp_dir("yaml-rule-inline");
+        let opts = YamlRuleOptions {
+            rule_text: r#"
+id: inline-rule
+language: Rust
+rule:
+  kind: function_item
+  pattern: fn $NAME
+message: inline
+severity: warning
+"#
+            .into(),
+            ..Default::default()
+        };
+        let set = load_yaml_rules(&dir, &opts).unwrap();
+        assert_eq!(set.rule_count(), 1);
+        assert_eq!(set.get_rule("inline-rule").unwrap().id, "inline-rule");
+    }
+
+    #[test]
+    fn inline_rule_text_takes_priority_over_rule_file() {
+        let dir = temp_dir("yaml-rule-inline-priority");
+        write_rule(
+            &dir,
+            "file.yml",
+            r#"
+id: file-rule
+language: Rust
+rule:
+  kind: struct_item
+  pattern: struct $X
+message: from file
+"#,
+        );
+        let opts = YamlRuleOptions {
+            rule_text: r#"
+id: text-rule
+language: Rust
+rule:
+  kind: function_item
+  pattern: fn $X
+message: from text
+"#
+            .into(),
+            rule_file: dir.join("file.yml").to_string_lossy().into(),
+            ..Default::default()
+        };
+        let set = load_yaml_rules(&dir, &opts).unwrap();
+        assert_eq!(set.rule_count(), 1);
+        assert_eq!(set.get_rule("text-rule").unwrap().id, "text-rule");
+        assert!(set.get_rule("file-rule").is_none());
+    }
+
+    #[test]
     fn load_single_rule_file() {
         let dir = temp_dir("yaml-rule-single");
         write_rule(
@@ -745,6 +812,13 @@ message: log
             ".",
             &crate::search::YamlRuleOptions {
                 rule_file: "rules.yml".into(),
+                ..Default::default()
+            },
+        ));
+        assert!(crate::yaml_rule::yaml_rule_input_ready(
+            ".",
+            &crate::search::YamlRuleOptions {
+                rule_text: "id: x\nlanguage: Rust\nrule:\n  pattern: foo".into(),
                 ..Default::default()
             },
         ));

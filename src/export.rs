@@ -170,6 +170,11 @@ fn append_yaml_rule_conditions(t: Tr, cond: &SearchConditions, s: &mut String, m
         return;
     }
     let opts = &cond.yaml_rule_options;
+    let rule_text_value = if opts.uses_inline_rule_text() {
+        t.export_cond_yaml_rule_text_inline(opts.rule_text.chars().count())
+    } else {
+        t.export_cond_yaml_rule_text_empty().to_string()
+    };
     let lines = [
         (t.export_cond_yaml_config(), opts.config_path.as_str()),
         (t.export_cond_yaml_rule_file(), opts.rule_file.as_str()),
@@ -177,6 +182,7 @@ fn append_yaml_rule_conditions(t: Tr, cond: &SearchConditions, s: &mut String, m
             t.export_cond_yaml_rule_filter(),
             opts.rule_filter.as_str(),
         ),
+        (t.export_cond_yaml_rule_text(), rule_text_value.as_str()),
     ];
     for (label, value) in lines {
         if markdown {
@@ -2340,6 +2346,41 @@ mod tests {
         assert!(text.contains("rules/test.yml"));
         assert!(text.contains("my-rule"));
         assert!(text.contains("YAML"));
+        assert!(text.contains("(not used)"));
+    }
+
+    #[test]
+    fn yaml_rule_conditions_inline_text_in_plain_export() {
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::i18n::{Tr, UiLanguage};
+        use crate::lang::SupportedLanguage;
+        use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, YamlRuleOptions};
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+
+        let cond = SearchConditions {
+            search_dir: "/tmp".into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: String::new(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 2,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::Auto,
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_text: "id: inline\nlanguage: Rust\nrule:\n  pattern: foo".into(),
+                ..Default::default()
+            },
+        };
+        let text = format_search_conditions_plain(Tr(UiLanguage::Japanese), &cond, UiLanguage::Japanese);
+        assert!(text.contains("rule 本文（インライン）"));
+        assert!(text.contains("使用中（"));
     }
 
     #[test]

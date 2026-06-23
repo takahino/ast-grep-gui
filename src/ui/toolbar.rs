@@ -299,6 +299,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     .desired_width(140.0)
                     .hint_text(t.yaml_rule_filter_hint()),
             );
+            ui.vertical(|ui| {
+                ui.label(t.yaml_rule_text_label())
+                    .on_hover_text(t.yaml_rule_text_tooltip());
+                ui.add_sized(
+                    [ui.available_width().max(400.0), 120.0],
+                    egui::TextEdit::multiline(&mut app.yaml_rule_options.rule_text)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(6)
+                        .hint_text(t.yaml_rule_text_hint())
+                        .font(egui::TextStyle::Monospace),
+                );
+            });
         } else {
         let (pattern_label_tooltip, pattern_hint) = match app.search_mode {
             SearchMode::AstGrep => (t.pattern_label_tooltip_ast(), t.pattern_hint_ast()),
