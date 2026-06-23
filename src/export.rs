@@ -165,32 +165,160 @@ fn search_mode_label(t: Tr, mode: SearchMode) -> &'static str {
     }
 }
 
-fn append_yaml_rule_conditions(t: Tr, cond: &SearchConditions, s: &mut String, markdown: bool) {
-    if cond.search_mode != SearchMode::YamlRule {
-        return;
-    }
-    let opts = &cond.yaml_rule_options;
-    let rule_text_value = if opts.uses_inline_rule_text() {
-        t.export_cond_yaml_rule_text_inline(opts.rule_text.chars().count())
+fn yaml_rule_text_export_value(t: Tr, opts: &crate::search::YamlRuleOptions) -> String {
+    if opts.uses_inline_rule_text() {
+        opts.rule_text.clone()
     } else {
         t.export_cond_yaml_rule_text_empty().to_string()
-    };
-    let lines = [
-        (t.export_cond_yaml_config(), opts.config_path.as_str()),
-        (t.export_cond_yaml_rule_file(), opts.rule_file.as_str()),
+    }
+}
+
+/// YAML rule モード時の条件行（label, value）
+pub fn yaml_rule_condition_entries(t: Tr, cond: &SearchConditions) -> Vec<(String, String)> {
+    if cond.search_mode != SearchMode::YamlRule {
+        return Vec::new();
+    }
+    let opts = &cond.yaml_rule_options;
+    vec![
         (
-            t.export_cond_yaml_rule_filter(),
-            opts.rule_filter.as_str(),
+            t.export_cond_yaml_config().to_string(),
+            opts.config_path.clone(),
         ),
-        (t.export_cond_yaml_rule_text(), rule_text_value.as_str()),
-    ];
-    for (label, value) in lines {
+        (
+            t.export_cond_yaml_rule_file().to_string(),
+            opts.rule_file.clone(),
+        ),
+        (
+            t.export_cond_yaml_rule_filter().to_string(),
+            opts.rule_filter.clone(),
+        ),
+        (
+            t.export_cond_yaml_rule_text().to_string(),
+            yaml_rule_text_export_value(t, opts),
+        ),
+    ]
+}
+
+fn append_labeled_value_plain(s: &mut String, label: &str, value: &str) {
+    if value.contains('\n') {
+        s.push_str(&format!("- {label}:\n"));
+        for line in value.lines() {
+            s.push_str("    ");
+            s.push_str(line);
+            s.push('\n');
+        }
+    } else {
+        s.push_str(&format!("- {label}: {value}\n"));
+    }
+}
+
+fn append_labeled_value_markdown(s: &mut String, label: &str, value: &str) {
+    if value.contains('\n') {
+        s.push_str(&format!("- **{label}**:\n\n```yaml\n{value}\n```\n"));
+    } else {
+        s.push_str(&format!("- **{label}**: {value}\n"));
+    }
+}
+
+fn append_yaml_rule_conditions(t: Tr, cond: &SearchConditions, s: &mut String, markdown: bool) {
+    for (label, value) in yaml_rule_condition_entries(t, cond) {
         if markdown {
-            s.push_str(&format!("- **{label}**: {value}\n"));
+            append_labeled_value_markdown(s, &label, &value);
         } else {
-            s.push_str(&format!("- {label}: {value}\n"));
+            append_labeled_value_plain(s, &label, &value);
         }
     }
+}
+
+fn append_yaml_rule_conditions_html(
+    out: &mut String,
+    t: Tr,
+    cond: &SearchConditions,
+    escape: &impl Fn(&str) -> String,
+) {
+    for (label, value) in yaml_rule_condition_entries(t, cond) {
+        out.push_str(&format!("<dt>{}</dt><dd>", escape(&label)));
+        if value.contains('\n') {
+            out.push_str("<pre><code>");
+            out.push_str(&escape(&value));
+            out.push_str("</code></pre>");
+        } else {
+            out.push_str(&escape(&value));
+        }
+        out.push_str("</dd>\n");
+    }
+}
+
+/// XLSX stats シート用の検索条件行（統計ブロックの下）
+fn search_condition_entries_for_xlsx(
+    t: Tr,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> Vec<(String, String)> {
+    let mut rows = vec![
+        (t.export_cond_root().to_string(), cond.search_dir.clone()),
+        (t.export_cond_pattern().to_string(), cond.pattern.clone()),
+        (
+            t.export_cond_lang().to_string(),
+            cond.selected_lang.combo_label(lang).to_string(),
+        ),
+        (
+            t.export_cond_context_lines().to_string(),
+            cond.context_lines.to_string(),
+        ),
+        (
+            t.export_cond_file_filter().to_string(),
+            file_filter_display(t, cond).into_owned(),
+        ),
+        (
+            t.export_cond_file_encoding().to_string(),
+            cond.file_encoding_preference.display_label(lang).to_string(),
+        ),
+        (
+            t.export_cond_max_file_mb().to_string(),
+            cond.max_file_size_mb.to_string(),
+        ),
+        (
+            t.export_cond_max_search_hits().to_string(),
+            cond.max_search_hits.to_string(),
+        ),
+        (
+            t.export_cond_skip_dirs().to_string(),
+            cond.skip_dirs.clone(),
+        ),
+        (
+            t.export_cond_cpp_include_dirs().to_string(),
+            cond.cpp_include_dirs.clone(),
+        ),
+        (
+            t.export_cond_type_hints_enabled().to_string(),
+            t.export_bool_yes_no(cond.type_hints_enabled).to_string(),
+        ),
+        (
+            t.export_cond_search_mode().to_string(),
+            search_mode_label(t, cond.search_mode).to_string(),
+        ),
+        (
+            t.export_cond_plain_text_options().to_string(),
+            plain_text_options_export_value(t, cond),
+        ),
+    ];
+    rows.extend(yaml_rule_condition_entries(t, cond));
+    rows
+}
+
+fn write_xlsx_condition_rows(
+    sheet: &mut rust_xlsxwriter::Worksheet,
+    rows: &[(String, String)],
+    start_row: u32,
+) -> anyhow::Result<u32> {
+    let mut row = start_row;
+    for (label, value) in rows {
+        sheet.write(row, 0, label.as_str())?;
+        sheet.write(row, 1, truncate_for_excel(value))?;
+        row += 1;
+    }
+    Ok(row)
 }
 
 #[cfg(test)]
@@ -769,6 +897,16 @@ fn html_conditions_and_stats_fragment(
     ));
     out.push_str(&format!(
         "<dt>{}</dt><dd>{}</dd>\n",
+        escape(t.export_cond_cpp_include_dirs()),
+        escape(&cond.cpp_include_dirs)
+    ));
+    out.push_str(&format!(
+        "<dt>{}</dt><dd>{}</dd>\n",
+        escape(t.export_cond_type_hints_enabled()),
+        escape(t.export_bool_yes_no(cond.type_hints_enabled))
+    ));
+    out.push_str(&format!(
+        "<dt>{}</dt><dd>{}</dd>\n",
         escape(t.export_cond_search_mode()),
         escape(search_mode_label(t, cond.search_mode))
     ));
@@ -777,6 +915,7 @@ fn html_conditions_and_stats_fragment(
         escape(t.export_cond_plain_text_options()),
         escape(&plain_text_options_export_value(t, cond))
     ));
+    append_yaml_rule_conditions_html(&mut out, t, cond, &escape);
     out.push_str("</dl>\n");
     out.push_str(&t.export_html_stats(
         stats.total_matches,
@@ -1018,36 +1157,8 @@ fn write_xlsx_stats_sheet(
         stats_sheet.write(3, 1, t.export_xlsx_hit_limit_truncated())?;
     }
     stats_sheet.write_with_format(4, 0, t.export_conditions_title(), &sub_fmt)?;
-    stats_sheet.write(5, 0, t.export_cond_root())?;
-    stats_sheet.write(5, 1, truncate_for_excel(&cond.search_dir))?;
-    stats_sheet.write(6, 0, t.export_cond_pattern())?;
-    stats_sheet.write(6, 1, truncate_for_excel(&cond.pattern))?;
-    stats_sheet.write(7, 0, t.export_cond_lang())?;
-    stats_sheet.write(7, 1, &cond.selected_lang.combo_label(lang))?;
-    stats_sheet.write(8, 0, t.export_cond_context_lines())?;
-    stats_sheet.write(8, 1, cond.context_lines as u32)?;
-    stats_sheet.write(9, 0, t.export_cond_file_filter())?;
-    stats_sheet.write(
-        9,
-        1,
-        truncate_for_excel(file_filter_display(t, cond).as_ref()),
-    )?;
-    stats_sheet.write(10, 0, t.export_cond_file_encoding())?;
-    stats_sheet.write(10, 1, cond.file_encoding_preference.display_label(lang))?;
-    stats_sheet.write(11, 0, t.export_cond_max_file_mb())?;
-    stats_sheet.write(11, 1, cond.max_file_size_mb as u32)?;
-    stats_sheet.write(12, 0, t.export_cond_max_search_hits())?;
-    stats_sheet.write(12, 1, cond.max_search_hits as u32)?;
-    stats_sheet.write(13, 0, t.export_cond_skip_dirs())?;
-    stats_sheet.write(13, 1, truncate_for_excel(&cond.skip_dirs))?;
-    stats_sheet.write(14, 0, t.export_cond_search_mode())?;
-    stats_sheet.write(14, 1, search_mode_label(t, cond.search_mode))?;
-    stats_sheet.write(15, 0, t.export_cond_plain_text_options())?;
-    stats_sheet.write(
-        15,
-        1,
-        truncate_for_excel(&plain_text_options_export_value(t, cond)),
-    )?;
+    let cond_rows = search_condition_entries_for_xlsx(t, cond, lang);
+    write_xlsx_condition_rows(stats_sheet, &cond_rows, 5)?;
     stats_sheet.set_column_width(0, 28)?;
     stats_sheet.set_column_width(1, 72)?;
     Ok(())
@@ -1651,12 +1762,8 @@ pub fn export_batch_xlsx_to_file(
             stats_sheet.write(3, 1, t.export_xlsx_hit_limit_truncated())?;
         }
         stats_sheet.write_with_format(4, 0, t.export_conditions_title(), &sub_fmt)?;
-        stats_sheet.write(5, 0, t.export_cond_root())?;
-        stats_sheet.write(5, 1, truncate_for_excel(&cond.search_dir))?;
-        stats_sheet.write(6, 0, t.export_cond_pattern())?;
-        stats_sheet.write(6, 1, truncate_for_excel(&cond.pattern))?;
-        stats_sheet.write(7, 0, t.export_cond_lang())?;
-        stats_sheet.write(7, 1, &cond.selected_lang.combo_label(lang))?;
+        let cond_rows = search_condition_entries_for_xlsx(t, cond, lang);
+        write_xlsx_condition_rows(stats_sheet, &cond_rows, 5)?;
         stats_sheet.set_column_width(0, 28)?;
         stats_sheet.set_column_width(1, 72)?;
     }
@@ -2380,7 +2487,79 @@ mod tests {
         };
         let text = format_search_conditions_plain(Tr(UiLanguage::Japanese), &cond, UiLanguage::Japanese);
         assert!(text.contains("rule 本文（インライン）"));
-        assert!(text.contains("使用中（"));
+        assert!(text.contains("id: inline"));
+        assert!(text.contains("pattern: foo"));
+    }
+
+    #[test]
+    fn yaml_rule_conditions_inline_text_in_html_export() {
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::i18n::UiLanguage;
+        use crate::lang::SupportedLanguage;
+        use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, SearchStats, YamlRuleOptions};
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+
+        let cond = SearchConditions {
+            search_dir: "/tmp".into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: String::new(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 2,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::Auto,
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_text: "id: inline\nlanguage: Rust\nrule:\n  pattern: foo".into(),
+                ..Default::default()
+            },
+        };
+        let html = html_conditions_and_stats_fragment(&SearchStats::default(), &cond, UiLanguage::English);
+        assert!(html.contains("rule text (inline)"));
+        assert!(html.contains("<pre><code>"));
+        assert!(html.contains("id: inline"));
+        assert!(html.contains("pattern: foo"));
+    }
+
+    #[test]
+    fn yaml_rule_conditions_inline_text_in_markdown_export() {
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::i18n::{Tr, UiLanguage};
+        use crate::lang::SupportedLanguage;
+        use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, YamlRuleOptions};
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+
+        let cond = SearchConditions {
+            search_dir: "/tmp".into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: String::new(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 2,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::Auto,
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_text: "id: inline\nlanguage: Rust\nrule:\n  pattern: foo".into(),
+                ..Default::default()
+            },
+        };
+        let md = format_search_conditions_markdown(Tr(UiLanguage::English), &cond, UiLanguage::English);
+        assert!(md.contains("rule text (inline)"));
+        assert!(md.contains("```yaml"));
+        assert!(md.contains("id: inline"));
     }
 
     #[test]

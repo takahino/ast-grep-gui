@@ -2014,12 +2014,6 @@ impl Tr {
             UiLanguage::English => "rule text (inline)",
         }
     }
-    pub fn export_cond_yaml_rule_text_inline(self, chars: usize) -> String {
-        match self.0 {
-            UiLanguage::Japanese => format!("使用中（{chars} 文字）"),
-            UiLanguage::English => format!("in use ({chars} chars)"),
-        }
-    }
     pub fn export_cond_yaml_rule_text_empty(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "（未使用）",

@@ -136,6 +136,14 @@ fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
         t.export_cond_plain_text_options(),
         plain_text_options_export_value(t, c)
     ));
+    for (label, value) in crate::export::yaml_rule_condition_entries(t, c) {
+        if value.contains('\n') {
+            ui.label(format!("{label}:"));
+            ui.monospace(value);
+        } else {
+            ui.label(format!("{label}: {value}"));
+        }
+    }
 }
 
 fn show_run_matches(ui: &mut Ui, run: &BatchRunResult, t: crate::i18n::Tr) {

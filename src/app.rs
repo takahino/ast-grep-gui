@@ -414,6 +414,8 @@ pub struct AstGrepApp {
     type_hint_keys_generation: u64,
     type_hint_keys_pattern: String,
     type_hint_keys_enabled: bool,
+    /// 直近の単体検索実行時の条件（エクスポート用スナップショット）
+    last_search_conditions: Option<SearchConditions>,
 }
 
 impl AstGrepApp {
@@ -518,6 +520,7 @@ impl AstGrepApp {
             type_hint_keys_generation: u64::MAX,
             type_hint_keys_pattern: String::new(),
             type_hint_keys_enabled: false,
+            last_search_conditions: None,
         }
     }
 
@@ -548,8 +551,8 @@ impl AstGrepApp {
         }
     }
 
-    /// エクスポートに埋め込む現在の検索条件
-    pub fn search_conditions_for_export(&self) -> SearchConditions {
+    /// 現在の UI 設定から検索条件を組み立てる
+    fn build_search_conditions_from_ui(&self) -> SearchConditions {
         SearchConditions {
             search_dir: self.effective_search_dir_display(),
             search_target_mode: self.search_target_mode,
@@ -568,6 +571,17 @@ impl AstGrepApp {
             type_hints_enabled: self.type_hints_enabled,
             yaml_rule_options: self.yaml_rule_options.clone(),
         }
+    }
+
+    /// エクスポートに埋め込む検索条件（単体検索は実行時スナップショットを優先）
+    pub fn search_conditions_for_export(&self) -> SearchConditions {
+        self.last_search_conditions
+            .clone()
+            .unwrap_or_else(|| self.build_search_conditions_from_ui())
+    }
+
+    fn snapshot_search_conditions_for_export(&mut self) {
+        self.last_search_conditions = Some(self.build_search_conditions_from_ui());
     }
 
     fn persisted_state(&self) -> PersistedAppState {
@@ -658,6 +672,7 @@ impl AstGrepApp {
     }
 
     fn clear_results_state_for_new_search(&mut self) {
+        self.last_search_conditions = None;
         self.results.clear();
         self.file_source_cache.clear();
         self.results_generation = self.results_generation.wrapping_add(1);
@@ -754,6 +769,10 @@ impl AstGrepApp {
         let Some(ctx) = self.cached_ctx.clone() else {
             return;
         };
+
+        if job_id == SINGLE_SEARCH_JOB_ID {
+            self.snapshot_search_conditions_for_export();
+        }
 
         let job = if job_id == SINGLE_SEARCH_JOB_ID {
             None
@@ -1061,6 +1080,7 @@ impl AstGrepApp {
 
     /// 結果をクリアする
     pub fn clear_results(&mut self) {
+        self.last_search_conditions = None;
         self.results.clear();
         self.file_source_cache.clear();
         self.results_generation = self.results_generation.wrapping_add(1);
