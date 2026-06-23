@@ -9,8 +9,8 @@ fn main() {
         Err(e) => println!("full err: {e}"),
     }
     // try each any branch alone
-    let branches = [
-        "export { \$\ }",
-        "export default function \(\$\$) { \$\$ }",
+    let _branches = [
+        r"export { \$\ }",
+        r"export default function \(\$\$) { \$\$ }",
     ];
 }
