@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ast_grep_config::{
-    from_yaml_string, DeserializeEnv, GlobalRules, RuleConfig, SerializableGlobalRule, Severity,
+    from_yaml_string, DeserializeEnv, GlobalRules, RuleCollection, RuleConfig,
+    SerializableGlobalRule, Severity,
 };
 use ast_grep_language::SupportLang;
 use regex::Regex;
@@ -34,7 +35,7 @@ impl YamlRuleOptions {
 
 /// ロード済み rule セット（検索スレッドで共有）
 pub struct YamlRuleSet {
-    pub rules: Vec<RuleConfig<SupportLang>>,
+    rule_collection: RuleCollection<SupportLang>,
     /// 走査対象の拡張子（ドットなし・小文字）
     pub extensions: HashSet<String>,
     /// `languageGlobs` 由来の (glob, language)
@@ -426,8 +427,11 @@ pub fn load_yaml_rules(
         }
     }
 
+    let rule_collection =
+        RuleCollection::try_new(rules).map_err(|e| format!("rule collection: {e}"))?;
+
     Ok(YamlRuleSet {
-        rules,
+        rule_collection,
         extensions,
         glob_langs,
     })
@@ -440,6 +444,17 @@ impl YamlRuleSet {
             .and_then(|e| e.to_str())
             .map(|e| self.extensions.contains(&e.to_lowercase()))
             .unwrap_or(false)
+    }
+
+    /// 走査フィルタ: 拡張子または `languageGlobs` に一致するか
+    pub fn path_might_match(&self, path: &Path, relative_path: &str) -> bool {
+        if self.extension_might_match(path) {
+            return true;
+        }
+        let normalized = relative_path.replace('\\', "/");
+        self.glob_langs
+            .iter()
+            .any(|(matcher, _)| matcher.is_match(&normalized))
     }
 
     /// ファイルの解析言語を決定（`languageGlobs` → 拡張子）
@@ -462,15 +477,15 @@ impl YamlRuleSet {
 
         let ext = path.extension().and_then(|e| e.to_str())?.to_lowercase();
         let mut candidate = None;
-        for rule in &self.rules {
-            if default_extensions_for_lang(rule.language)
-                .iter()
-                .any(|e| *e == ext.as_str())
+        self.rule_collection.for_each_rule(|rule| {
+            if candidate.is_none()
+                && default_extensions_for_lang(rule.language)
+                    .iter()
+                    .any(|e| *e == ext.as_str())
             {
                 candidate = Some(rule.language);
-                break;
             }
-        }
+        });
         let lang = candidate?;
 
         if let Some(sel) = selected.to_support_lang() {
@@ -479,11 +494,6 @@ impl YamlRuleSet {
             }
         }
         Some(lang)
-    }
-
-    /// rule の `files` / `ignores`（ast-grep-config 0.42 では型が非公開のため未適用）
-    pub fn rule_applies_to_path(_rule: &RuleConfig<SupportLang>, _relative_path: &str) -> bool {
-        true
     }
 
     pub fn rules_for_file(
@@ -495,11 +505,19 @@ impl YamlRuleSet {
         let Some(file_lang) = self.resolve_file_language(path, relative_path, selected) else {
             return Vec::new();
         };
-        self.rules
-            .iter()
-            .filter(|r| r.language == file_lang)
-            .filter(|r| Self::rule_applies_to_path(r, relative_path))
-            .collect()
+        // ast-grep の `files` / `ignores` はプロジェクトルートからの相対パスで評価される
+        self.rule_collection
+            .get_rule_from_lang(Path::new(relative_path), file_lang)
+    }
+
+    /// ロード済み rule 数
+    pub fn rule_count(&self) -> usize {
+        self.rule_collection.total_rule_count()
+    }
+
+    /// 指定 id の rule を返す
+    pub fn get_rule(&self, id: &str) -> Option<&RuleConfig<SupportLang>> {
+        self.rule_collection.get_rule(id)
     }
 }
 
@@ -542,6 +560,7 @@ pub fn rule_metadata(rule: &RuleConfig<SupportLang>) -> (String, String, String,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ast_grep_language::LanguageExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -558,6 +577,62 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    /// rule YAML をロードし、指定ソースに対するヒット rule id 一覧を返す
+    fn match_rule_ids(
+        dir: &Path,
+        rule_yaml: &str,
+        source_rel: &str,
+        source: &str,
+        lang: SupportedLanguage,
+    ) -> Vec<String> {
+        let rule_path = write_rule(dir, "rule.yml", rule_yaml);
+        std::fs::write(dir.join(source_rel), source).unwrap();
+        let opts = YamlRuleOptions {
+            rule_file: rule_path.to_string_lossy().into(),
+            ..Default::default()
+        };
+        let set = load_yaml_rules(dir, &opts).unwrap();
+        let source_path = dir.join(source_rel);
+        let rules = set.rules_for_file(&source_path, source_rel, lang);
+        let source_text = std::fs::read_to_string(&source_path).unwrap();
+        let mut hit_ids = Vec::new();
+        for rule in rules {
+            let ast_lang = rule.language;
+            let root = ast_lang.ast_grep(&source_text);
+            if root.root().find(&rule.matcher).is_some() {
+                hit_ids.push(rule.id.clone());
+            }
+        }
+        hit_ids.sort();
+        hit_ids
+    }
+
+    fn count_matches(
+        dir: &Path,
+        rule_yaml: &str,
+        source_rel: &str,
+        source: &str,
+        lang: SupportedLanguage,
+    ) -> usize {
+        let rule_path = write_rule(dir, "rule.yml", rule_yaml);
+        std::fs::write(dir.join(source_rel), source).unwrap();
+        let opts = YamlRuleOptions {
+            rule_file: rule_path.to_string_lossy().into(),
+            ..Default::default()
+        };
+        let set = load_yaml_rules(dir, &opts).unwrap();
+        let source_path = dir.join(source_rel);
+        let rules = set.rules_for_file(&source_path, source_rel, lang);
+        let source_text = std::fs::read_to_string(&source_path).unwrap();
+        let mut total = 0usize;
+        for rule in rules {
+            let ast_lang = rule.language;
+            let root = ast_lang.ast_grep(&source_text);
+            total += root.root().find_all(&rule.matcher).count();
+        }
+        total
     }
 
     #[test]
@@ -588,8 +663,8 @@ severity: warning
             ..Default::default()
         };
         let set = load_yaml_rules(&dir, &opts).unwrap();
-        assert_eq!(set.rules.len(), 1);
-        assert_eq!(set.rules[0].id, "test-rule");
+        assert_eq!(set.rule_count(), 1);
+        assert_eq!(set.get_rule("test-rule").unwrap().id, "test-rule");
     }
 
     #[test]
@@ -620,8 +695,8 @@ message: no
             ..Default::default()
         };
         let set = load_yaml_rules(&dir, &opts).unwrap();
-        assert_eq!(set.rules.len(), 1);
-        assert_eq!(set.rules[0].id, "keep-me");
+        assert_eq!(set.rule_count(), 1);
+        assert_eq!(set.get_rule("keep-me").unwrap().id, "keep-me");
     }
 
     #[test]
@@ -647,7 +722,7 @@ message: log
         )
         .unwrap();
         let set = load_yaml_rules(&dir, &YamlRuleOptions::default()).unwrap();
-        assert!(set.rules.iter().any(|r| r.id == "nested-rule"));
+        assert!(set.get_rule("nested-rule").is_some());
     }
 
     #[test]
@@ -687,8 +762,6 @@ message: log
 
     #[test]
     fn yaml_rule_matches_rust_function() {
-        use ast_grep_language::LanguageExt;
-
         let dir = temp_dir("yaml-rule-match");
         write_rule(
             &dir,
@@ -725,5 +798,382 @@ fix: pub fn $NAME
         assert_eq!(msg, "function");
         assert_eq!(sev, "Warning");
         assert_eq!(fix.as_deref(), Some("pub fn $NAME"));
+    }
+
+    // --- Atomic rules (cheatsheet) ---
+
+    #[test]
+    fn atomic_pattern_console_log() {
+        let dir = temp_dir("yaml-atomic-pattern");
+        let ids = match_rule_ids(
+            &dir,
+            r#"
+id: find-console-log
+language: JavaScript
+rule:
+  pattern: console.log($MSG)
+message: log
+"#,
+            "app.js",
+            "console.log('hi');\nfoo();\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(ids, vec!["find-console-log"]);
+    }
+
+    #[test]
+    fn atomic_kind_field_definition() {
+        let dir = temp_dir("yaml-atomic-kind");
+        let n = count_matches(
+            &dir,
+            r#"
+id: find-class-fields
+language: JavaScript
+rule:
+  kind: field_definition
+message: field
+"#,
+            "app.js",
+            "class A { x = 1; y = 2; }\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn atomic_regex_todo_comment() {
+        let dir = temp_dir("yaml-atomic-regex");
+        let n = count_matches(
+            &dir,
+            r#"
+id: find-todo-comments
+language: JavaScript
+rule:
+  regex: 'TODO:|FIXME:|HACK:'
+  kind: comment
+message: todo
+"#,
+            "app.js",
+            "// TODO: fix this\nconst x = 1;\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn atomic_nth_child_first_array_element() {
+        let dir = temp_dir("yaml-atomic-nth");
+        let n = count_matches(
+            &dir,
+            r#"
+id: first-array-element
+language: JavaScript
+rule:
+  kind: string
+  nthChild: 1
+  inside:
+    kind: array
+message: first
+"#,
+            "app.js",
+            "const a = ['first', 'second'];\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 1);
+    }
+
+    // --- Relational rules ---
+
+    #[test]
+    fn relational_inside_await_in_loop() {
+        let dir = temp_dir("yaml-rel-inside");
+        let n = count_matches(
+            &dir,
+            r#"
+id: no-await-in-loop
+language: TypeScript
+rule:
+  pattern: await $PROMISE
+  inside:
+    any:
+      - kind: for_statement
+      - kind: while_statement
+    stopBy: end
+message: await in loop
+"#,
+            "app.ts",
+            "async function f() {\n  for (let i = 0; i < 3; i++) { await p(); }\n  await q();\n}\n",
+            SupportedLanguage::TypeScript,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn relational_has_regex_on_child() {
+        let dir = temp_dir("yaml-rel-has");
+        let n = count_matches(
+            &dir,
+            r#"
+id: error-log
+language: JavaScript
+rule:
+  pattern: console.log($MSG)
+  has:
+    regex: 'error'
+message: error log
+"#,
+            "app.js",
+            "console.log('error');\nconsole.log('ok');\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 1);
+    }
+
+    // --- Composite rules ---
+
+    #[test]
+    fn composite_any_var_declarations() {
+        let dir = temp_dir("yaml-comp-any");
+        let n = count_matches(
+            &dir,
+            r#"
+id: find-var-declarations
+language: JavaScript
+rule:
+  any:
+    - pattern: var $NAME = $VALUE
+    - pattern: let $NAME = $VALUE
+    - pattern: const $NAME = $VALUE
+message: decl
+"#,
+            "app.js",
+            "var a = 1;\nlet b = 2;\nconst c = 3;\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn composite_not_excludes_debug_log() {
+        let dir = temp_dir("yaml-comp-not");
+        let n = count_matches(
+            &dir,
+            r#"
+id: not-debug-log
+language: JavaScript
+rule:
+  pattern: console.log($MSG)
+  not:
+    has:
+      regex: 'debug'
+message: not debug
+"#,
+            "app.js",
+            "console.log('hello');\nconsole.log('debug');\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn composite_all_console_log_and_call() {
+        let dir = temp_dir("yaml-comp-all");
+        let n = count_matches(
+            &dir,
+            r#"
+id: console-log-call
+language: JavaScript
+rule:
+  all:
+    - kind: call_expression
+    - pattern: console.log($MSG)
+message: console.log call
+"#,
+            "app.js",
+            "console.log('a');\nfoo('b');\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 1);
+    }
+
+    // --- Utility rules ---
+
+    #[test]
+    fn utility_local_matches() {
+        let dir = temp_dir("yaml-util-local");
+        let n = count_matches(
+            &dir,
+            r#"
+utils:
+  is-console:
+    pattern: console.log($MSG)
+id: find-console
+language: JavaScript
+rule:
+  matches: is-console
+message: console
+"#,
+            "app.js",
+            "console.log('x');\nfoo();\n",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn utility_global_util_dirs() {
+        let dir = temp_dir("yaml-util-global");
+        let utils_dir = dir.join("utils");
+        std::fs::create_dir_all(&utils_dir).unwrap();
+        write_rule(
+            &utils_dir,
+            "is-console.yml",
+            r#"
+id: is-console-method
+language: JavaScript
+rule:
+  pattern: console.$METHOD($$ARGS)
+"#,
+        );
+        std::fs::write(
+            dir.join("sgconfig.yml"),
+            "utilDirs:\n  - utils\nruleDirs:\n  - rules\n",
+        )
+        .unwrap();
+        let rules_dir = dir.join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        write_rule(
+            &rules_dir,
+            "use-console.yml",
+            r#"
+id: use-console
+language: JavaScript
+rule:
+  matches: is-console-method
+message: console call
+"#,
+        );
+        std::fs::write(dir.join("app.js"), "console.log('x');\nfoo();\n").unwrap();
+        let set = load_yaml_rules(&dir, &YamlRuleOptions::default()).unwrap();
+        let source_path = dir.join("app.js");
+        let rules = set.rules_for_file(&source_path, "app.js", SupportedLanguage::JavaScript);
+        let source = std::fs::read_to_string(&source_path).unwrap();
+        let mut total = 0usize;
+        for rule in rules {
+            if rule.id == "use-console" {
+                let root = rule.language.ast_grep(&source);
+                total += root.root().find_all(&rule.matcher).count();
+            }
+        }
+        assert_eq!(total, 1);
+    }
+
+    // --- Project routing: files / ignores / languageGlobs ---
+
+    #[test]
+    fn rule_files_glob_limits_applicable_rules() {
+        let dir = temp_dir("yaml-files-glob");
+        write_rule(
+            &dir,
+            "rule.yml",
+            r#"
+id: src-only
+language: JavaScript
+files:
+  - "src/**"
+rule:
+  pattern: console.log($X)
+message: log
+"#,
+        );
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/app.js"), "console.log(1);\n").unwrap();
+        std::fs::write(dir.join("other.js"), "console.log(2);\n").unwrap();
+        let opts = YamlRuleOptions {
+            rule_file: dir.join("rule.yml").to_string_lossy().into(),
+            ..Default::default()
+        };
+        let set = load_yaml_rules(&dir, &opts).unwrap();
+        let src_rules = set.rules_for_file(
+            &dir.join("src/app.js"),
+            "src/app.js",
+            SupportedLanguage::JavaScript,
+        );
+        let other_rules = set.rules_for_file(
+            &dir.join("other.js"),
+            "other.js",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(src_rules.len(), 1);
+        assert!(other_rules.is_empty());
+    }
+
+    #[test]
+    fn rule_ignores_glob_excludes_path() {
+        let dir = temp_dir("yaml-ignores-glob");
+        write_rule(
+            &dir,
+            "rule.yml",
+            r#"
+id: no-test
+language: JavaScript
+ignores:
+  - "**/test*"
+rule:
+  pattern: console.log($X)
+message: log
+"#,
+        );
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/app.js"), "console.log(1);\n").unwrap();
+        std::fs::write(dir.join("src/test.js"), "console.log(2);\n").unwrap();
+        let opts = YamlRuleOptions {
+            rule_file: dir.join("rule.yml").to_string_lossy().into(),
+            ..Default::default()
+        };
+        let set = load_yaml_rules(&dir, &opts).unwrap();
+        let app_rules = set.rules_for_file(
+            &dir.join("src/app.js"),
+            "src/app.js",
+            SupportedLanguage::JavaScript,
+        );
+        let test_rules = set.rules_for_file(
+            &dir.join("src/test.js"),
+            "src/test.js",
+            SupportedLanguage::JavaScript,
+        );
+        assert_eq!(app_rules.len(), 1);
+        assert!(test_rules.is_empty());
+    }
+
+    #[test]
+    fn language_globs_resolve_typescript_for_vue() {
+        let dir = temp_dir("yaml-lang-globs");
+        std::fs::write(
+            dir.join("sgconfig.yml"),
+            "languageGlobs:\n  TypeScript:\n    - '**/*.vue'\nruleDirs:\n  - rules\n",
+        )
+        .unwrap();
+        let rules_dir = dir.join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        write_rule(
+            &rules_dir,
+            "r.yml",
+            r#"
+id: vue-rule
+language: TypeScript
+rule:
+  pattern: console.log($X)
+message: log
+"#,
+        );
+        let set = load_yaml_rules(&dir, &YamlRuleOptions::default()).unwrap();
+        let vue_path = dir.join("src/App.vue");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        assert!(set.path_might_match(&vue_path, "src/App.vue"));
+        let lang = set
+            .resolve_file_language(&vue_path, "src/App.vue", SupportedLanguage::Auto)
+            .expect("vue should resolve to TypeScript");
+        assert_eq!(lang, SupportLang::TypeScript);
     }
 }

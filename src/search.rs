@@ -807,12 +807,23 @@ pub fn spawn_search(
                     // カスタムパターンに1つでもマッチすれば対象
                     patterns.iter().any(|re| re.is_match(&file_name))
                 } else if use_lang_filter {
-                    // AstGrep / YamlRule モードのみ言語拡張子でフィルタ
-                    e.path()
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| ext_set.contains(&ext.to_lowercase()))
-                        .unwrap_or(false)
+                    if search_mode == SearchMode::YamlRule {
+                        let Some(set) = yaml_rule_set.as_ref() else {
+                            return false;
+                        };
+                        let relative = match e.path().strip_prefix(search_dir_path.as_path()) {
+                            Ok(p) => p.to_string_lossy().into_owned(),
+                            Err(_) => e.path().to_string_lossy().into_owned(),
+                        };
+                        set.path_might_match(e.path().as_path(), &relative)
+                    } else {
+                        // AstGrep モードは言語拡張子でフィルタ
+                        e.path()
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext_set.contains(&ext.to_lowercase()))
+                            .unwrap_or(false)
+                    }
                 } else {
                     // PlainText/Regex はすべてのファイルを対象
                     true
@@ -2712,5 +2723,152 @@ mod tests {
         assert_eq!(report.literal_callee.as_deref(), Some("console.log"));
         assert_eq!(report.rows[0].receiver_display, "console.log");
         assert_eq!(report.rows[0].arg_displays, vec!["string"]);
+    }
+
+    // --- YAML rule mode E2E (run_search_sync) ---
+
+    fn yaml_search_temp_dir(prefix: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn yaml_search_conditions(
+        search_dir: &PathBuf,
+        rule_file: &str,
+    ) -> super::SearchConditions {
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::lang::SupportedLanguage;
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+        use super::{PlainTextSearchOptions, SearchMode, YamlRuleOptions};
+
+        super::SearchConditions {
+            search_dir: search_dir.to_string_lossy().into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: String::new(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 0,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::default(),
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_file: rule_file.to_string(),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn yaml_run_search_sync_language_globs_vue() {
+        use std::sync::Arc;
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::lang::SupportedLanguage;
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+        use super::{PlainTextSearchOptions, SearchMode, YamlRuleOptions};
+
+        let dir = yaml_search_temp_dir("search-yaml-vue");
+        std::fs::write(
+            dir.join("sgconfig.yml"),
+            "languageGlobs:\n  TypeScript:\n    - '**/*.vue'\nruleDirs:\n  - rules\n",
+        )
+        .unwrap();
+        let rules_dir = dir.join("rules");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("r.yml"),
+            r#"
+id: vue-console
+language: TypeScript
+rule:
+  pattern: console.log($X)
+message: log
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/App.vue"), "<script>\nconsole.log('hi');\n</script>\n")
+            .unwrap();
+
+        let cond = super::SearchConditions {
+            search_dir: dir.to_string_lossy().into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: String::new(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 0,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::default(),
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions::default(),
+        };
+
+        let result = super::run_search_sync(
+            &cond,
+            1,
+            "yaml-vue".into(),
+            crate::i18n::UiLanguage::Japanese,
+            Arc::new(crate::type_hint_config::TypeHintConfig::default()),
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.stats.total_matches, 1);
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(
+            result.results[0].matches[0].rule_id.as_deref(),
+            Some("vue-console")
+        );
+    }
+
+    #[test]
+    fn yaml_run_search_sync_files_glob_excludes_other() {
+        use std::sync::Arc;
+        let dir = yaml_search_temp_dir("search-yaml-files");
+        let rule_path = dir.join("rule.yml");
+        std::fs::write(
+            &rule_path,
+            r#"
+id: src-only
+language: JavaScript
+files:
+  - "src/**"
+rule:
+  pattern: console.log($X)
+message: log
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/app.js"), "console.log(1);\n").unwrap();
+        std::fs::write(dir.join("other.js"), "console.log(2);\n").unwrap();
+
+        let cond = yaml_search_conditions(&dir, &rule_path.to_string_lossy());
+        let result = super::run_search_sync(
+            &cond,
+            1,
+            "yaml-files".into(),
+            crate::i18n::UiLanguage::Japanese,
+            Arc::new(crate::type_hint_config::TypeHintConfig::default()),
+        );
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.stats.total_matches, 1);
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results[0].relative_path.replace('\\', "/").contains("src/"));
     }
 }
