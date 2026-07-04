@@ -373,7 +373,8 @@ fn infer_capture_type_inner<D: Doc>(
     if lang == SupportedLanguage::Auto {
         return None;
     }
-    if lang == SupportedLanguage::Cpp {
+    // E: C 言語も C++ と同じ推論経路（設定ルール・バイナリ・チェイン・cpp_hint）を使う。
+    if matches!(lang, SupportedLanguage::Cpp | SupportedLanguage::C) {
         if node.kind().as_ref() == "parenthesized_expression" {
             if let Some(inner) = node.children().find(|c| c.is_named()) {
                 return infer_capture_type_inner(lang, _capture_name, &inner, ctx);
@@ -389,7 +390,7 @@ fn infer_capture_type_inner<D: Doc>(
         }
     }
     // `$RECV` が `time.Format(...)` のような `call_expression` のときは、左端の `CTime` ではなく `CTime.Format` を優先
-    if lang == SupportedLanguage::Cpp && _capture_name == "RECV" {
+    if matches!(lang, SupportedLanguage::Cpp | SupportedLanguage::C) && _capture_name == "RECV" {
         if let Some(l) = cpp_recv_receiver_method_label(node, ctx) {
             return Some(l);
         }
@@ -400,7 +401,7 @@ fn infer_capture_type_inner<D: Doc>(
     // `$A` / `$B` / `$$$` スロットでも `time.Format(...)` を `CTime`（レシーバ変数の型）だけにしない。
     // `cpp_hint` は `call_expression` を左端識別子に潰すため、戻り型がソースから取れなかった
     // メソッド呼び出しは `CTime.Format` のように表示する（`$RECV` は上で既に同様に処理）。
-    if lang == SupportedLanguage::Cpp {
+    if matches!(lang, SupportedLanguage::Cpp | SupportedLanguage::C) {
         if let Some(l) = cpp_recv_receiver_method_label(node, ctx) {
             return Some(l);
         }
@@ -411,8 +412,8 @@ fn infer_capture_type_inner<D: Doc>(
         SupportedLanguage::Java => java_hint(node),
         SupportedLanguage::CSharp => csharp_hint(node),
         SupportedLanguage::TypeScript | SupportedLanguage::JavaScript => ts_hint(node),
-        SupportedLanguage::Cpp => cpp_hint(node, ctx),
-        SupportedLanguage::C => c_hint(node),
+        // E: C も cpp_hint に統合（c_hint は削除）。
+        SupportedLanguage::Cpp | SupportedLanguage::C => cpp_hint(node, ctx),
         SupportedLanguage::Python => python_hint(node),
         SupportedLanguage::Kotlin => kotlin_hint(node),
         SupportedLanguage::Scala => scala_hint(node),
@@ -427,7 +428,10 @@ fn chain_expression_result_type<D: Doc>(
     ctx: Option<&RecvHintContext<'_>>,
 ) -> Option<String> {
     match lang {
-        SupportedLanguage::Cpp => ctx.and_then(|c| cpp_chain_result_type(node, c)),
+        // E: C 言語も C++ と同じチェイン解決経路を使う。
+        SupportedLanguage::Cpp | SupportedLanguage::C => {
+            ctx.and_then(|c| cpp_chain_result_type(node, c))
+        }
         SupportedLanguage::Java => java_chain_result_type(node),
         SupportedLanguage::TypeScript | SupportedLanguage::JavaScript => ts_chain_result_type(node),
         _ => None,
@@ -2932,11 +2936,6 @@ fn cpp_looks_integral_type(s: &str) -> bool {
         && s != "FloatingPointLiteral"
 }
 
-fn c_hint<D: Doc>(recv: &Node<'_, D>) -> Option<String> {
-    let _ = recv;
-    None
-}
-
 /// クラス body 内の `annotated_assignment`（クラス変数の型注釈）と名前を照合する。
 fn python_field_in_class<D: Doc>(recv: &Node<'_, D>, name: &str) -> Option<String> {
     let class_def = recv
@@ -4368,5 +4367,58 @@ void f() {
         }));
         let hint = cpp_infer_pattern(src, "M($X)", &config);
         assert_eq!(hint.as_deref(), Some("Override"));
+    }
+
+    // ===== E: C 言語対応（c_hint 統合） =====
+
+    fn c_ctx<'a>(src: &'a str) -> RecvHintContext<'a> {
+        RecvHintContext {
+            file_path: std::path::Path::new("test.c"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        }
+    }
+
+    fn c_infer_capture_by_kind(src: &str, kind: &str, text: &str, capture: &str) -> Option<String> {
+        let grep = SupportLang::C.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::C).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().kind().as_ref() == kind && m.get_node().text().trim() == text)?;
+        let cap = m.get_env().get_match(capture)?;
+        let ctx = c_ctx(src);
+        infer_capture_type(SupportedLanguage::C, capture, cap, Some(&ctx))
+    }
+
+    #[test]
+    fn c_free_function_return_resolves() {
+        // 純 C の関数プロトタイプ int get_count(); → get_count() の戻り値型は int
+        let src = "int get_count();\nint f() { return get_count(); }\n";
+        let hint = c_infer_capture_by_kind(src, "call_expression", "get_count()", "CHAIN");
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn c_struct_field_arrow_access_resolves() {
+        // 純 C の struct + -> アクセス。p->x のフィールド型 int を解決するか。
+        let src = "struct Foo { int x; };\nvoid f(struct Foo* p) { p->x; }\n";
+        let hint = c_infer_capture_by_kind(src, "field_expression", "p->x", "CHAIN");
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn c_global_var_type_resolves_as_receiver() {
+        // extern struct Foo g_foo; → g_foo の型は struct Foo
+        let src = "struct Foo { int x; };\nextern struct Foo g_foo;\nvoid f() { g_foo.x; }\n";
+        let grep = SupportLang::C.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.x", SupportLang::C).unwrap();
+        let m = grep.root().find_all(&pat).next().expect("match");
+        let recv = m.get_env().get_match("RECV").expect("RECV");
+        let ctx = c_ctx(src);
+        let hint = infer_recv_type(SupportedLanguage::C, recv, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("struct Foo"));
     }
 }
