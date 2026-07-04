@@ -432,6 +432,8 @@ fn cpp_simplify_type_name(ty: &str) -> String {
     } else {
         s
     };
+    // テンプレート引数除去: < で切る（vector<int> → vector）。
+    let s = s.split('<').next().unwrap_or(s).trim();
     s.split_whitespace().last().unwrap_or(s).to_string()
 }
 
@@ -536,8 +538,9 @@ fn cpp_lookup_in_translation_unit<D: Doc>(
         CppLookupKind::GlobalVar => {
             cpp_global_var_type_in_translation_unit(root, member_name)
         }
-        // B-3 で実装。それまでは未対応（None を返す）。
-        CppLookupKind::TypeAlias => None,
+        CppLookupKind::TypeAlias => {
+            cpp_type_alias_target_in_translation_unit(root, member_name)
+        }
     }
 }
 
@@ -759,6 +762,70 @@ fn cpp_global_var_type_for_sources(
     cpp_lookup_member_in_sources(ctx, CppLookupKind::GlobalVar, "", name)
 }
 
+// ===== B-3: typedef / using の 1 段展開 =====
+
+/// type_definition（typedef）/ alias_declaration（using）ノードから alias のターゲット型を取り出す。
+/// `typedef CWinApp App;` → `CWinApp`。`using App = CWinApp;` → `CWinApp`。
+fn cpp_type_alias_target_from_node<D: Doc>(
+    node: &Node<'_, D>,
+    alias: &str,
+) -> Option<String> {
+    let k = node.kind();
+    let k = k.as_ref();
+    // typedef は declarator フィールドがエイリアス名、using は name フィールドがエイリアス名。
+    // どちらも type フィールドがターゲット型。
+    let name_node = match k {
+        "type_definition" => node.field("declarator"),
+        "alias_declaration" => node.field("name"),
+        _ => return None,
+    };
+    let name_node = name_node?;
+    if name_node.text().trim() != alias {
+        return None;
+    }
+    let target = node.field("type")?;
+    let target_text = target.text().trim().to_string();
+    if target_text.is_empty() {
+        None
+    } else {
+        Some(target_text)
+    }
+}
+
+fn cpp_find_type_alias_target_in_scope<D: Doc>(
+    node: &Node<'_, D>,
+    alias: &str,
+    namespace_depth: usize,
+) -> Option<String> {
+    for c in node.children() {
+        let k = c.kind();
+        let k = k.as_ref();
+        if let Some(ty) = cpp_type_alias_target_from_node(&c, alias) {
+            return Some(ty);
+        }
+        if k == "linkage_specification" || k == "declaration_list" {
+            if let Some(ty) = cpp_find_type_alias_target_in_scope(&c, alias, namespace_depth) {
+                return Some(ty);
+            }
+        }
+        if k == "namespace_definition" && namespace_depth < 1 {
+            if let Some(ty) = cpp_find_type_alias_target_in_scope(&c, alias, namespace_depth + 1)
+            {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+/// translation_unit 直下（+ extern "C" ブロック・namespace 1 段）から型エイリアス alias のターゲット型を引く。
+fn cpp_type_alias_target_in_translation_unit<D: Doc>(
+    root: &Node<'_, D>,
+    alias: &str,
+) -> Option<String> {
+    cpp_find_type_alias_target_in_scope(root, alias, 0)
+}
+
 /// インクルードヘッダを再帰的に走査して kind のメンバ型を解決する。
 /// 深さ上限・visited による循環防止・負キャッシュは従来踏襲。
 fn cpp_search_header_recursive(
@@ -828,35 +895,18 @@ fn cpp_search_header_recursive(
     result
 }
 
-/// 現ソース + インクルードヘッダから kind のメンバ型を解決する（設定ルール適用後の共通ドライバ）。
-/// 設定ルール（type_hint_config）は呼び出し元で先に試すため、ここはキャッシュ→ソース→ヘッダの経路のみ。
-fn cpp_lookup_member_in_sources(
+/// キャッシュ（ファイル単位）・エイリアス展開を除いた直接解決経路。
+/// ソース TU → インクルードヘッダの順に探す。ヘッダ単位のキャッシュ（`cpp_search_header_recursive` 内）
+/// は効くが、ファイル単位のメンバキャッシュは触らない（呼び出し元 `cpp_lookup_member_in_sources` で一括管理）。
+fn cpp_lookup_member_direct(
     ctx: &RecvHintContext<'_>,
     kind: CppLookupKind,
     class_name: &str,
     member_name: &str,
 ) -> Option<String> {
-    if let Some(cache) = ctx.job_cache {
-        if let Some(cached) =
-            cache.lookup_member(ctx.file_path, kind, class_name, member_name, true)
-        {
-            return cached;
-        }
-    }
-
     let grep = cpp_ast_grep_with_profile!(ctx.job_cache, ctx.source);
     let root = grep.root();
     if let Some(ty) = cpp_lookup_in_translation_unit(&root, kind, class_name, member_name) {
-        if let Some(cache) = ctx.job_cache {
-            cache.store_member(
-                ctx.file_path,
-                kind,
-                class_name,
-                member_name,
-                true,
-                Some(ty.clone()),
-            );
-        }
         return Some(ty);
     }
     let base = ctx.file_path.parent()?;
@@ -874,24 +924,61 @@ fn cpp_lookup_member_in_sources(
                 ctx.cpp_include_dirs,
                 ctx.job_cache,
             ) {
-                if let Some(cache) = ctx.job_cache {
-                    cache.store_member(
-                        ctx.file_path,
-                        kind,
-                        class_name,
-                        member_name,
-                        true,
-                        Some(ty.clone()),
-                    );
-                }
                 return Some(ty);
             }
         }
     }
-    if let Some(cache) = ctx.job_cache {
-        cache.store_member(ctx.file_path, kind, class_name, member_name, true, None);
-    }
     None
+}
+
+/// 現ソース + インクルードヘッダから kind のメンバ型を解決する（設定ルール適用後の共通ドライバ）。
+/// 設定ルール（type_hint_config）は呼び出し元で先に試すため、ここはキャッシュ→ソース→ヘッダの経路のみ。
+/// Field/Method 解決失敗時のみ、クラス名を typedef/using で 1 段展開して再試行する（B-3）。
+fn cpp_lookup_member_in_sources(
+    ctx: &RecvHintContext<'_>,
+    kind: CppLookupKind,
+    class_name: &str,
+    member_name: &str,
+) -> Option<String> {
+    if let Some(cache) = ctx.job_cache {
+        if let Some(cached) =
+            cache.lookup_member(ctx.file_path, kind, class_name, member_name, true)
+        {
+            return cached;
+        }
+    }
+
+    let mut result = cpp_lookup_member_direct(ctx, kind, class_name, member_name);
+
+    // B-3: Field/Method の解決失敗時のみ、クラス名を typedef/using で 1 段展開して再試行。
+    // エイリアス解決自体は cpp_lookup_member_in_sources(TypeAlias, ...) 経由だが、
+    // TypeAlias は Field/Method でないため再帰的にエイリアス展開は起きず 1 段限定（無限展開防止）。
+    // 再試行は cpp_lookup_member_direct を使うことで real_class 上の更なる展開を抑制する。
+    if result.is_none()
+        && matches!(kind, CppLookupKind::Field | CppLookupKind::Method)
+        && !class_name.is_empty()
+    {
+        if let Some(real) =
+            cpp_lookup_member_in_sources(ctx, CppLookupKind::TypeAlias, "", class_name)
+        {
+            let real_class = cpp_simplify_type_name(&real);
+            if !real_class.is_empty() && real_class != class_name {
+                result = cpp_lookup_member_direct(ctx, kind, &real_class, member_name);
+            }
+        }
+    }
+
+    if let Some(cache) = ctx.job_cache {
+        cache.store_member(
+            ctx.file_path,
+            kind,
+            class_name,
+            member_name,
+            true,
+            result.clone(),
+        );
+    }
+    result
 }
 
 fn cpp_method_return_for_class_in_sources(
@@ -2625,6 +2712,8 @@ mod tests {
 
     use crate::lang::SupportedLanguage;
 
+
+
     fn cpp_recv_hint(src: &str, pattern: &str) -> Option<String> {
         let grep = SupportLang::Cpp.ast_grep(src);
         let pat = Pattern::try_new(pattern, SupportLang::Cpp).unwrap();
@@ -3568,5 +3657,109 @@ void f() {
         };
         let hint = infer_recv_type(SupportedLanguage::Cpp, recv, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("CWinApp"));
+    }
+
+    // ===== B-3: typedef / using の 1 段展開 =====
+
+    fn cpp_alias_target(src: &str, alias: &str) -> Option<String> {
+        let grep = SupportLang::Cpp.ast_grep(src);
+        cpp_type_alias_target_in_translation_unit(&grep.root(), alias)
+    }
+
+    #[test]
+    fn cpp_type_alias_target_typedef() {
+        // `typedef CWinApp App;` → "CWinApp"
+        let src = "typedef CWinApp App;\n";
+        assert_eq!(cpp_alias_target(src, "App").as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_type_alias_target_using() {
+        // `using App = CWinApp;` → "CWinApp"
+        let src = "using App = CWinApp;\n";
+        assert_eq!(cpp_alias_target(src, "App").as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_type_alias_target_in_namespace_one_level() {
+        let src = "namespace N {\nusing App = CWinApp;\n}\n";
+        assert_eq!(cpp_alias_target(src, "App").as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_type_alias_target_not_found() {
+        let src = "typedef CWinApp App;\n";
+        assert_eq!(cpp_alias_target(src, "Other"), None);
+    }
+
+    #[test]
+    fn cpp_simplify_type_name_strips_template_args() {
+        assert_eq!(cpp_simplify_type_name("std::vector<int>"), "vector");
+        assert_eq!(cpp_simplify_type_name("MyTemplate<int>"), "MyTemplate");
+        assert_eq!(cpp_simplify_type_name("std::vector<int>::size_type"), "size_type");
+        assert_eq!(cpp_simplify_type_name("CWinApp *"), "CWinApp");
+        assert_eq!(cpp_simplify_type_name("const CWinApp *"), "CWinApp");
+    }
+
+    #[test]
+    fn cpp_field_resolves_via_type_alias_one_level() {
+        // App は CWinApp の typedef。App::m_x 失敗 → App を CWinApp に 1 段展開 → CWinApp::m_x → int。
+        let src = "class CWinApp { public: int m_x; };\ntypedef CWinApp App;\nvoid f() { App* p; p->m_x; }\n";
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let ty = cpp_field_type_for_class_in_sources(&ctx, "App", "m_x");
+        assert_eq!(ty.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_field_resolves_via_type_alias_in_header() {
+        // ヘッダ内の typedef を経由してフィールド型を解決する。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_alias_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "class CWinApp { public: int m_x; };\ntypedef CWinApp App;\n",
+        )
+        .expect("write app.h");
+        let src = "#include <app.h>\nvoid f() { App* p; p->m_x; }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let ty = cpp_field_type_for_class_in_sources(&ctx, "App", "m_x");
+        assert_eq!(ty.as_deref(), Some("int"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_alias_expansion_is_one_level_only() {
+        // App = CWinApp, App2 = App。App2::m_x は 1 段展開で App までしか行かず
+        // CWinApp までは届かない（1 段限定の確認）。App::m_x も失敗する前提。
+        let src = "class CWinApp { public: int m_x; };\ntypedef CWinApp App;\ntypedef App App2;\n";
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        };
+        // App2 → App（1 段目）。App は CWinApp の別名だが、再試行は App 上で直接探すため
+        // App::m_x は見つからず None。1 段限定で CWinApp までは展開しない。
+        let ty = cpp_field_type_for_class_in_sources(&ctx, "App2", "m_x");
+        assert_eq!(ty, None);
     }
 }
