@@ -72,9 +72,22 @@ pub struct TypeHintProfileSnapshot {
     pub lookup_cache_hits: u64,
 }
 
+/// ヘッダ/ソースから引くメンバ種別。キャッシュキーに含めることで同名のフィールドとメソッド
+/// （さらに B-1 以降のフリー関数・グローバル変数・型別名）の検索結果が衝突しないようにする。
+#[allow(dead_code)] // FreeFunction/GlobalVar/TypeAlias は B-1/B-2/B-3 で構築するまで未使用
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CppLookupKind {
+    Field,
+    Method,
+    FreeFunction,
+    GlobalVar,
+    TypeAlias,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CppMemberLookupKey {
     path: PathBuf,
+    kind: CppLookupKind,
     class_name: String,
     member_name: String,
 }
@@ -84,10 +97,10 @@ struct CppMemberLookupKey {
 pub struct RecvHintJobCache {
     profile: Arc<TypeHintProfile>,
     header_text: Mutex<HashMap<PathBuf, Option<Arc<str>>>>,
-    header_field_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
-    header_method_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
-    source_field_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
-    source_method_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
+    /// 現ソース内の宣言由来のメンバ型キャッシュ（負キャッシュ含む）。
+    source_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
+    /// インクルードヘッダ由来のメンバ型キャッシュ（負キャッシュ含む）。
+    header_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
 }
 
 impl RecvHintJobCache {
@@ -99,10 +112,8 @@ impl RecvHintJobCache {
         Self {
             profile,
             header_text: Mutex::new(HashMap::new()),
-            header_field_lookup: Mutex::new(HashMap::new()),
-            header_method_lookup: Mutex::new(HashMap::new()),
-            source_field_lookup: Mutex::new(HashMap::new()),
-            source_method_lookup: Mutex::new(HashMap::new()),
+            source_lookup: Mutex::new(HashMap::new()),
+            header_lookup: Mutex::new(HashMap::new()),
         }
     }
 
@@ -110,22 +121,26 @@ impl RecvHintJobCache {
         &self.profile
     }
 
-    fn lookup_field(
+    /// メンバ型キャッシュを引く。外側 None はキャッシュミス、
+    /// 内側 None は「探索したが見つからなかった」負キャッシュ。
+    fn lookup_member(
         &self,
         path: &Path,
+        kind: CppLookupKind,
         class_name: &str,
-        field_name: &str,
+        member_name: &str,
         in_source: bool,
     ) -> Option<Option<String>> {
         let key = CppMemberLookupKey {
             path: cpp_path_key(path),
+            kind,
             class_name: class_name.to_string(),
-            member_name: field_name.to_string(),
+            member_name: member_name.to_string(),
         };
         let map = if in_source {
-            self.source_field_lookup.lock().ok()?
+            self.source_lookup.lock().ok()?
         } else {
-            self.header_field_lookup.lock().ok()?
+            self.header_lookup.lock().ok()?
         };
         if let Some(v) = map.get(&key) {
             self.profile
@@ -136,72 +151,27 @@ impl RecvHintJobCache {
         None
     }
 
-    fn store_field(
+    fn store_member(
         &self,
         path: &Path,
+        kind: CppLookupKind,
         class_name: &str,
-        field_name: &str,
+        member_name: &str,
         in_source: bool,
         value: Option<String>,
     ) {
         let key = CppMemberLookupKey {
             path: cpp_path_key(path),
+            kind,
             class_name: class_name.to_string(),
-            member_name: field_name.to_string(),
+            member_name: member_name.to_string(),
         };
-        if in_source {
-            if let Ok(mut map) = self.source_field_lookup.lock() {
-                map.insert(key, value);
-            }
-        } else if let Ok(mut map) = self.header_field_lookup.lock() {
-            map.insert(key, value);
-        }
-    }
-
-    fn lookup_method(
-        &self,
-        path: &Path,
-        class_name: &str,
-        method_name: &str,
-        in_source: bool,
-    ) -> Option<Option<String>> {
-        let key = CppMemberLookupKey {
-            path: cpp_path_key(path),
-            class_name: class_name.to_string(),
-            member_name: method_name.to_string(),
-        };
-        let map = if in_source {
-            self.source_method_lookup.lock().ok()?
+        let guard = if in_source {
+            self.source_lookup.lock()
         } else {
-            self.header_method_lookup.lock().ok()?
+            self.header_lookup.lock()
         };
-        if let Some(v) = map.get(&key) {
-            self.profile
-                .lookup_cache_hits
-                .fetch_add(1, Ordering::Relaxed);
-            return Some(v.clone());
-        }
-        None
-    }
-
-    fn store_method(
-        &self,
-        path: &Path,
-        class_name: &str,
-        method_name: &str,
-        in_source: bool,
-        value: Option<String>,
-    ) {
-        let key = CppMemberLookupKey {
-            path: cpp_path_key(path),
-            class_name: class_name.to_string(),
-            member_name: method_name.to_string(),
-        };
-        if in_source {
-            if let Ok(mut map) = self.source_method_lookup.lock() {
-                map.insert(key, value);
-            }
-        } else if let Ok(mut map) = self.header_method_lookup.lock() {
+        if let Ok(mut map) = guard {
             map.insert(key, value);
         }
     }
@@ -475,45 +445,7 @@ fn cpp_field_type_for_class_in_sources(
             return Some(ty);
         }
     }
-    if let Some(cache) = ctx.job_cache {
-        if let Some(cached) = cache.lookup_field(ctx.file_path, class_name, field_name, true) {
-            return cached;
-        }
-    }
-
-    let grep = cpp_ast_grep_with_profile!(ctx.job_cache, ctx.source);
-    let root = grep.root();
-    if let Some(ty) = cpp_field_in_named_translation_unit(&root, class_name, field_name) {
-        if let Some(cache) = ctx.job_cache {
-            cache.store_field(ctx.file_path, class_name, field_name, true, Some(ty.clone()));
-        }
-        return Some(ty);
-    }
-    let base = ctx.file_path.parent()?;
-    let mut visited = HashSet::new();
-    visited.insert(cpp_path_key(ctx.file_path));
-    for inc in cpp_include_paths_from_source(ctx.source) {
-        if let Some(p) = cpp_resolve_include_file(base, &inc, ctx.cpp_include_dirs) {
-            if let Some(ty) = cpp_try_header_file_for_field(
-                &p,
-                class_name,
-                field_name,
-                &mut visited,
-                CPP_INCLUDE_MAX_DEPTH,
-                ctx.cpp_include_dirs,
-                ctx.job_cache,
-            ) {
-                if let Some(cache) = ctx.job_cache {
-                    cache.store_field(ctx.file_path, class_name, field_name, true, Some(ty.clone()));
-                }
-                return Some(ty);
-            }
-        }
-    }
-    if let Some(cache) = ctx.job_cache {
-        cache.store_field(ctx.file_path, class_name, field_name, true, None);
-    }
-    None
+    cpp_lookup_member_in_sources(ctx, CppLookupKind::Field, class_name, field_name)
 }
 
 fn cpp_declarator_has_method_name<D: Doc>(decl: &Node<'_, D>, method_name: &str) -> bool {
@@ -585,10 +517,31 @@ fn cpp_method_return_in_named_translation_unit<D: Doc>(
     out
 }
 
-fn cpp_try_header_file_for_method(
-    path: &Path,
+/// translation_unit 直下から kind に応じたメンバの型を引く（ディスパッチ）。
+/// Field/Method は既存の関数に委譲し、FreeFunction/GlobalVar/TypeAlias は B-1/B-2/B-3 で実装する。
+fn cpp_lookup_in_translation_unit<D: Doc>(
+    root: &Node<'_, D>,
+    kind: CppLookupKind,
     class_name: &str,
-    method_name: &str,
+    member_name: &str,
+) -> Option<String> {
+    match kind {
+        CppLookupKind::Field => cpp_field_in_named_translation_unit(root, class_name, member_name),
+        CppLookupKind::Method => {
+            cpp_method_return_in_named_translation_unit(root, class_name, member_name)
+        }
+        // B-1/B-2/B-3 で実装。それまでは未対応（None を返す）。
+        CppLookupKind::FreeFunction | CppLookupKind::GlobalVar | CppLookupKind::TypeAlias => None,
+    }
+}
+
+/// インクルードヘッダを再帰的に走査して kind のメンバ型を解決する。
+/// 深さ上限・visited による循環防止・負キャッシュは従来踏襲。
+fn cpp_search_header_recursive(
+    path: &Path,
+    kind: CppLookupKind,
+    class_name: &str,
+    member_name: &str,
     visited: &mut HashSet<PathBuf>,
     depth: usize,
     cpp_include_dirs: &[PathBuf],
@@ -602,7 +555,7 @@ fn cpp_try_header_file_for_method(
         return None;
     }
     if let Some(cache) = job_cache {
-        if let Some(cached) = cache.lookup_method(path, class_name, method_name, false) {
+        if let Some(cached) = cache.lookup_member(path, kind, class_name, member_name, false) {
             return cached;
         }
     }
@@ -614,7 +567,7 @@ fn cpp_try_header_file_for_method(
     let grep = cpp_ast_grep_with_profile!(job_cache, &text);
     let root = grep.root();
     let result = if let Some(ty) =
-        cpp_method_return_in_named_translation_unit(&root, class_name, method_name)
+        cpp_lookup_in_translation_unit(&root, kind, class_name, member_name)
     {
         visited.insert(key);
         Some(ty)
@@ -627,10 +580,11 @@ fn cpp_try_header_file_for_method(
             let mut found = None;
             for inc in cpp_include_paths_from_source(&text) {
                 if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
-                    if let Some(ty) = cpp_try_header_file_for_method(
+                    if let Some(ty) = cpp_search_header_recursive(
                         &p,
+                        kind,
                         class_name,
-                        method_name,
+                        member_name,
                         visited,
                         depth - 1,
                         cpp_include_dirs,
@@ -645,9 +599,75 @@ fn cpp_try_header_file_for_method(
         }
     };
     if let Some(cache) = job_cache {
-        cache.store_method(path, class_name, method_name, false, result.clone());
+        cache.store_member(path, kind, class_name, member_name, false, result.clone());
     }
     result
+}
+
+/// 現ソース + インクルードヘッダから kind のメンバ型を解決する（設定ルール適用後の共通ドライバ）。
+/// 設定ルール（type_hint_config）は呼び出し元で先に試すため、ここはキャッシュ→ソース→ヘッダの経路のみ。
+fn cpp_lookup_member_in_sources(
+    ctx: &RecvHintContext<'_>,
+    kind: CppLookupKind,
+    class_name: &str,
+    member_name: &str,
+) -> Option<String> {
+    if let Some(cache) = ctx.job_cache {
+        if let Some(cached) =
+            cache.lookup_member(ctx.file_path, kind, class_name, member_name, true)
+        {
+            return cached;
+        }
+    }
+
+    let grep = cpp_ast_grep_with_profile!(ctx.job_cache, ctx.source);
+    let root = grep.root();
+    if let Some(ty) = cpp_lookup_in_translation_unit(&root, kind, class_name, member_name) {
+        if let Some(cache) = ctx.job_cache {
+            cache.store_member(
+                ctx.file_path,
+                kind,
+                class_name,
+                member_name,
+                true,
+                Some(ty.clone()),
+            );
+        }
+        return Some(ty);
+    }
+    let base = ctx.file_path.parent()?;
+    let mut visited = HashSet::new();
+    visited.insert(cpp_path_key(ctx.file_path));
+    for inc in cpp_include_paths_from_source(ctx.source) {
+        if let Some(p) = cpp_resolve_include_file(base, &inc, ctx.cpp_include_dirs) {
+            if let Some(ty) = cpp_search_header_recursive(
+                &p,
+                kind,
+                class_name,
+                member_name,
+                &mut visited,
+                CPP_INCLUDE_MAX_DEPTH,
+                ctx.cpp_include_dirs,
+                ctx.job_cache,
+            ) {
+                if let Some(cache) = ctx.job_cache {
+                    cache.store_member(
+                        ctx.file_path,
+                        kind,
+                        class_name,
+                        member_name,
+                        true,
+                        Some(ty.clone()),
+                    );
+                }
+                return Some(ty);
+            }
+        }
+    }
+    if let Some(cache) = ctx.job_cache {
+        cache.store_member(ctx.file_path, kind, class_name, member_name, true, None);
+    }
+    None
 }
 
 fn cpp_method_return_for_class_in_sources(
@@ -661,51 +681,7 @@ fn cpp_method_return_for_class_in_sources(
             return Some(ty);
         }
     }
-    if let Some(cache) = ctx.job_cache {
-        if let Some(cached) = cache.lookup_method(ctx.file_path, class_name, method_name, true) {
-            return cached;
-        }
-    }
-
-    let grep = cpp_ast_grep_with_profile!(ctx.job_cache, ctx.source);
-    let root = grep.root();
-    if let Some(ty) = cpp_method_return_in_named_translation_unit(&root, class_name, method_name) {
-        if let Some(cache) = ctx.job_cache {
-            cache.store_method(ctx.file_path, class_name, method_name, true, Some(ty.clone()));
-        }
-        return Some(ty);
-    }
-    let base = ctx.file_path.parent()?;
-    let mut visited = HashSet::new();
-    visited.insert(cpp_path_key(ctx.file_path));
-    for inc in cpp_include_paths_from_source(ctx.source) {
-        if let Some(p) = cpp_resolve_include_file(base, &inc, ctx.cpp_include_dirs) {
-            if let Some(ty) = cpp_try_header_file_for_method(
-                &p,
-                class_name,
-                method_name,
-                &mut visited,
-                CPP_INCLUDE_MAX_DEPTH,
-                ctx.cpp_include_dirs,
-                ctx.job_cache,
-            ) {
-                if let Some(cache) = ctx.job_cache {
-                    cache.store_method(
-                        ctx.file_path,
-                        class_name,
-                        method_name,
-                        true,
-                        Some(ty.clone()),
-                    );
-                }
-                return Some(ty);
-            }
-        }
-    }
-    if let Some(cache) = ctx.job_cache {
-        cache.store_method(ctx.file_path, class_name, method_name, true, None);
-    }
-    None
+    cpp_lookup_member_in_sources(ctx, CppLookupKind::Method, class_name, method_name)
 }
 
 fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) -> Option<String> {
@@ -2062,70 +2038,6 @@ fn cpp_resolve_include_file(
 
 const CPP_INCLUDE_MAX_DEPTH: usize = 8;
 const CPP_INCLUDE_MAX_FILE_BYTES: usize = 512 * 1024;
-
-fn cpp_try_header_file_for_field(
-    path: &Path,
-    class_name: &str,
-    field_name: &str,
-    visited: &mut HashSet<PathBuf>,
-    depth: usize,
-    cpp_include_dirs: &[PathBuf],
-    job_cache: Option<&RecvHintJobCache>,
-) -> Option<String> {
-    if depth == 0 {
-        return None;
-    }
-    let key = cpp_path_key(path);
-    if visited.contains(&key) {
-        return None;
-    }
-    if let Some(cache) = job_cache {
-        if let Some(cached) = cache.lookup_field(path, class_name, field_name, false) {
-            return cached;
-        }
-    }
-    let text = if let Some(cache) = job_cache {
-        cache.load_header_text(path)?.to_string()
-    } else {
-        cpp_read_header_text(path)?
-    };
-    let grep = cpp_ast_grep_with_profile!(job_cache, &text);
-    let root = grep.root();
-    let result = if let Some(ty) = cpp_field_in_named_translation_unit(&root, class_name, field_name)
-    {
-        visited.insert(key);
-        Some(ty)
-    } else {
-        visited.insert(key);
-        if depth <= 1 {
-            None
-        } else {
-            let base = path.parent()?;
-            let mut found = None;
-            for inc in cpp_include_paths_from_source(&text) {
-                if let Some(p) = cpp_resolve_include_file(base, &inc, cpp_include_dirs) {
-                    if let Some(ty) = cpp_try_header_file_for_field(
-                        &p,
-                        class_name,
-                        field_name,
-                        visited,
-                        depth - 1,
-                        cpp_include_dirs,
-                        job_cache,
-                    ) {
-                        found = Some(ty);
-                        break;
-                    }
-                }
-            }
-            found
-        }
-    };
-    if let Some(cache) = job_cache {
-        cache.store_field(path, class_name, field_name, false, result.clone());
-    }
-    result
-}
 
 fn cpp_field_from_included_headers<D: Doc>(
     ctx: &RecvHintContext<'_>,
