@@ -762,6 +762,14 @@ fn cpp_global_var_type_for_sources(
     cpp_lookup_member_in_sources(ctx, CppLookupKind::GlobalVar, "", name)
 }
 
+/// 現ソース + インクルードヘッダからフリー関数 name の戻り値型を解決するドライバ（D: チェイン起点用）。
+fn cpp_free_function_return_for_sources(
+    ctx: &RecvHintContext<'_>,
+    name: &str,
+) -> Option<String> {
+    cpp_lookup_member_in_sources(ctx, CppLookupKind::FreeFunction, "", name)
+}
+
 // ===== B-3: typedef / using の 1 段展開 =====
 
 /// type_definition（typedef）/ alias_declaration（using）ノードから alias のターゲット型を取り出す。
@@ -1024,6 +1032,16 @@ fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) 
                 method_name.as_str(),
                 arg_types.as_slice(),
             );
+        }
+        // D-1: 呼び出し先が identifier/qualified_identifier（フリー関数）のチェイン起点。
+        // 優先順位: 設定ルール（cpp_config_call_return で試済）→ ソース/ヘッダ（B-1）→ マクロ（C）。
+        // AfxGetApp()->GetMainWnd()->... の左端フリー関数呼び出しの戻り値型を解決する。
+        if matches!(func.kind().as_ref(), "identifier" | "qualified_identifier") {
+            let name = func.text().trim().to_string();
+            if let Some(ty) = cpp_free_function_return_for_sources(ctx, &name) {
+                return Some(ty);
+            }
+            // マクロ（C）は未実装。未解決は None で握る（誤推論より安全）。
         }
     }
     None
@@ -1847,6 +1865,15 @@ fn cpp_type_of_direct_receiver_expr<D: Doc>(
         "call_expression" => {
             let func = node.field("function")?;
             if func.kind().as_ref() != "field_expression" {
+                // D-2: フリー関数呼び出しの戻り値型を B-1 で先に試す（チェイン/レシーバ解決の起点）。
+                if let Some(ctx) = ctx {
+                    if matches!(func.kind().as_ref(), "identifier" | "qualified_identifier") {
+                        let name = func.text().trim().to_string();
+                        if let Some(ty) = cpp_free_function_return_for_sources(ctx, &name) {
+                            return Some(ty);
+                        }
+                    }
+                }
                 return cpp_hint(node, ctx);
             }
             let inner_arg = func.field("argument")?;
@@ -2474,6 +2501,15 @@ fn cpp_expr_type_label_for_config<D: Doc>(
     if k == "call_expression" {
         if let Some(ty) = cpp_config_call_return(node, ctx) {
             return Some(ty);
+        }
+        // D-3: 設定ルール未命中ならフリー関数戻り値型を B-1 でフォールバック（引数型ラベル用）。
+        if let Some(func) = node.field("function") {
+            if matches!(func.kind().as_ref(), "identifier" | "qualified_identifier") {
+                let name = func.text().trim().to_string();
+                if let Some(ty) = cpp_free_function_return_for_sources(ctx, &name) {
+                    return Some(ty);
+                }
+            }
         }
     }
     if k == "parenthesized_expression" {
@@ -3761,5 +3797,115 @@ void f() {
         // App::m_x は見つからず None。1 段限定で CWinApp までは展開しない。
         let ty = cpp_field_type_for_class_in_sources(&ctx, "App2", "m_x");
         assert_eq!(ty, None);
+    }
+
+    // ===== D: メソッドチェイン穴埋め =====
+
+    #[test]
+    fn cpp_chain_resolves_free_function_return_in_source() {
+        // AfxGetApp()->GetCount() のチェイン起点 AfxGetApp() の戻り値型を
+        // ソース内のフリー関数宣言から解決し、GetCount の戻り値型 int まで届くか。
+        // （メソッド戻り値は既存経路がクラス本体内の function_definition から取るため本体付きで定義）
+        let src = "class CWinApp { public: int GetCount() { return 0; } };\nCWinApp* AfxGetApp();\nvoid f() { AfxGetApp()->GetCount(); }\n";
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "AfxGetApp()->GetCount()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_chain_resolves_free_function_return_via_header() {
+        // ヘッダ経由で AfxGetApp()->GetCount() のチェインを解決する。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_chain_freefn_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/afx.h"),
+            "class CWinApp { public: int GetCount() { return 0; } };\nCWinApp* AfxGetApp();\n",
+        )
+        .expect("write afx.h");
+        let src = "#include <afx.h>\nvoid f() { AfxGetApp()->GetCount(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "AfxGetApp()->GetCount()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("int"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_type_of_direct_receiver_expr_resolves_free_function() {
+        // D-2: call_expression（func が field_expression でない）のレシーバ型解決で
+        // B-1 を先に試す。AfxGetApp() 単体の型が CWinApp * になるか。
+        let src = "class CWinApp {};\nCWinApp* AfxGetApp();\nvoid f() { AfxGetApp(); }\n";
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV", SupportLang::Cpp).unwrap();
+        // $RECV は function_declarator にもマッチするため call_expression で絞る。
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| {
+                m.get_node().kind().as_ref() == "call_expression"
+                    && m.get_node().text().trim() == "AfxGetApp()"
+            })
+            .expect("match AfxGetApp() call_expression");
+        let cap = m.get_env().get_match("RECV").expect("RECV");
+        let hint = infer_recv_type(SupportedLanguage::Cpp, cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWinApp *"));
+    }
+
+    #[test]
+    fn cpp_arg_label_resolves_free_function_return() {
+        let src = "class CWinApp {};\nCWinApp* AfxGetApp();\nvoid SomeFunc(CWinApp* p);\nvoid f() { SomeFunc(AfxGetApp()); }\n";
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("SomeFunc($ARG)", SupportLang::Cpp).unwrap();
+        let m = grep.root().find_all(&pat).next().expect("match");
+        let arg = m.get_env().get_match("ARG").expect("ARG");
+        let label = cpp_expr_type_label_for_config(arg, &ctx);
+        assert_eq!(label.as_deref(), Some("CWinApp *"));
     }
 }
