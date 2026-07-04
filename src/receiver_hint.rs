@@ -530,9 +530,129 @@ fn cpp_lookup_in_translation_unit<D: Doc>(
         CppLookupKind::Method => {
             cpp_method_return_in_named_translation_unit(root, class_name, member_name)
         }
-        // B-1/B-2/B-3 で実装。それまでは未対応（None を返す）。
-        CppLookupKind::FreeFunction | CppLookupKind::GlobalVar | CppLookupKind::TypeAlias => None,
+        CppLookupKind::FreeFunction => {
+            cpp_free_function_return_in_translation_unit(root, member_name)
+        }
+        // B-2/B-3 で実装。それまでは未対応（None を返す）。
+        CppLookupKind::GlobalVar | CppLookupKind::TypeAlias => None,
     }
+}
+
+// ===== B-1: フリー関数プロトタイプの戻り値型 =====
+
+/// declarator ツリーが function_declarator を含むか（変数宣言でなく関数宣言か）の判定。
+fn cpp_declarator_contains_function_declarator<D: Doc>(d: &Node<'_, D>) -> bool {
+    if d.kind().as_ref() == "function_declarator" {
+        return true;
+    }
+    for c in d.children() {
+        if cpp_declarator_contains_function_declarator(&c) {
+            return true;
+        }
+    }
+    false
+}
+
+/// declarator が name という名前の関数を宣言しているか（関数であり、かつ名前一致）。
+fn cpp_declarator_is_function_named<D: Doc>(d: &Node<'_, D>, name: &str) -> bool {
+    cpp_declarator_contains_function_declarator(d) && cpp_declarator_matches_name(d, name)
+}
+
+/// 戻り値型の specifier と declarator 由来のポインタ/参照修飾（`*`, `&` 等）を合成する。
+/// `CWinApp` + `*` → `CWinApp *`。ops が空なら specifier をそのまま返す。
+fn cpp_combine_type(spec: &str, ops: &str) -> String {
+    let spec = spec.trim();
+    let ops = ops.trim();
+    if ops.is_empty() {
+        spec.to_string()
+    } else {
+        format!("{spec} {ops}")
+    }
+}
+
+/// function_definition ノードから name の戻り値型を取り出す。
+fn cpp_function_definition_return<D: Doc>(fd: &Node<'_, D>, name: &str) -> Option<String> {
+    let decl = fd.field("declarator")?;
+    if !cpp_declarator_is_function_named(&decl, name) {
+        return None;
+    }
+    let spec = fd
+        .field("type")
+        .map(|t| t.text().trim().to_string())
+        .or_else(|| cpp_declaration_specifiers_text(fd))?;
+    let ops = cpp_declarator_type_ops(decl);
+    Some(cpp_combine_type(&spec, &ops))
+}
+
+/// declaration ノード（プロトタイプ）から name の関数の戻り値型を取り出す。
+/// `CWinApp* AfxGetApp();` → `CWinApp *`。変数宣言（function_declarator を含まない）は除外する。
+fn cpp_function_declaration_return<D: Doc>(decl: &Node<'_, D>, name: &str) -> Option<String> {
+    let spec = cpp_declaration_specifiers_text(decl)?;
+    for d in decl.field_children("declarator") {
+        let target = if d.kind().as_ref() == "init_declarator" {
+            d.field("declarator")
+        } else {
+            Some(d.clone())
+        };
+        if let Some(t) = target {
+            if cpp_declarator_is_function_named(&t, name) {
+                let ops = cpp_declarator_type_ops(t);
+                return Some(cpp_combine_type(&spec, &ops));
+            }
+        }
+    }
+    None
+}
+
+fn cpp_free_function_return_from_decl<D: Doc>(
+    node: &Node<'_, D>,
+    name: &str,
+) -> Option<String> {
+    match node.kind().as_ref() {
+        "function_definition" => cpp_function_definition_return(node, name),
+        "declaration" => cpp_function_declaration_return(node, name),
+        _ => None,
+    }
+}
+
+/// スコープノードの直下と、namespace 1 段だけ潜ってフリー関数 name を探す。
+/// 関数本体やクラス内部には入らない（誤ヒントを避ける）。
+fn cpp_find_free_function_return_in_scope<D: Doc>(
+    node: &Node<'_, D>,
+    name: &str,
+    namespace_depth: usize,
+) -> Option<String> {
+    for c in node.children() {
+        let k = c.kind();
+        let k = k.as_ref();
+        if let Some(ty) = cpp_free_function_return_from_decl(&c, name) {
+            return Some(ty);
+        }
+        // `extern "C" { ... }`（linkage_specification）と declaration_list の中を 1 階層分試す。
+        if k == "linkage_specification" || k == "declaration_list" {
+            if let Some(ty) = cpp_find_free_function_return_in_scope(&c, name, namespace_depth) {
+                return Some(ty);
+            }
+        }
+        // namespace は 1 段だけ（無限展開防止）。
+        if k == "namespace_definition" && namespace_depth < 1 {
+            if let Some(ty) =
+                cpp_find_free_function_return_in_scope(&c, name, namespace_depth + 1)
+            {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+/// translation_unit 直下（+ `extern "C"` ブロック・namespace 1 段）からフリー関数 name の戻り値型を引く。
+/// `CWinApp* AfxGetApp();` → `CWinApp *`。
+fn cpp_free_function_return_in_translation_unit<D: Doc>(
+    root: &Node<'_, D>,
+    name: &str,
+) -> Option<String> {
+    cpp_find_free_function_return_in_scope(root, name, 0)
 }
 
 /// インクルードヘッダを再帰的に走査して kind のメンバ型を解決する。
@@ -3154,6 +3274,100 @@ void f() {
         let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("Inner"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ===== B-1: フリー関数プロトタイプの戻り値型 =====
+
+    fn cpp_free_fn_return(src: &str, name: &str) -> Option<String> {
+        let grep = SupportLang::Cpp.ast_grep(src);
+        cpp_free_function_return_in_translation_unit(&grep.root(), name)
+    }
+
+    #[test]
+    fn cpp_free_function_return_prototype_pointer() {
+        // `CWinApp* AfxGetApp();` → "CWinApp *"（ポインタ修飾を declarator から合成）
+        let src = "CWinApp* AfxGetApp();\nvoid f() { AfxGetApp(); }\n";
+        assert_eq!(
+            cpp_free_fn_return(src, "AfxGetApp").as_deref(),
+            Some("CWinApp *")
+        );
+    }
+
+    #[test]
+    fn cpp_free_function_return_definition() {
+        // 定義本体があっても戻り値型は取れる。本体の中は走査しない。
+        let src = "CWinApp* AfxGetApp() { return nullptr; }\n";
+        assert_eq!(
+            cpp_free_fn_return(src, "AfxGetApp").as_deref(),
+            Some("CWinApp *")
+        );
+    }
+
+    #[test]
+    fn cpp_free_function_return_void() {
+        let src = "void DoSomething();\n";
+        assert_eq!(cpp_free_fn_return(src, "DoSomething").as_deref(), Some("void"));
+    }
+
+    #[test]
+    fn cpp_free_function_return_in_namespace_one_level() {
+        let src = "namespace N {\nCWinApp* AfxGetApp();\n}\n";
+        assert_eq!(
+            cpp_free_fn_return(src, "AfxGetApp").as_deref(),
+            Some("CWinApp *")
+        );
+    }
+
+    #[test]
+    fn cpp_free_function_return_in_extern_c_block() {
+        let src = "extern \"C\" {\nCWinApp* AfxGetApp();\n}\n";
+        assert_eq!(
+            cpp_free_fn_return(src, "AfxGetApp").as_deref(),
+            Some("CWinApp *")
+        );
+    }
+
+    #[test]
+    fn cpp_free_function_return_ignores_variable() {
+        // 変数宣言は関数でない（function_declarator を含まない）ため対象外。
+        let src = "CWinApp* g_app;\n";
+        assert_eq!(cpp_free_fn_return(src, "g_app"), None);
+    }
+
+    #[test]
+    fn cpp_free_function_return_ignores_same_name_local_call_in_body() {
+        // 関数本体の中にある呼び出し式からは拾わない（誤ヒート防止）。
+        let src = "void f() {\n  CWinApp* AfxGetApp();\n}\n";
+        // 本体内の declaration は走査対象外なのでトップレベルに無ければ None。
+        assert_eq!(cpp_free_fn_return(src, "AfxGetApp"), None);
+    }
+
+    #[test]
+    fn cpp_free_function_return_via_header() {
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_freefn_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/afx.h"),
+            "class CWinApp {};\nCWinApp* AfxGetApp();\n",
+        )
+        .expect("write afx.h");
+        let src = "#include <afx.h>\nvoid f() { AfxGetApp(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let ty = cpp_lookup_member_in_sources(&ctx, CppLookupKind::FreeFunction, "", "AfxGetApp");
+        assert_eq!(ty.as_deref(), Some("CWinApp *"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
