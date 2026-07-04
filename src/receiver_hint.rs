@@ -533,8 +533,11 @@ fn cpp_lookup_in_translation_unit<D: Doc>(
         CppLookupKind::FreeFunction => {
             cpp_free_function_return_in_translation_unit(root, member_name)
         }
-        // B-2/B-3 で実装。それまでは未対応（None を返す）。
-        CppLookupKind::GlobalVar | CppLookupKind::TypeAlias => None,
+        CppLookupKind::GlobalVar => {
+            cpp_global_var_type_in_translation_unit(root, member_name)
+        }
+        // B-3 で実装。それまでは未対応（None を返す）。
+        CppLookupKind::TypeAlias => None,
     }
 }
 
@@ -653,6 +656,107 @@ fn cpp_free_function_return_in_translation_unit<D: Doc>(
     name: &str,
 ) -> Option<String> {
     cpp_find_free_function_return_in_scope(root, name, 0)
+}
+
+// ===== B-2: extern グローバル変数の型 =====
+
+/// 型文字列から記憶域クラス指定子（extern/static 等）を除去する。const/volatile は型修飾子なので残す。
+fn cpp_strip_storage_class_specifiers(spec: &str) -> String {
+    const STORAGE: &[&str] = &[
+        "extern",
+        "static",
+        "register",
+        "thread_local",
+        "mutable",
+        "inline",
+        "constexpr",
+        "consteval",
+    ];
+    spec.split_whitespace()
+        .filter(|w| !STORAGE.contains(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// declaration ノードからグローバル変数 name の型を取り出す。
+/// 関数宣言（function_declarator を含む）は除外し、extern/static 等は型文字列から除去する。
+/// ポインタ/参照修飾（`*`, `&`）は declarator から合成する（`CWinApp* theApp;` → `CWinApp *`）。
+fn cpp_global_var_type_from_decl<D: Doc>(
+    decl: &Node<'_, D>,
+    name: &str,
+) -> Option<String> {
+    if decl.kind().as_ref() != "declaration" {
+        return None;
+    }
+    if !cpp_declaration_declares_name(decl, name) {
+        return None;
+    }
+    // プロトタイプ（関数宣言）は対象外。
+    if cpp_declarator_contains_function_declarator(decl) {
+        return None;
+    }
+    let spec = cpp_declaration_specifiers_text(decl)?;
+    let spec = cpp_strip_storage_class_specifiers(&spec);
+    if spec.is_empty() {
+        return None;
+    }
+    let mut ops = String::new();
+    for d in decl.field_children("declarator") {
+        let target = if d.kind().as_ref() == "init_declarator" {
+            d.field("declarator")
+        } else {
+            Some(d.clone())
+        };
+        if let Some(t) = target {
+            if cpp_declarator_matches_name(&t, name) {
+                ops = cpp_declarator_type_ops(t);
+                break;
+            }
+        }
+    }
+    Some(cpp_combine_type(&spec, &ops))
+}
+
+fn cpp_find_global_var_type_in_scope<D: Doc>(
+    node: &Node<'_, D>,
+    name: &str,
+    namespace_depth: usize,
+) -> Option<String> {
+    for c in node.children() {
+        let k = c.kind();
+        let k = k.as_ref();
+        if let Some(ty) = cpp_global_var_type_from_decl(&c, name) {
+            return Some(ty);
+        }
+        if k == "linkage_specification" || k == "declaration_list" {
+            if let Some(ty) = cpp_find_global_var_type_in_scope(&c, name, namespace_depth) {
+                return Some(ty);
+            }
+        }
+        if k == "namespace_definition" && namespace_depth < 1 {
+            if let Some(ty) = cpp_find_global_var_type_in_scope(&c, name, namespace_depth + 1) {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+/// translation_unit 直下（+ `extern "C"` ブロック・namespace 1 段）からグローバル変数 name の型を引く。
+/// `extern CWinApp theApp;` → `CWinApp`。`CWinApp* theApp;` → `CWinApp *`。
+fn cpp_global_var_type_in_translation_unit<D: Doc>(
+    root: &Node<'_, D>,
+    name: &str,
+) -> Option<String> {
+    cpp_find_global_var_type_in_scope(root, name, 0)
+}
+
+/// 現ソース + インクルードヘッダからグローバル変数 name の型を解決するドライバ。
+fn cpp_global_var_type_for_sources(
+    ctx: &RecvHintContext<'_>,
+    name: &str,
+) -> Option<String> {
+    cpp_lookup_member_in_sources(ctx, CppLookupKind::GlobalVar, "", name)
 }
 
 /// インクルードヘッダを再帰的に走査して kind のメンバ型を解決する。
@@ -2198,6 +2302,10 @@ fn cpp_hint<D: Doc>(recv: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Op
         if let Some(ty) = cpp_field_from_included_headers(ctx, recv, &t) {
             return Some(ty);
         }
+        // B-2: extern グローバル変数（例: theApp）の型をソース/ヘッダから解決する。
+        if let Some(ty) = cpp_global_var_type_for_sources(ctx, &t) {
+            return Some(ty);
+        }
         if let Some(config) = ctx.type_hint_config {
             if let Some(ty) = config.lookup_cpp_constant_type(t.as_str()) {
                 return Some(ty);
@@ -3370,5 +3478,95 @@ void f() {
         assert_eq!(ty.as_deref(), Some("CWinApp *"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ===== B-2: extern グローバル変数の型 =====
+
+    fn cpp_global_var_type(src: &str, name: &str) -> Option<String> {
+        let grep = SupportLang::Cpp.ast_grep(src);
+        cpp_global_var_type_in_translation_unit(&grep.root(), name)
+    }
+
+    #[test]
+    fn cpp_global_var_type_extern_stripped() {
+        // `extern CWinApp theApp;` → "CWinApp"（extern を除去）
+        let src = "extern CWinApp theApp;\nvoid f() { theApp.m_x; }\n";
+        assert_eq!(cpp_global_var_type(src, "theApp").as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_global_var_type_pointer() {
+        // `CWinApp* theApp;` → "CWinApp *"（ポインタ修飾を declarator から合成）
+        let src = "CWinApp* theApp;\n";
+        assert_eq!(cpp_global_var_type(src, "theApp").as_deref(), Some("CWinApp *"));
+    }
+
+    #[test]
+    fn cpp_global_var_type_static_stripped() {
+        // `static CWinApp s_app;` → "CWinApp"（static を除去）
+        let src = "static CWinApp s_app;\n";
+        assert_eq!(cpp_global_var_type(src, "s_app").as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_global_var_type_ignores_function_prototype() {
+        // 関数プロトタイプは対象外（function_declarator を含むため除外）。
+        let src = "void f();\n";
+        assert_eq!(cpp_global_var_type(src, "f"), None);
+    }
+
+    #[test]
+    fn cpp_global_var_type_ignores_local_declaration_in_body() {
+        // 関数本体内の宣言は走査対象外。
+        let src = "void f() {\n  CWinApp theApp;\n}\n";
+        assert_eq!(cpp_global_var_type(src, "theApp"), None);
+    }
+
+    #[test]
+    fn cpp_global_var_type_via_header() {
+        // ヘッダ経由で extern グローバルの型を解決する。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_globalvar_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "class CWinApp {};\nextern CWinApp theApp;\n",
+        )
+        .expect("write app.h");
+        let src = "#include <app.h>\nvoid f() { theApp.m_x; }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let ty = cpp_global_var_type_for_sources(&ctx, "theApp");
+        assert_eq!(ty.as_deref(), Some("CWinApp"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_hint_resolves_extern_global_as_receiver() {
+        // theApp は extern グローバル。cpp_hint が theApp → CWinApp を解決するか。
+        let src = "class CWinApp { public: int m_x; };\nextern CWinApp theApp;\nvoid f() { theApp.m_x; }\n";
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.m_x", SupportLang::Cpp).unwrap();
+        let m = grep.root().find_all(&pat).next().expect("match");
+        let recv = m.get_env().get_match("RECV").expect("RECV");
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let hint = infer_recv_type(SupportedLanguage::Cpp, recv, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWinApp"));
     }
 }
