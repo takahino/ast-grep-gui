@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use ast_grep_core::{Doc, Node};
 use ast_grep_language::{LanguageExt, SupportLang};
 
+use crate::file_encoding::{read_text_file, FileEncodingPreference};
 use crate::lang::SupportedLanguage;
 use crate::type_hint_config::TypeHintConfig;
 
@@ -222,7 +223,11 @@ impl RecvHintJobCache {
             self.store_header_text(&key, None);
             return None;
         }
-        let text = fs::read_to_string(path).ok()?;
+        // ヘッダは本体と別エンコーディング（Shift_JIS / UTF-16 / BOM 付き）であり得るため
+        // Auto 判定で読む。検索本体と同じ file_encoding::read_text_file 経路で非対称を解消。
+        let text = read_text_file(path, FileEncodingPreference::Auto)
+            .ok()?
+            .text;
         self.profile.header_reads.fetch_add(1, Ordering::Relaxed);
         self.profile.header_read_nanos.fetch_add(
             start.elapsed().as_nanos() as u64,
@@ -604,11 +609,7 @@ fn cpp_try_header_file_for_method(
     let text = if let Some(cache) = job_cache {
         cache.load_header_text(path)?.to_string()
     } else {
-        let len = fs::metadata(path).ok()?.len();
-        if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
-            return None;
-        }
-        fs::read_to_string(path).ok()?
+        cpp_read_header_text(path)?
     };
     let grep = cpp_ast_grep_with_profile!(job_cache, &text);
     let root = grep.root();
@@ -1983,8 +1984,20 @@ pub fn cpp_scan_include_directives(source: &str) -> Vec<String> {
 fn cpp_include_paths_from_source(source: &str) -> Vec<String> {
     let mut v = Vec::new();
     for line in source.lines() {
-        let t = line.trim();
-        let rest = match t.strip_prefix("#include") {
+        // 行頭の BOM（U+FEFF）を防御的に除去。`str::trim` は BOM を空白と見なさないため
+        // 明示的に剥ぐ（read_text_file でも通常は除去済みだが、診断経路など万全を期す）。
+        let mut t = line.trim();
+        if let Some(stripped) = t.strip_prefix('\u{feff}') {
+            t = stripped.trim();
+        }
+        // `#  include`（# と include の間に空白）を許容するため、
+        // `#` → 残りを trim_start → `include` の順に分解する。
+        // 単純な `strip_prefix("#include")` だと空白入り `#  include` を取りこぼす。
+        let after_hash = match t.strip_prefix('#') {
+            Some(r) => r.trim_start(),
+            None => continue,
+        };
+        let rest = match after_hash.strip_prefix("include") {
             Some(r) => r.trim_start(),
             None => continue,
         };
@@ -2003,6 +2016,20 @@ fn cpp_include_paths_from_source(source: &str) -> Vec<String> {
 
 fn cpp_path_key(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// ヘッダファイルをエンコーディング自動判定で読み込む。
+/// 検索本体（`file_encoding::read_text_file` + Auto）と同じ経路で Shift_JIS / UTF-16 / BOM 付きヘッダを扱い、
+/// 従来 `fs::read_to_string`（厳密 UTF-8）で黙って `None` になっていた「.h ロード不調」を解消する。
+/// サイズ上限（`CPP_INCLUDE_MAX_FILE_BYTES`）を超える場合も `None` を返す。
+fn cpp_read_header_text(path: &Path) -> Option<String> {
+    let len = fs::metadata(path).ok()?.len();
+    if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
+        return None;
+    }
+    read_text_file(path, FileEncodingPreference::Auto)
+        .ok()
+        .map(|d| d.text)
 }
 
 /// `#include` の相対パスを、含み元ディレクトリの直下と `-I` 相当ディレクトリから解決する（診断 UI 用に公開）。
@@ -2060,11 +2087,7 @@ fn cpp_try_header_file_for_field(
     let text = if let Some(cache) = job_cache {
         cache.load_header_text(path)?.to_string()
     } else {
-        let len = fs::metadata(path).ok()?.len();
-        if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
-            return None;
-        }
-        fs::read_to_string(path).ok()?
+        cpp_read_header_text(path)?
     };
     let grep = cpp_ast_grep_with_profile!(job_cache, &text);
     let root = grep.root();
@@ -3075,6 +3098,150 @@ void f() {
         let snap = cache.profile().snapshot();
         assert_eq!(snap.header_reads, 1);
         assert_eq!(snap.header_cache_hits, 1);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_scan_include_directives_handles_spaces_after_hash_and_bom() {
+        // `#  include`（# と include の間に空白）と、行頭 BOM（U+FEFF）があっても取りこぼさないこと。
+        // 従来 `strip_prefix("#include")` だったため `#  include` を逃し、また trim は BOM を
+        // 空白と見なさないため BOM 行の先頭 include を逃していた。
+        let src = "\u{feff}#  include \"a.h\"\n# include <b.h>\n#include \"c.h\"\n#define X 1\nnot an include\n";
+        let dirs = cpp_scan_include_directives(src);
+        assert_eq!(
+            dirs,
+            vec!["a.h".to_string(), "b.h".to_string(), "c.h".to_string()]
+        );
+    }
+
+    #[test]
+    fn cpp_header_utf8_bom_resolves_field_type_via_cache() {
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_utf8bom_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        // UTF-8 BOM 付きヘッダをキャッシュ経路（load_header_text）で読む。
+        // read_text_file(Auto) は BOM を除去して返すため構文解析が壊れないことを検証する。
+        let header_content = "struct Inner { int z; };\nstruct Foo { Inner inner; };\n";
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(header_content.as_bytes());
+        std::fs::write(base.join("inc/foo.h"), &bytes).expect("write foo.h");
+
+        let src = "#include <foo.h>\nvoid f() {\n  Foo foo{};\n  foo.inner;\n}\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let cache = RecvHintJobCache::new();
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: Some(&cache),
+            type_hint_config: None,
+        };
+
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "foo.inner")
+            .expect("match foo.inner");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("Inner"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_header_utf16le_resolves_field_type() {
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_utf16le_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        // UTF-16LE BOM 付きヘッダ（fs::read_to_string（厳密 UTF-8）は null バイトで失敗する）。
+        // read_text_file(Auto) は BOM から UTF-16LE を判定して読むことを fallback 経路で検証する。
+        // ※ encoding_rs の UTF-16LE は WHATWG で decode-only のため encode でバイト列が作れない。
+        //    よって str::encode_utf16 + to_le_bytes で確実に UTF-16LE バイトを構築する。
+        let header_content = "struct Inner { int z; };\nstruct Foo { Inner inner; };\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        for u in header_content.encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        // UTF-16LE of ASCII は `73 00 74 00 ...` となり UTF-8 としては valid（null 交じり）なので
+        // fs::read_to_string は“成功”するが文字化けし tree-sitter は構文を parse できない。
+        // よって従来コードは receiver 型へフォールバックし、A-1 修正後のみ Inner に解決される。
+        std::fs::write(base.join("inc/foo.h"), &bytes).expect("write foo.h");
+
+        let src = "#include <foo.h>\nvoid f() {\n  Foo foo{};\n  foo.inner;\n}\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "foo.inner")
+            .expect("match foo.inner");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("Inner"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_header_shift_jis_resolves_field_type() {
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_shiftjis_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        // Shift_JIS ヘッダ（日本語コメント入り）。Shift_JIS のひらがなは 0x82 系バイトから始まり
+        // UTF-8 では継続バイト単独として不正になるため fs::read_to_string は失敗する。
+        // read_text_file(Auto) は chardetng で Shift_JIS を判定して読むことを fallback 経路で検証する。
+        let header_content =
+            "// これは日本語コメントです。構造体の型名を確認します。\nstruct Inner { int z; };\nstruct Foo { Inner inner; };\n";
+        let (cow, _, _) = encoding_rs::SHIFT_JIS.encode(header_content);
+        // 確かに UTF-8 としては不正なバイト列（= 従来 fs::read_to_string が失敗する内容）であることを保証。
+        assert!(
+            String::from_utf8(cow.to_vec()).is_err(),
+            "Shift_JIS encode must yield non-UTF-8 bytes for a meaningful regression test"
+        );
+        std::fs::write(base.join("inc/foo.h"), &cow[..]).expect("write foo.h");
+
+        let src = "#include <foo.h>\nvoid f() {\n  Foo foo{};\n  foo.inner;\n}\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "foo.inner")
+            .expect("match foo.inner");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("Inner"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

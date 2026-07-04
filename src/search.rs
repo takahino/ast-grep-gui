@@ -744,14 +744,10 @@ pub fn spawn_search(
             .filter(|s| !s.is_empty())
             .collect();
 
-        let cpp_include_paths: Arc<Vec<PathBuf>> = Arc::new(
-            cpp_include_dirs_str
-                .split(';')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from)
-                .collect(),
-        );
+        let cpp_include_paths: Arc<Vec<PathBuf>> = Arc::new(parse_cpp_include_dir_list(
+            &cpp_include_dirs_str,
+            Some(Path::new(&search_dir)),
+        ));
         let type_hint_config = Arc::clone(&type_hint_config);
 
         let hint_job_cache = Arc::new(receiver_hint::RecvHintJobCache::new());
@@ -2128,23 +2124,34 @@ pub fn cpp_include_diagnostic_cache_key(
     )
 }
 
-/// `;` 区切りのインクルードディレクトリ一覧（検索スレッドと同じ規則）
-pub fn parse_cpp_include_dir_list(s: &str) -> Vec<PathBuf> {
+/// `;` 区切りのインクルードディレクトリ一覧（検索スレッドと同じ規則）。
+/// `base` を渡すと相対パスを `base` 基準で join する（検索ルート基準へ正規化）。
+/// 絶対パスは常にそのまま。`base = None` は従来どおり CWD 相対として扱う（後方互換用）。
+pub fn parse_cpp_include_dir_list(s: &str, base: Option<&Path>) -> Vec<PathBuf> {
     s.split(';')
         .map(|x| x.trim())
         .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
+        .map(|p| {
+            let path = PathBuf::from(p);
+            match base {
+                Some(b) if !path.is_absolute() => b.join(&path),
+                _ => path,
+            }
+        })
         .collect()
 }
 
-/// 現在の検索結果とディレクトリ設定からインクルードパス診断を計算する（UI スレッドで呼んでもよい）
+/// 現在の検索結果とディレクトリ設定からインクルードパス診断を計算する（UI スレッドで呼んでもよい）。
+/// `search_dir` は検索ルート。相対インクルードディレクトリは `search_dir` 基準で解決する
+/// （検索本体 spawn_search と同じ基準に揃え、「診断は通るのに型ヒントは出ない」食い違いを防ぐ）。
 pub fn compute_cpp_include_path_diagnostics(
     results: &[FileResult],
     cpp_include_dirs_str: &str,
     pattern: &str,
     type_hints_enabled: bool,
+    search_dir: &str,
 ) -> CppIncludePathDiagnostics {
-    let extra = parse_cpp_include_dir_list(cpp_include_dirs_str);
+    let extra = parse_cpp_include_dir_list(cpp_include_dirs_str, Some(Path::new(search_dir)));
     let mut seen_files: HashSet<PathBuf> = HashSet::new();
     let mut distinct_cpp = 0usize;
     let mut read_errors = 0usize;
@@ -2926,5 +2933,29 @@ message: fn
             result.results[0].matches[0].rule_id.as_deref(),
             Some("rust-fn")
         );
+    }
+
+    #[test]
+    fn parse_cpp_include_dir_list_joins_relative_to_base() {
+        use std::path::Path;
+        let base = Path::new("/proj/root");
+        let abs = if cfg!(windows) {
+            "C:/abs/include"
+        } else {
+            "/abs/include"
+        };
+        // 相対パスは base 基準で join、絶対パスはそのまま、空要素は除外。
+        let dirs = super::parse_cpp_include_dir_list(
+            &format!("inc; {} ; ../other; ", abs),
+            Some(base),
+        );
+        assert_eq!(dirs.len(), 3);
+        assert_eq!(dirs[0], base.join("inc"));
+        assert_eq!(dirs[1], PathBuf::from(abs));
+        assert_eq!(dirs[2], base.join("../other"));
+
+        // base = None は従来どおり（相対パスをそのまま扱う）。
+        let dirs2 = super::parse_cpp_include_dir_list("inc; /abs", None);
+        assert_eq!(dirs2, vec![PathBuf::from("inc"), PathBuf::from("/abs")]);
     }
 }

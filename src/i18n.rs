@@ -1603,10 +1603,12 @@ impl Tr {
             UiLanguage::Japanese => {
                 "C++ の型ヒントで `#include` を解決するときの追加検索パスです\n\
                  コンパイラの `-I` と同様に、各フォルダをルートとして `<header>` と `\"header\"` を探します\n\
+                 相対パスは検索フォルダを基準に解決します（絶対パスはそのまま）\n\
                  複数ある場合は ; で区切ります（ソースファイルのあるディレクトリは常に先に試されます）"
             }
             UiLanguage::English => {
                 "Extra roots for resolving C++ `#include` when inferring type hints (like compiler -I)\n\
+                 Relative paths are resolved against the search folder (absolute paths are kept as-is)\n\
                  Separate multiple paths with ; (the source file's directory is always tried first)"
             }
         }

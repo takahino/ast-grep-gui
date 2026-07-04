@@ -25,11 +25,19 @@ pub fn show_collapsing(app: &mut AstGrepApp, ui: &mut Ui) {
         None => true,
     };
     if needs_refresh {
+        // 検索本体 spawn_search が使った検索ルートと同じ base を渡すため、
+        // リモート時は解決済み temp dir（resolved_search_dir）、ローカル時は search_dir を使う。
+        let search_dir = app
+            .resolved_search_dir
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(app.search_dir.as_str());
         let d = compute_cpp_include_path_diagnostics(
             app.results.as_slice(),
             app.cpp_include_dirs.as_str(),
             app.pattern.as_str(),
             app.type_hints_enabled,
+            search_dir,
         );
         app.cpp_include_diagnostic_cache = Some((key, d));
     }
