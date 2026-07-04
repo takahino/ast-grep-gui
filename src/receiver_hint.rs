@@ -101,6 +101,8 @@ pub struct RecvHintJobCache {
     source_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
     /// インクルードヘッダ由来のメンバ型キャッシュ（負キャッシュ含む）。
     header_lookup: Mutex<HashMap<CppMemberLookupKey, Option<String>>>,
+    /// パスごとの #define 走査結果キャッシュ（C: マクロ限定解析）。
+    defines: Mutex<HashMap<PathBuf, Arc<HashMap<String, CppMacroDef>>>>,
 }
 
 impl RecvHintJobCache {
@@ -114,6 +116,7 @@ impl RecvHintJobCache {
             header_text: Mutex::new(HashMap::new()),
             source_lookup: Mutex::new(HashMap::new()),
             header_lookup: Mutex::new(HashMap::new()),
+            defines: Mutex::new(HashMap::new()),
         }
     }
 
@@ -173,6 +176,20 @@ impl RecvHintJobCache {
         };
         if let Ok(mut map) = guard {
             map.insert(key, value);
+        }
+    }
+
+    /// パスごとの #define 走査結果キャッシュを引く（C: マクロ限定解析）。
+    fn load_defines(&self, path: &Path) -> Option<Arc<HashMap<String, CppMacroDef>>> {
+        let key = cpp_path_key(path);
+        let map = self.defines.lock().ok()?;
+        map.get(&key).cloned()
+    }
+
+    fn store_defines(&self, path: &Path, defines: Arc<HashMap<String, CppMacroDef>>) {
+        let key = cpp_path_key(path);
+        if let Ok(mut map) = self.defines.lock() {
+            map.insert(key, defines);
         }
     }
 
@@ -770,6 +787,123 @@ fn cpp_free_function_return_for_sources(
     cpp_lookup_member_in_sources(ctx, CppLookupKind::FreeFunction, "", name)
 }
 
+/// マクロ解決結果のキャッシュ（設定ルール優先・ユーザー上書き可能）。
+/// マクロ定義を型に解決する。3 パターン以外は未対応（None）。
+fn cpp_resolve_macro_def(
+    ctx: &RecvHintContext<'_>,
+    def: &CppMacroDef,
+    is_call: bool,
+) -> Option<String> {
+    match def {
+        CppMacroDef::CastReturn(ty) => {
+            if is_call {
+                Some(ty.clone())
+            } else {
+                None
+            }
+        }
+        CppMacroDef::DerefFreeFnCall(fn_name) => {
+            if is_call {
+                return None;
+            }
+            // (*AfxGetApp()) → AfxGetApp の戻り値型から * を 1 つ剥ぐ。
+            let ret = cpp_free_function_return_for_sources(ctx, fn_name)?;
+            cpp_strip_one_pointer(&ret)
+        }
+        CppMacroDef::IdentAlias(target) => {
+            if is_call {
+                // A(...) → target(...) とみなしてフリー関数戻り値型を引く。
+                cpp_free_function_return_for_sources(ctx, target)
+            } else {
+                // A（値） → target のグローバル変数型を引く。
+                cpp_global_var_type_for_sources(ctx, target)
+            }
+        }
+    }
+}
+
+/// パス（ソース/ヘッダ）の #define 走査結果をキャッシュ付きで取得する。
+fn cpp_defines_for_path(
+    ctx: &RecvHintContext<'_>,
+    path: &Path,
+    text: &str,
+) -> Arc<HashMap<String, CppMacroDef>> {
+    if let Some(cache) = ctx.job_cache {
+        if let Some(cached) = cache.load_defines(path) {
+            return cached;
+        }
+        let map = Arc::new(cpp_scan_defines(text));
+        cache.store_defines(path, map.clone());
+        return map;
+    }
+    Arc::new(cpp_scan_defines(text))
+}
+
+/// インクルードヘッダを再帰的に走査してマクロ name の型を解決する（C）。
+fn cpp_search_macro_in_headers(
+    path: &Path,
+    name: &str,
+    is_call: bool,
+    visited: &mut HashSet<PathBuf>,
+    depth: usize,
+    ctx: &RecvHintContext<'_>,
+) -> Option<String> {
+    if depth == 0 {
+        return None;
+    }
+    let key = cpp_path_key(path);
+    if visited.contains(&key) {
+        return None;
+    }
+    visited.insert(key);
+    let text = if let Some(cache) = ctx.job_cache {
+        cache.load_header_text(path)?.to_string()
+    } else {
+        cpp_read_header_text(path)?
+    };
+    let defines = cpp_defines_for_path(ctx, path, &text);
+    if let Some(def) = defines.get(name) {
+        if let Some(ty) = cpp_resolve_macro_def(ctx, def, is_call) {
+            return Some(ty);
+        }
+    }
+    let base = path.parent()?;
+    for inc in cpp_include_paths_from_source(&text) {
+        if let Some(p) = cpp_resolve_include_file(base, &inc, ctx.cpp_include_dirs) {
+            if let Some(ty) = cpp_search_macro_in_headers(&p, name, is_call, visited, depth - 1, ctx) {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+/// 現ソース → インクルードヘッダの順でマクロ name の型を解決する（C）。
+/// `is_call` が真なら呼び出し形（キャストマクロ等）、偽なら値形（別名マクロ等）。
+fn cpp_macro_return_for_sources(
+    ctx: &RecvHintContext<'_>,
+    name: &str,
+    is_call: bool,
+) -> Option<String> {
+    let source_defines = cpp_defines_for_path(ctx, ctx.file_path, ctx.source);
+    if let Some(def) = source_defines.get(name) {
+        if let Some(ty) = cpp_resolve_macro_def(ctx, def, is_call) {
+            return Some(ty);
+        }
+    }
+    let base = ctx.file_path.parent()?;
+    let mut visited = HashSet::new();
+    visited.insert(cpp_path_key(ctx.file_path));
+    for inc in cpp_include_paths_from_source(ctx.source) {
+        if let Some(p) = cpp_resolve_include_file(base, &inc, ctx.cpp_include_dirs) {
+            if let Some(ty) = cpp_search_macro_in_headers(&p, name, is_call, &mut visited, CPP_INCLUDE_MAX_DEPTH, ctx) {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
 // ===== B-3: typedef / using の 1 段展開 =====
 
 /// type_definition（typedef）/ alias_declaration（using）ノードから alias のターゲット型を取り出す。
@@ -832,6 +966,149 @@ fn cpp_type_alias_target_in_translation_unit<D: Doc>(
     alias: &str,
 ) -> Option<String> {
     cpp_find_type_alias_target_in_scope(root, alias, 0)
+}
+
+// ===== C: マクロ限定3パターン解析 =====
+
+/// 自動解析対象のマクロ定義。3 パターンのみ。それ以外は既存 macros 設定ルールへ誘導。
+#[derive(Debug, Clone)]
+enum CppMacroDef {
+    /// `#define M(x) ((TYPE)(x))` — キャスト形式。呼び出し `M(...)` の戻り値型は `TYPE`。
+    CastReturn(String),
+    /// `#define theApp (*AfxGetApp())` — 別名式。`FN()` の戻り値型から `*` を 1 つ剥ぐ。
+    DerefFreeFnCall(String),
+    /// `#define A B` — 単純識別子別名。`target` の型に 1 段展開する。
+    IdentAlias(String),
+}
+
+/// `CWinApp*` → `CWinApp *` のように識別子部とポインタ/参照修飾の間に空白を挟む。
+fn cpp_normalize_type_string(s: &str) -> String {
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i] != b'*' && bytes[i] != b'&' {
+        i += 1;
+    }
+    let spec = s[..i].trim();
+    let ops = s[i..].trim();
+    if ops.is_empty() {
+        spec.to_string()
+    } else {
+        format!("{spec} {ops}")
+    }
+}
+
+/// 末尾のポインタ修飾を 1 つ剥ぐ（デリファレンス）。`CWinApp *` → `CWinApp`。
+/// ポインタでなければ `None`（デリファレンス不可は未解決扱い）。
+fn cpp_strip_one_pointer(ty: &str) -> Option<String> {
+    let s = ty.trim();
+    let rest = s.strip_suffix('*')?;
+    Some(rest.trim().to_string())
+}
+
+fn is_cpp_identifier(s: &str) -> bool {
+    let s = s.trim();
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// マクロ本体を3パターンに分類する。それ以外は `None`（対応しない側に倒す）。
+fn cpp_classify_macro_body(body: &str, is_function_like: bool) -> Option<CppMacroDef> {
+    let b = body.trim();
+    if is_function_like {
+        // パターン1: キャスト形式 ((TYPE)(...))
+        let inner = b.strip_prefix("((")?.strip_suffix("))")?;
+        let sep = inner.find(")(")?;
+        let ty = inner[..sep].trim();
+        if ty.is_empty() || !ty.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false) {
+            return None;
+        }
+        return Some(CppMacroDef::CastReturn(cpp_normalize_type_string(ty)));
+    }
+    // パターン2: (*FN())
+    if let Some(rest) = b.strip_prefix("(*").and_then(|r| r.strip_suffix(')')) {
+        if let Some(fn_name) = rest.strip_suffix("()") {
+            let fn_name = fn_name.trim();
+            if is_cpp_identifier(fn_name) {
+                return Some(CppMacroDef::DerefFreeFnCall(fn_name.to_string()));
+            }
+        }
+        return None;
+    }
+    // パターン3: 単純識別子別名（本体が単一識別子のみ）。
+    if is_cpp_identifier(b) {
+        return Some(CppMacroDef::IdentAlias(b.to_string()));
+    }
+    None
+}
+
+/// ソーステキストから `#define` を走査しマクロ名 → `CppMacroDef` のマップを作る。
+/// 行継続 `\` に対応。`#  define`（空白入り）・行頭 BOM も許容（A-2 と同じ方針）。
+fn cpp_scan_defines(source: &str) -> HashMap<String, CppMacroDef> {
+    let mut out: HashMap<String, CppMacroDef> = HashMap::new();
+    // 行継続を結合した論理行リストを作る。
+    let mut logical_lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for line in source.lines() {
+        if let Some(stripped) = line.strip_suffix('\\') {
+            cur.push_str(stripped);
+            cur.push(' ');
+        } else {
+            cur.push_str(line);
+            logical_lines.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        logical_lines.push(cur);
+    }
+    for ll in &logical_lines {
+        let mut t = ll.trim_start();
+        if let Some(s) = t.strip_prefix('\u{feff}') {
+            t = s.trim_start();
+        }
+        let after_hash = match t.strip_prefix('#') {
+            Some(r) => r.trim_start(),
+            None => continue,
+        };
+        // `define` の直後は語境界（空白）が必要。`#defineX` 等は対象外。
+        let rest = match after_hash.strip_prefix("define") {
+            Some(r) => r,
+            None => continue,
+        };
+        let rest = match rest.strip_prefix(|c: char| c.is_whitespace()) {
+            Some(r) => r.trim_start(),
+            None => continue,
+        };
+        let name_end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        if name_end == 0 {
+            continue;
+        }
+        let name = rest[..name_end].to_string();
+        let after_name = &rest[name_end..];
+        let (body, is_function_like) = if after_name.strip_prefix('(').is_some() {
+            let after_paren = &after_name[1..];
+            let close = match after_paren.find(')') {
+                Some(i) => i,
+                None => continue,
+            };
+            (after_paren[close + 1..].trim(), true)
+        } else {
+            (after_name.trim(), false)
+        };
+        if body.is_empty() {
+            continue;
+        }
+        if let Some(def) = cpp_classify_macro_body(body, is_function_like) {
+            out.insert(name, def);
+        }
+    }
+    out
 }
 
 /// インクルードヘッダを再帰的に走査して kind のメンバ型を解決する。
@@ -1041,7 +1318,11 @@ fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) 
             if let Some(ty) = cpp_free_function_return_for_sources(ctx, &name) {
                 return Some(ty);
             }
-            // マクロ（C）は未実装。未解決は None で握る（誤推論より安全）。
+            // C: マクロ限定解析（キャスト形式 #define M(x) ((TYPE)(x)) 等）。呼び出し形。
+            if let Some(ty) = cpp_macro_return_for_sources(ctx, &name, true) {
+                return Some(ty);
+            }
+            // 未解決は None で握る（誤推論より安全）。
         }
     }
     None
@@ -2418,6 +2699,10 @@ fn cpp_hint<D: Doc>(recv: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Op
         }
         // B-2: extern グローバル変数（例: theApp）の型をソース/ヘッダから解決する。
         if let Some(ty) = cpp_global_var_type_for_sources(ctx, &t) {
+            return Some(ty);
+        }
+        // C: マクロ別名（#define theApp (*AfxGetApp()) や #define A B）を 1 段展開する。
+        if let Some(ty) = cpp_macro_return_for_sources(ctx, &t, false) {
             return Some(ty);
         }
         if let Some(config) = ctx.type_hint_config {
@@ -3907,5 +4192,181 @@ void f() {
         let arg = m.get_env().get_match("ARG").expect("ARG");
         let label = cpp_expr_type_label_for_config(arg, &ctx);
         assert_eq!(label.as_deref(), Some("CWinApp *"));
+    }
+
+    // ===== C: マクロ限定3パターン解析 =====
+
+    fn ctx_no_cache<'a>(src: &'a str) -> RecvHintContext<'a> {
+        RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: None,
+        }
+    }
+
+    #[test]
+    fn cpp_scan_defines_cast_pattern() {
+        let src = "#define M(x) ((CWinApp*)(x))\n";
+        let defines = cpp_scan_defines(src);
+        match defines.get("M") {
+            Some(CppMacroDef::CastReturn(t)) => assert_eq!(t, "CWinApp *"),
+            other => panic!("expected CastReturn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cpp_scan_defines_deref_freefn_pattern() {
+        let src = "#define theApp (*AfxGetApp())\n";
+        let defines = cpp_scan_defines(src);
+        match defines.get("theApp") {
+            Some(CppMacroDef::DerefFreeFnCall(n)) => assert_eq!(n, "AfxGetApp"),
+            other => panic!("expected DerefFreeFnCall, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cpp_scan_defines_ident_alias_pattern() {
+        let src = "#define MYAPP theApp\n";
+        let defines = cpp_scan_defines(src);
+        match defines.get("MYAPP") {
+            Some(CppMacroDef::IdentAlias(n)) => assert_eq!(n, "theApp"),
+            other => panic!("expected IdentAlias, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cpp_scan_defines_line_continuation() {
+        let src = "#define M(x) \\\n  ((CWinApp*)(x))\n";
+        let defines = cpp_scan_defines(src);
+        assert!(matches!(defines.get("M"), Some(CppMacroDef::CastReturn(_))));
+    }
+
+    #[test]
+    fn cpp_scan_defines_ignores_non_matching() {
+        let src = "#define FOO 1 + 2\n#define BAR(x) f(x)\n#define EMPTY\n";
+        let defines = cpp_scan_defines(src);
+        assert!(!defines.contains_key("FOO"));
+        assert!(!defines.contains_key("BAR"));
+        assert!(!defines.contains_key("EMPTY"));
+    }
+
+    #[test]
+    fn cpp_macro_cast_return_resolves_in_source() {
+        // #define M(x) ((CWinApp*)(x)) → M(arg) の戻り値型は CWinApp *
+        let src = "#define M(x) ((CWinApp*)(x))\nclass CWinApp {};\nvoid f() { M(123); }\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "M", true);
+        assert_eq!(ty.as_deref(), Some("CWinApp *"));
+    }
+
+    #[test]
+    fn cpp_macro_deref_alias_resolves_in_source() {
+        // #define theApp (*AfxGetApp()) → theApp の型は CWinApp * から * を剥いだ CWinApp
+        let src = "class CWinApp {};\nCWinApp* AfxGetApp();\n#define theApp (*AfxGetApp())\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "theApp", false);
+        assert_eq!(ty.as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_macro_ident_alias_resolves_global_var() {
+        // #define MYAPP theApp + extern CWinApp theApp; → MYAPP の型は CWinApp
+        let src = "class CWinApp {};\nextern CWinApp theApp;\n#define MYAPP theApp\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "MYAPP", false);
+        assert_eq!(ty.as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_macro_ident_alias_call_resolves_free_function() {
+        // #define WRAP AfxGetApp + CWinApp* AfxGetApp(); → WRAP() の戻り値型は CWinApp *
+        let src = "class CWinApp {};\nCWinApp* AfxGetApp();\n#define WRAP AfxGetApp\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "WRAP", true);
+        assert_eq!(ty.as_deref(), Some("CWinApp *"));
+    }
+
+    #[test]
+    fn cpp_macro_non_matching_returns_none() {
+        let src = "#define FOO 1 + 2\n";
+        let ctx = ctx_no_cache(src);
+        assert_eq!(cpp_macro_return_for_sources(&ctx, "FOO", true), None);
+        assert_eq!(cpp_macro_return_for_sources(&ctx, "FOO", false), None);
+    }
+
+    #[test]
+    fn cpp_macro_cast_return_resolves_via_header() {
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_macro_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/afx.h"),
+            "#define M(x) ((CWinApp*)(x))\nclass CWinApp {};\n",
+        )
+        .expect("write afx.h");
+        let src = "#include <afx.h>\nvoid f() { M(123); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let ty = cpp_macro_return_for_sources(&ctx, "M", true);
+        assert_eq!(ty.as_deref(), Some("CWinApp *"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_chain_resolves_cast_macro_return() {
+        // M(123)->GetCount() where M is a cast macro returning CWinApp*
+        let src = "#define M(x) ((CWinApp*)(x))\nclass CWinApp { public: int GetCount() { return 0; } };\nvoid f() { M(123)->GetCount(); }\n";
+        let ctx = ctx_no_cache(src);
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "M(123)->GetCount()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_hint_resolves_deref_macro_alias_as_receiver() {
+        // theApp.m_x where #define theApp (*AfxGetApp()) → theApp 型は CWinApp
+        let src = "class CWinApp { public: int m_x; };\nCWinApp* AfxGetApp();\n#define theApp (*AfxGetApp())\nvoid f() { theApp.m_x; }\n";
+        let ctx = ctx_no_cache(src);
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV.m_x", SupportLang::Cpp).unwrap();
+        let m = grep.root().find_all(&pat).next().expect("match");
+        let recv = m.get_env().get_match("RECV").expect("RECV");
+        let hint = infer_recv_type(SupportedLanguage::Cpp, recv, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWinApp"));
+    }
+
+    #[test]
+    fn cpp_config_macro_overrides_auto_macro_analysis() {
+        // 設定ルール（M → Override）が自動マクロ解析（CWinApp *）より優先されるか。
+        let src = "#define M(x) ((CWinApp*)(x))\nvoid f() { M(123); }\n";
+        let config = TypeHintConfig::from_file(TypeHintConfigFile::new(CppTypeHintRules {
+            macros: vec![CppCallableRule {
+                name: "M".into(),
+                arity: Some(1),
+                params: vec![],
+                returns: "Override".into(),
+                enabled: true,
+            }],
+            ..Default::default()
+        }));
+        let hint = cpp_infer_pattern(src, "M($X)", &config);
+        assert_eq!(hint.as_deref(), Some("Override"));
     }
 }

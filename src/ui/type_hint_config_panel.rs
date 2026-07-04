@@ -212,6 +212,10 @@ pub fn show(app: &mut AstGrepApp, ctx: &egui::Context) {
                 load_form_from_selection(app);
             }
 
+            if app.type_hint_config_kind == TypeHintRuleKind::Macros {
+                ui.label(t.type_hint_config_macros_auto_hint());
+            }
+
             egui::ScrollArea::vertical()
                 .max_height(220.0)
                 .show(ui, |ui| {

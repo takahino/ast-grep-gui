@@ -1808,6 +1808,22 @@ impl Tr {
         }
     }
 
+    /// C: マクロ限定3パターンの自動解析と設定ルールの誘導文言。
+    pub fn type_hint_config_macros_auto_hint(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => {
+                "キャスト形式 #define M(x) ((TYPE)(x))、別名形式 #define theApp (*AfxGetApp())、\
+                単純識別子別名 #define A B の 3 パターンは自動解析します。\
+                それ以外のマクロはここで戻り値型を設定してください（設定ルールが自動解析より優先）。"
+            }
+            UiLanguage::English => {
+                "Three patterns are auto-analyzed: cast form #define M(x) ((TYPE)(x)), \
+                alias form #define theApp (*AfxGetApp()), and simple identifier alias #define A B. \
+                For other macros, configure the return type here (config rules take precedence over auto-analysis)."
+            }
+        }
+    }
+
     pub fn cpp_include_diagnostic_header(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => "インクルードパス診断（C/C++）",
