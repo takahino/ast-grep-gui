@@ -713,7 +713,13 @@ fn cpp_find_qualified_identifier_in_declarator<D: Doc>(
     if k == "qualified_identifier" {
         return Some(d);
     }
-    if let Some(inner) = d.field("declarator") {
+    // reference_declarator は declarator フィールドを持たない（tree-sitter-cpp 0.23.4
+    // node-types.json: fields 空、children のみ）。field("declarator") だけだと参照戻り値の
+    // クラス外定義 `CStrD& CDocD::GetNameD()` で qualified_identifier に到達できない
+    // （fix2.md 問題2）。cpp_inner_declarator は field 不在時に children から `*`/`&` 等の
+    // 記号を除いた末尾へフォールバックし、pointer_declarator 等の field 有り場合は同じ値を
+    // 返すため既存経路（ポインタ戻り値・通常関数）の回帰は無い。
+    if let Some(inner) = cpp_inner_declarator(d) {
         return cpp_find_qualified_identifier_in_declarator(inner);
     }
     None
@@ -5434,6 +5440,25 @@ void f() {
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("CWnd *"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_out_of_class_definition_reference_return_resolves() {
+        // 参照戻り値のクラス外定義 `CStrD& CDocD::GetNameD()` を解決（fix2.md 問題2）。
+        // reference_declarator は declarator フィールドを持たないため、従来は
+        // cpp_find_qualified_identifier_in_declarator が下降できずラベル代用だった。
+        // 期待値 `CStrD &`（cpp_declarator_type_ops が `&` を合成）。
+        let src = "class CStrD {};\nclass CDocD {};\nCStrD& CDocD::GetNameD() { static CStrD s; return s; }\nvoid f() { CDocD d; d.GetNameD(); }\n";
+        assert_eq!(infer_chain(src, "d.GetNameD()").as_deref(), Some("CStrD &"));
+    }
+
+    #[test]
+    fn cpp_out_of_class_definition_pointer_and_reference_both_resolve() {
+        // ポインタ戻り値（既存）と参照戻り値（問題2修正）が同一 TU 内で両方解決されること。
+        // pointer_declarator 経路の回帰無しと reference_declarator 経路の解決を同時確認。
+        let src = "class CStrD {};\nclass CDocD {};\nCStrD* CDocD::GetPtrD() { return 0; }\nCStrD& CDocD::GetNameD() { static CStrD s; return s; }\nvoid f() { CDocD d; d.GetPtrD(); d.GetNameD(); }\n";
+        assert_eq!(infer_chain(src, "d.GetPtrD()").as_deref(), Some("CStrD *"));
+        assert_eq!(infer_chain(src, "d.GetNameD()").as_deref(), Some("CStrD &"));
     }
 
     // ===== P3: 継承（基底クラス遡り、AST 自動解析） =====
