@@ -1684,6 +1684,13 @@ fn cpp_lookup_member_with_bases(
     // visited に cpp_simplify_type_name 適用後のクラス名を入れ、挿入成功（未訪問）のときだけ
     // 基底を展開する。ダイヤモンド・循環継承を両方防ぐ。多重継承は base_class_clause 記載順、
     // 最初に解決した型を採用。派生側同名メンバは direct で見つかっていれば既に打ち切り済み。
+    //
+    // fix2.md 問題3: 基底クラス名に対する設定ルール（type_hint_config）を継承遡りに接続。
+    // 優先順位は継承遡り段において「bases ループ内で per-クラス config → AST(base）」
+    // （派生クラス層: cpp_field_type_for_class_in_sources と同じ並び）。Field はこのループ内で
+    // 基底 config を先に照合し、深さ方向へ自然カスケードする（各レベルの bases ループが直近基底の
+    // config を見る）。Method は arg_types がこの層に無いため cpp_method_return_for_class_in_sources
+    // の外層フォールバックで対応する。
     if result.is_none()
         && matches!(kind, CppLookupKind::Field | CppLookupKind::Method)
         && !class_name.is_empty()
@@ -1692,6 +1699,17 @@ fn cpp_lookup_member_with_bases(
         if !simplified.is_empty() && visited.insert(simplified) {
             let bases = cpp_class_bases_for_sources(ctx, class_name);
             for base in bases {
+                // per-base config → AST(base)（fix2.md 問題3）。Field のみ。Method は arg_types
+                // がこの層に無いのでここでは照合せず外層（cpp_method_return_for_class_in_sources）
+                // で再照合する。config ヒット時は result に採用して AST(base) は試さない。
+                if kind == CppLookupKind::Field {
+                    if let Some(config) = ctx.type_hint_config {
+                        if let Some(ty) = config.lookup_cpp_field_type(&base, member_name) {
+                            result = Some(ty);
+                            break;
+                        }
+                    }
+                }
                 if let Some(ty) = cpp_lookup_member_with_bases(
                     ctx,
                     kind,
@@ -1726,12 +1744,83 @@ fn cpp_method_return_for_class_in_sources(
     method_name: &str,
     arg_types: &[String],
 ) -> Option<String> {
+    // 優先順位: 派生クラスの設定ルール → AST(direct → typedef → 継承) → 基底チェーンの
+    // 設定ルールフォールバック（fix2.md 問題3）。Method は arg_types が cpp_lookup_member_with_bases
+    // 層に無いため、継承遡り（AST のみ）の後に基底クラス名で lookup_cpp_method_return を再照合する。
+    // Field と異なり Method の基底 config は AST(base) の後に来るが、これは arg_types 制約による
+    // （arg_types を持てるこの層でしか正確なオーバーロード解決ができないため）。
     if let Some(config) = ctx.type_hint_config {
         if let Some(ty) = config.lookup_cpp_method_return(class_name, method_name, arg_types) {
             return Some(ty);
         }
     }
-    cpp_lookup_member_in_sources(ctx, CppLookupKind::Method, class_name, method_name)
+    if let Some(ty) = cpp_lookup_member_in_sources(ctx, CppLookupKind::Method, class_name, method_name) {
+        return Some(ty);
+    }
+    // AST 解決失敗後に基底チェーンを visited 付きで辿り、各基底クラス名で設定ルールを再照合。
+    // cpp_lookup_member_with_bases の bases ループは基底の AST は辿るが基底の設定ルールを見ない
+    // （Method は arg_types 無し）ため、ここで補完する。
+    if let Some(config) = ctx.type_hint_config {
+        if let Some(ty) = cpp_method_return_from_base_config_chain(
+            ctx, config, class_name, method_name, arg_types,
+        ) {
+            return Some(ty);
+        }
+    }
+    None
+}
+
+/// cpp_method_return_for_class_in_sources の基底チェーン設定ルールフォールバック（fix2.md 問題3）。
+/// 派生クラス（class_name）の設定ルール・AST 解決が失敗した後に、基底クラスを visited 付きで
+/// 辿り各基底クラス名で lookup_cpp_method_return を再照合する。派生クラス自身は呼び出し元で
+/// 既に照合済みのため visited に事前挿入し、再訪問を防ぐ。
+fn cpp_method_return_from_base_config_chain(
+    ctx: &RecvHintContext<'_>,
+    config: &TypeHintConfig,
+    class_name: &str,
+    method_name: &str,
+    arg_types: &[String],
+) -> Option<String> {
+    let mut visited = HashSet::new();
+    let simplified = cpp_simplify_type_name(class_name);
+    if !simplified.is_empty() {
+        visited.insert(simplified);
+    }
+    cpp_method_return_base_config_recursive(ctx, config, class_name, method_name, arg_types, &mut visited, 0)
+}
+
+/// 基底チェーンを再帰的に辿り、各基底クラス名で lookup_cpp_method_return を再照合。
+/// 現在の class_name の基底を展開し、各基底で config 照合 → さらにその基底へ再帰。
+/// visited は cpp_simplify_type_name 適用後のクラス名でダイヤモンド・循環を防止。
+/// depth は CPP_INHERIT_MAX_DEPTH で打ち切り（AST 側の継承遡り上限と一致）。
+fn cpp_method_return_base_config_recursive(
+    ctx: &RecvHintContext<'_>,
+    config: &TypeHintConfig,
+    class_name: &str,
+    method_name: &str,
+    arg_types: &[String],
+    visited: &mut HashSet<String>,
+    depth: usize,
+) -> Option<String> {
+    if depth > CPP_INHERIT_MAX_DEPTH {
+        return None;
+    }
+    let bases = cpp_class_bases_for_sources(ctx, class_name);
+    for base in bases {
+        let simplified = cpp_simplify_type_name(&base);
+        if !simplified.is_empty() && !visited.insert(simplified) {
+            continue;
+        }
+        if let Some(ty) = config.lookup_cpp_method_return(&base, method_name, arg_types) {
+            return Some(ty);
+        }
+        if let Some(ty) = cpp_method_return_base_config_recursive(
+            ctx, config, &base, method_name, arg_types, visited, depth + 1,
+        ) {
+            return Some(ty);
+        }
+    }
+    None
 }
 
 // ===== P4: レシーバ式の拡張 =====
@@ -4205,6 +4294,64 @@ void f() {
         let cfg = sample_type_hint_config();
         let hint = cpp_infer_pattern(src, "w.m_hWnd", &cfg);
         assert_eq!(hint.as_deref(), Some("HWND"));
+    }
+
+    #[test]
+    fn cpp_config_base_class_field_rule_via_inheritance() {
+        // 基底クラス名の fields ルールが継承遡りで効く（fix2.md 問題3）。
+        // CWinApp は AST に定義が無い（MFC ヘッダ相当）が基底クラス名として取れ、
+        // 設定ルール CWinApp.m_mainWnd → CWnd* で解決する。
+        let src = "class CWnd {};\nclass CMyApp : public CWinApp { };\nvoid f() { CMyApp a; a.m_mainWnd; }\n";
+        let cfg = TypeHintConfig::from_file(TypeHintConfigFile::new(CppTypeHintRules {
+            fields: vec![CppFieldRule {
+                class: "CWinApp".into(),
+                field: "m_mainWnd".into(),
+                ty: "CWnd *".into(),
+                enabled: true,
+            }],
+            ..Default::default()
+        }));
+        let hint = cpp_infer_pattern(src, "a.m_mainWnd", &cfg);
+        assert_eq!(hint.as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_config_base_class_method_rule_via_inheritance() {
+        // 基底クラス名の methods ルールが継承遡りで効く（fix2.md 問題3）。
+        // CWinApp.GetMainWnd() → CWnd* を基底チェーンの外層フォールバックで再照合。
+        let src = "class CWnd {};\nclass CMyApp : public CWinApp { };\nvoid f() { CMyApp a; a.GetMainWnd(); }\n";
+        let cfg = TypeHintConfig::from_file(TypeHintConfigFile::new(CppTypeHintRules {
+            methods: vec![CppMethodRule {
+                class: "CWinApp".into(),
+                method: "GetMainWnd".into(),
+                arity: Some(0),
+                params: vec![],
+                returns: "CWnd *".into(),
+                enabled: true,
+            }],
+            ..Default::default()
+        }));
+        let hint = cpp_infer_pattern(src, "a.GetMainWnd()", &cfg);
+        assert_eq!(hint.as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_config_base_class_field_rule_overrides_ast_definition() {
+        // 基底 CBase が AST 実定義（m_x: int）と config ルール（m_x: long）両方を持つ場合、
+        // per-base config → AST(base) の順序により config が優先される（fix2.md 問題3・優先順位固定）。
+        // config を先に見ることで AST 実定義との優先関係が変わるため、このテストで固定する。
+        let src = "class CBase { public: int m_x; };\nclass CDer : public CBase { };\nvoid f() { CDer d; d.m_x; }\n";
+        let cfg = TypeHintConfig::from_file(TypeHintConfigFile::new(CppTypeHintRules {
+            fields: vec![CppFieldRule {
+                class: "CBase".into(),
+                field: "m_x".into(),
+                ty: "long".into(),
+                enabled: true,
+            }],
+            ..Default::default()
+        }));
+        let hint = cpp_infer_pattern(src, "d.m_x", &cfg);
+        assert_eq!(hint.as_deref(), Some("long"));
     }
 
     #[test]
