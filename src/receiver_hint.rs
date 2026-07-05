@@ -1689,9 +1689,104 @@ fn cpp_method_return_for_class_in_sources(
     cpp_lookup_member_in_sources(ctx, CppLookupKind::Method, class_name, method_name)
 }
 
+// ===== P4: レシーバ式の拡張 =====
+
+/// 式ノードの型を `Option<&RecvHintContext>` で解決（P4 補助）。
+/// ctx があれば cpp_chain_result_type（チェイン/フィールド経路）→ cpp_hint。
+/// 無ければ cpp_hint のみ（ローカル宣言由来）。
+fn cpp_expr_type_with_optional_ctx<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
+    if let Some(ctx) = ctx {
+        cpp_chain_result_type(node, ctx).or_else(|| cpp_hint(node, Some(ctx)))
+    } else {
+        cpp_hint(node, None)
+    }
+}
+
+/// pointer_expression（*p / &x）がデリファレンス（operator `*`）かを判定（P4）。
+/// `&`（アドレス取得）は対象外→false。子の `*` トークンの有無で判定する。
+fn cpp_pointer_expression_is_deref<D: Doc>(node: &Node<'_, D>) -> bool {
+    node.children().any(|c| c.kind().as_ref() == "*")
+}
+
+/// pointer_expression の型を解決（P4）。operator が `*` のみ対象。
+/// argument の型を解決し、末尾 `*`（メソッド戻り値 CWnd* 等は `*` 付き）なら cpp_strip_one_pointer
+/// で 1 段 deref。cpp_hint は宣言の型指定子のみを返しポインタ修飾を含めないため `*` が無ければ
+/// そのまま返す（(*p).x で p: Foo* のとき cpp_hint(p)=Foo → そのまま Foo が (*p) の型）。
+/// `&`（アドレス取得）や deref 不能は None（誤ヒント回避）。
+fn cpp_pointer_expression_type<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
+    if !cpp_pointer_expression_is_deref(node) {
+        return None;
+    }
+    let arg = node.field("argument")?;
+    let arg_ty = cpp_expr_type_with_optional_ctx(&arg, ctx)?;
+    match cpp_strip_one_pointer(&arg_ty) {
+        Some(stripped) => Some(stripped),
+        None => Some(arg_ty),
+    }
+}
+
+/// cast_expression の型を解決（P4）。field("type") を cpp_normalize_type_string で
+/// 正規化してその型を確定採用（((CMyApp*)ptr)->Foo() → CMyApp *）。
+/// キャストはユーザーの明示宣言なので value 側の推論より優先してよい。C スタイルキャスト対象。
+fn cpp_cast_expression_type<D: Doc>(node: &Node<'_, D>) -> Option<String> {
+    let ty = node.field("type")?;
+    let t = cpp_normalize_type_string(ty.text().trim());
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// subscript_expression（arr[i] / p[i] / vec[i]）の要素型を解決（P4）。
+/// argument（ベース式）の型を解決し、型文字列が `<` を含む（テンプレートコンテナ
+/// CArray<...> / vector<...>）場合は None に倒す（ベース変数型をそのまま返す誤ヒントを解消。
+/// fix.md 問題 7 と同種の誤代用→`?` 表示が誠実、の合意方針）。
+/// `<` 無しはベース型を要素型として採用（C 生配列 Foo arr[10]; arr[i].x で正しい要素型 Foo）。
+/// 末尾 `*`（ポインタ添字 p[i]）なら cpp_strip_one_pointer で 1 段剥ぐ。
+fn cpp_subscript_expression_type<D: Doc>(
+    node: &Node<'_, D>,
+    ctx: Option<&RecvHintContext<'_>>,
+) -> Option<String> {
+    let arg = node.field("argument")?;
+    let base_ty = cpp_expr_type_with_optional_ctx(&arg, ctx)?;
+    if base_ty.contains('<') {
+        return None;
+    }
+    if base_ty.trim().ends_with('*') {
+        cpp_strip_one_pointer(&base_ty)
+    } else {
+        Some(base_ty)
+    }
+}
+
 fn cpp_chain_result_type<D: Doc>(node: &Node<'_, D>, ctx: &RecvHintContext<'_>) -> Option<String> {
     let kind = node.kind();
     let k = kind.as_ref();
+    // P4: parenthesized_expression は中身を unwrap して再帰（infer_capture_type_inner 冒頭と同パターン）。
+    if k == "parenthesized_expression" {
+        if let Some(inner) = node.children().find(|c| c.is_named()) {
+            return cpp_chain_result_type(&inner, ctx);
+        }
+    }
+    // P4: pointer_expression（*p）。operator が * のみ対象、argument の型を 1 段 deref。
+    if k == "pointer_expression" {
+        return cpp_pointer_expression_type(node, Some(ctx));
+    }
+    // P4: cast_expression。field("type") を正規化してその型を確定採用（ユーザー明示宣言優先）。
+    if k == "cast_expression" {
+        return cpp_cast_expression_type(node);
+    }
+    // P4: subscript_expression。ベース式の型から要素型を解決（テンプレートコンテナは None）。
+    if k == "subscript_expression" {
+        return cpp_subscript_expression_type(node, Some(ctx));
+    }
     if k == "field_expression" {
         let arg = node.field("argument")?;
         let field = node.field("field")?;
@@ -2552,6 +2647,19 @@ fn cpp_type_of_direct_receiver_expr<D: Doc>(
 ) -> Option<String> {
     match node.kind().as_ref() {
         "identifier" => cpp_hint(node, ctx),
+        // P4: parenthesized_expression は中身を unwrap して再帰。
+        "parenthesized_expression" => {
+            if let Some(inner) = node.children().find(|c| c.is_named()) {
+                return cpp_type_of_direct_receiver_expr(&inner, ctx);
+            }
+            cpp_hint(node, ctx)
+        }
+        // P4: pointer_expression（*p）。operator * のみ 1 段 deref。
+        "pointer_expression" => cpp_pointer_expression_type(node, ctx),
+        // P4: cast_expression。field("type") を確定採用。
+        "cast_expression" => cpp_cast_expression_type(node),
+        // P4: subscript_expression。テンプレートコンテナは None、それ以外は要素型。
+        "subscript_expression" => cpp_subscript_expression_type(node, ctx),
         "call_expression" => {
             let func = node.field("function")?;
             if func.kind().as_ref() != "field_expression" {
@@ -2599,6 +2707,12 @@ fn cpp_recv_base_name<D: Doc>(recv: &Node<'_, D>) -> String {
     if k == "subscript_expression" {
         if let Some(a) = recv.field("argument") {
             return cpp_recv_base_name(&a);
+        }
+    }
+    // P4: parenthesized_expression は中身を unwrap して再帰（(*p).x のベース名 → *p）。
+    if k == "parenthesized_expression" {
+        if let Some(inner) = recv.children().find(|c| c.is_named()) {
+            return cpp_recv_base_name(&inner);
         }
     }
     recv.text().trim().to_string()
@@ -3128,6 +3242,18 @@ fn cpp_hint<D: Doc>(recv: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Op
     // 未解決は None で返し format_stored_unknown_hint 経由の ? 表示に倒す。
     if k == "field_expression" {
         return None;
+    }
+    // call_expression（メソッド呼び出し）の捕捉: chain（戻り値型）も label（Class.Method）も
+    // 失敗した＝レシーバ型が未解決のケースのみここに到達する（解決可能なら label が既に返る）。
+    // ベース変数の型（例: vector<int> vec; の vec[0].Bar() で vector<int>）を代用表示すると
+    // 誤ヒントになるため None で ? 表示へ。bug7 の field_expression アームと同種
+    // （fix.md「誤推論より ?」合意、P4 subscript 是正の一部）。
+    if k == "call_expression" {
+        if let Some(f) = recv.field("function") {
+            if f.kind().as_ref() == "field_expression" {
+                return None;
+            }
+        }
     }
     let t = cpp_recv_base_name(recv);
     if t == "this" {
@@ -5391,5 +5517,66 @@ void f() {
             hits_after_second > hits_after_first,
             "second call must hit the member cache (base traversal result cached under derived key)"
         );
+    }
+
+    // ===== P4: レシーバ式の拡張（parenthesized/pointer/cast/subscript） =====
+
+    #[test]
+    fn cpp_receiver_parenthesized_pointer_deref_field() {
+        // (*p).x: Foo* p のデリファレンス→Foo のフィールド x → int（P4 pointer_expression）。
+        let src = "class Foo { public: int x; };\nvoid f() { Foo* p; (*p).x; }\n";
+        assert_eq!(infer_chain(src, "(*p).x").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_receiver_parenthesized_double_pointer_arrow_field() {
+        // (*p)->x: Foo** p の (*p) は Foo*、->x で Foo の x → int（P4 pointer + parenthesized）。
+        let src = "class Foo { public: int x; };\nvoid f() { Foo** p; (*p)->x; }\n";
+        assert_eq!(infer_chain(src, "(*p)->x").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_receiver_cast_expression_chain_continues() {
+        // ((CMyApp*)ptr)->GetMainWnd()->GetCount(): キャスト型 CMyApp を確定採用し
+        // チェイン継続で CWnd::GetCount → int（P4 cast_expression + チェイン）。
+        let src = "class CWnd { public: int GetCount(); };\nclass CMyApp { public: CWnd* GetMainWnd(); };\nvoid f() { void* ptr; ((CMyApp*)ptr)->GetMainWnd()->GetCount(); }\n";
+        assert_eq!(infer_chain(src, "((CMyApp*)ptr)->GetMainWnd()->GetCount()").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_receiver_parenthesized_object_method() {
+        // (obj).Foo(): 括弧付きオブジェクトのメソッド → int（P4 parenthesized unwrap）。
+        let src = "class Foo { public: int Bar(); };\nvoid f() { Foo obj; (obj).Bar(); }\n";
+        assert_eq!(infer_chain(src, "(obj).Bar()").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_receiver_subscript_c_array_element_field() {
+        // arr[0].x: C 生配列 Foo arr[10]; の要素型 Foo で x → int（P4 subscript_expression）。
+        let src = "class Foo { public: int x; };\nvoid f() { Foo arr[10]; arr[0].x; }\n";
+        assert_eq!(infer_chain(src, "arr[0].x").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_receiver_subscript_pointer_arrow_field() {
+        // p[0]->y: Foo* p のポインタ添字 p[0] は Foo、->y で y → int（P4 subscript + arrow）。
+        let src = "class Foo { public: int y; };\nvoid f() { Foo* p; p[0]->y; }\n";
+        assert_eq!(infer_chain(src, "p[0]->y").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_receiver_subscript_template_container_is_none() {
+        // vec[0].Bar(): vector<int> の添字は要素型解決を対象外→None/?（P4 subscript < 含有で None）。
+        // fix.md 問題 7 と同種の「ベース変数型の誤代用」を防ぐ。
+        let src = "class Foo { public: int Bar(); };\nvoid f() { vector<int> vec; vec[0].Bar(); }\n";
+        assert_eq!(infer_chain(src, "vec[0].Bar()"), None);
+    }
+
+    #[test]
+    fn cpp_receiver_cast_unexplored_class_label() {
+        // negative: cast 型 CMyApp に Foo が無くてもラベルは CMyApp.Foo 形式（P4 cast）。
+        // 戻り値型解決は失敗するが、キャスト型 CMyApp はラベルのベースとして採用される。
+        let src = "class CMyApp {};\nvoid f() { void* ptr; ((CMyApp*)ptr)->Foo(); }\n";
+        assert_eq!(infer_chain(src, "((CMyApp*)ptr)->Foo()").as_deref(), Some("CMyApp.Foo"));
     }
 }
