@@ -504,20 +504,31 @@ fn cpp_find_method_return_in_named_class<D: Doc>(
         if let Some(n) = node.field("name") {
             if n.text().trim() == class_name {
                 if let Some(body) = node.field("body") {
-                    for c in body.children() {
-                        // クラス body 内のメソッドはインライン定義（function_definition）と
-                        // プロトタイプ宣言（field_declaration）の両方があり得る。どちらも
-                        // 既存の合成ヘルパ（spec + declarator ops）で戻り値型を作る。
-                        // function_definition 経路は従来 type フィールドのみでポインタ修飾を
-                        // 落としていたが cpp_function_definition_return で `CWnd*` → `CWnd *` に回復。
-                        let ty = match c.kind().as_ref() {
-                            "function_definition" => cpp_function_definition_return(&c, method_name),
-                            "field_declaration" => cpp_function_declaration_return(&c, method_name),
-                            _ => None,
-                        };
-                        if let Some(ty) = ty {
-                            *out = Some(ty);
-                            return;
+                    cpp_method_return_in_class_body(&body, method_name, out);
+                    if out.is_some() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    // P1-c: 無名 typedef struct（`typedef struct { long x; } POINT;`）の body を直接検索。
+    // タグ付き typedef struct は既存のタグ名経路（cpp_type_alias_target_from_node → typedef 1段展開）
+    // に任せ、無名（type が name フィールド無しの struct/union specifier で body 持ち）の場合のみ
+    // このアームが働く。declarator の名前が class_name（エイリアス名）と一致したら body を走査。
+    // ポインタ typedef（`typedef struct {...} *P;`）も is_some で受理し、`p->M()` を解決する。
+    if kind.as_ref() == "type_definition" {
+        if let Some(t) = node.field("type") {
+            if matches!(t.kind().as_ref(), "struct_specifier" | "union_specifier")
+                && t.field("name").is_none()
+            {
+                if let Some(body) = t.field("body") {
+                    for d in node.field_children("declarator") {
+                        if cpp_typedef_declarator_pointer_count_if_named(&d, class_name).is_some() {
+                            cpp_method_return_in_class_body(&body, method_name, out);
+                            if out.is_some() {
+                                return;
+                            }
                         }
                     }
                 }
@@ -532,6 +543,30 @@ fn cpp_find_method_return_in_named_class<D: Doc>(
     }
 }
 
+/// クラス／構造体 body 内のメソッド戻り値型を探す。インライン定義（function_definition）と
+/// プロトタイプ宣言（field_declaration）の両方から既存の合成ヘルパで戻り値型を作る。
+/// class_specifier アームと P1-c の無名 typedef struct アームで共有する。
+fn cpp_method_return_in_class_body<D: Doc>(
+    body: &Node<'_, D>,
+    method_name: &str,
+    out: &mut Option<String>,
+) {
+    if out.is_some() {
+        return;
+    }
+    for c in body.children() {
+        let ty = match c.kind().as_ref() {
+            "function_definition" => cpp_function_definition_return(&c, method_name),
+            "field_declaration" => cpp_function_declaration_return(&c, method_name),
+            _ => None,
+        };
+        if let Some(ty) = ty {
+            *out = Some(ty);
+            return;
+        }
+    }
+}
+
 fn cpp_method_return_in_named_translation_unit<D: Doc>(
     root: &Node<'_, D>,
     class_name: &str,
@@ -539,7 +574,145 @@ fn cpp_method_return_in_named_translation_unit<D: Doc>(
 ) -> Option<String> {
     let mut out = None;
     cpp_find_method_return_in_named_class(root, class_name, method_name, &mut out);
-    out
+    if out.is_some() {
+        return out;
+    }
+    // P2: in-class 検索（プロトタイプ／インライン定義）で解決できなければクラス外定義を試す。
+    // `.cpp` 側の `CWnd* CMyApp::GetMainWnd() { ... }`（TU 直下の function_definition）や
+    // クラス外プロトタイプ宣言から戻り値型を引く。走査は関数本体に入らないため誤ヒントリスク低。
+    cpp_method_return_out_of_line_in_tree(root, class_name, method_name)
+}
+
+/// out-of-class メソッド定義（`.cpp` 側の `CWnd* CMyApp::GetMainWnd() { ... }`）または
+/// クラス外プロトタイプ宣言から (class_name, method_name) の戻り値型を取り出す（P2）。
+/// 走査規則は cpp_find_free_function_return_in_scope と同じ（TU 直下 + linkage_specification /
+/// declaration_list + namespace 1 段）。関数本体・クラス内部には入らない（誤ヒント回避）。
+fn cpp_method_return_out_of_line_in_tree<D: Doc>(
+    root: &Node<'_, D>,
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    cpp_find_out_of_line_method_return_in_scope(root, class_name, method_name, 0)
+}
+
+fn cpp_find_out_of_line_method_return_in_scope<D: Doc>(
+    node: &Node<'_, D>,
+    class_name: &str,
+    method_name: &str,
+    namespace_depth: usize,
+) -> Option<String> {
+    for c in node.children() {
+        let k = c.kind();
+        let k = k.as_ref();
+        if let Some(ty) = cpp_out_of_line_method_return_from_decl(&c, class_name, method_name) {
+            return Some(ty);
+        }
+        // `extern "C" { ... }`（linkage_specification）と declaration_list の中を 1 階層分試す。
+        if k == "linkage_specification" || k == "declaration_list" {
+            if let Some(ty) =
+                cpp_find_out_of_line_method_return_in_scope(&c, class_name, method_name, namespace_depth)
+            {
+                return Some(ty);
+            }
+        }
+        // namespace は 1 段だけ（無限展開防止）。
+        if k == "namespace_definition" && namespace_depth < 1 {
+            if let Some(ty) = cpp_find_out_of_line_method_return_in_scope(
+                &c,
+                class_name,
+                method_name,
+                namespace_depth + 1,
+            ) {
+                return Some(ty);
+            }
+        }
+    }
+    None
+}
+
+/// function_definition または declaration ノードが (class_name, method_name) の
+/// out-of-class メソッド定義／プロトタイプなら戻り値型を合成する。
+fn cpp_out_of_line_method_return_from_decl<D: Doc>(
+    node: &Node<'_, D>,
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    match node.kind().as_ref() {
+        "function_definition" => {
+            let decl = node.field("declarator")?;
+            if !cpp_declarator_is_out_of_line_method(&decl, class_name, method_name) {
+                return None;
+            }
+            let spec = node
+                .field("type")
+                .map(|t| t.text().trim().to_string())
+                .or_else(|| cpp_declaration_specifiers_text(node))?;
+            let ops = cpp_declarator_type_ops(decl);
+            Some(cpp_combine_type(&spec, &ops))
+        }
+        "declaration" => {
+            let spec = cpp_declaration_specifiers_text(node)?;
+            for d in node.field_children("declarator") {
+                let target = if d.kind().as_ref() == "init_declarator" {
+                    d.field("declarator")
+                } else {
+                    Some(d.clone())
+                };
+                if let Some(t) = target {
+                    if cpp_declarator_is_out_of_line_method(&t, class_name, method_name) {
+                        let ops = cpp_declarator_type_ops(t);
+                        return Some(cpp_combine_type(&spec, &ops));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// declarator ツリーを下降して out-of-class メソッドの qualified_identifier を探し、
+/// (class_name, method_name) に一致するか検証する（P2）。
+/// `CWnd* CMyApp::GetMainWnd()` → declarator = function_declarator(declarator:
+/// pointer_declarator(qualified_identifier(CMyApp::GetMainWnd)))。qualified_identifier のテキストを
+/// 最後の `::` で分割し、suffix == method_name・prefix の最終 `::` セグメント == class_name を照合する
+/// （cpp_out_of_line_class_name と同手法）。cpp_declarator_matches_name は leaf 名しか見ないため
+/// 流用すると `COther::GetMainWnd` に誤マッチする→クラス prefix 検証が必須。
+fn cpp_declarator_is_out_of_line_method<D: Doc>(
+    d: &Node<'_, D>,
+    class_name: &str,
+    method_name: &str,
+) -> bool {
+    let Some(qid) = cpp_find_qualified_identifier_in_declarator(d.clone()) else {
+        return false;
+    };
+    let qid_text = qid.text();
+    let text = qid_text.trim();
+    let Some(pos) = text.rfind("::") else {
+        return false;
+    };
+    let suffix = text[pos + 2..].trim();
+    let prefix = text[..pos].trim();
+    let class_seg = prefix.rsplit("::").next().unwrap_or(prefix);
+    let class_seg = class_seg.trim_start_matches('*').trim_end_matches('*').trim();
+    suffix == method_name && class_seg == class_name
+}
+
+/// declarator ツリーを declarator フィールドで下降し、qualified_identifier を見つける。
+/// function_declarator / pointer_declarator / init_declarator 等を辿る。
+/// parameter_list 等には入らないため仮引数型の qualified_identifier に誤マッチしない。
+fn cpp_find_qualified_identifier_in_declarator<D: Doc>(
+    d: Node<'_, D>,
+) -> Option<Node<'_, D>> {
+    let kind = d.kind();
+    let k = kind.as_ref();
+    if k == "qualified_identifier" {
+        return Some(d);
+    }
+    if let Some(inner) = d.field("declarator") {
+        return cpp_find_qualified_identifier_in_declarator(inner);
+    }
+    None
 }
 
 /// translation_unit 直下から kind に応じたメンバの型を引く（ディスパッチ）。
@@ -947,34 +1120,81 @@ fn cpp_type_alias_target_from_node<D: Doc>(
 ) -> Option<String> {
     let k = node.kind();
     let k = k.as_ref();
-    // typedef は declarator フィールドがエイリアス名、using は name フィールドがエイリアス名。
-    // どちらも type フィールドがターゲット型。
-    let name_node = match k {
-        "type_definition" => node.field("declarator"),
-        "alias_declaration" => node.field("name"),
-        _ => return None,
-    };
-    let name_node = name_node?;
-    if name_node.text().trim() != alias {
+    // using App = CWinApp; は name フィールドがエイリアス名。type 側にポインタ修飾も含まれる
+    // ため declarator下降は不要。type_definition とは別経路で処理する。
+    if k == "alias_declaration" {
+        let name_node = node.field("name")?;
+        if name_node.text().trim() != alias {
+            return None;
+        }
+        let target = node.field("type")?;
+        return cpp_alias_target_text_from_type(&target);
+    }
+    if k != "type_definition" {
         return None;
     }
     let target = node.field("type")?;
-    // typedef struct tagPOINT { ... } POINT; のように target が struct/union/enum/class
-    // specifier のときはテキスト全体（本体含む）ではなくタグ名（tagPOINT）を返す。
-    // タグ名なら cpp_find_field_in_named_class が struct tagPOINT の body を直接探せる。
-    // 無名（name フィールド無し）はタグが取れないため None（別途対応）。
+    let target_text = cpp_alias_target_text_from_type(&target)?;
+    // P1-b: type_definition は declarator フィールドを複数持つ（`typedef int A, *PA;`）ため
+    // field_children で全宣言子を走査する。各宣言子について P1-a のポインタ個数カウントで
+    // 名前照合し、一致したら target 型に剥いだ個数分の `*` を付加して返す
+    // （`typedef CWinApp* AppPtr;` → `CWinApp` + `*` → `CWinApp *`）。
+    for d in node.field_children("declarator") {
+        if let Some(ptr_count) = cpp_typedef_declarator_pointer_count_if_named(&d, alias) {
+            let ops = "*".repeat(ptr_count);
+            if ops.is_empty() {
+                return Some(target_text.clone());
+            }
+            return Some(cpp_combine_type(&target_text, &ops));
+        }
+    }
+    None
+}
+
+/// typedef の target 型ノードから、エイリアスが指す型文字列を取り出す。
+/// target が struct/union/enum/class specifier のときはテキスト全体（本体含む）ではなく
+/// タグ名（tagPOINT）を返す。タグ名なら cpp_find_field_in_named_class が struct tagPOINT の
+/// body を直接探せる。無名 specifier（name フィールド無し）はタグが取れないため None。
+/// それ以外（type_identifier 等）はテキストをそのまま返す。
+fn cpp_alias_target_text_from_type<D: Doc>(target: &Node<'_, D>) -> Option<String> {
     if matches!(
         target.kind().as_ref(),
         "struct_specifier" | "union_specifier" | "enum_specifier" | "class_specifier"
     ) {
         return target.field("name").map(|n| n.text().trim().to_string());
     }
-    let target_text = target.text().trim().to_string();
-    if target_text.is_empty() {
+    let t = target.text().trim().to_string();
+    if t.is_empty() {
         None
     } else {
-        Some(target_text)
+        Some(t)
     }
+}
+
+/// typedef 宣言子ツリーを下降して alias 名を探し、途中の `*` の個数を返す（P1-a）。
+/// `pointer_type_declarator` / `pointer_declarator` を辿って `*` を数え、内側の
+/// `type_identifier`/`identifier`/`field_identifier` が alias と一致したら個数を返す。
+/// 関数ポインタ（function_declarator）・配列（array_declarator）・参照（reference_declarator）
+/// 等はレシーバになり得ないため対象外 → None（誤解決しない側に倒す）。
+fn cpp_typedef_declarator_pointer_count_if_named<D: Doc>(
+    d: &Node<'_, D>,
+    alias: &str,
+) -> Option<usize> {
+    let kind = d.kind();
+    let k = kind.as_ref();
+    if matches!(k, "type_identifier" | "identifier" | "field_identifier") {
+        return if d.text().trim() == alias {
+            Some(0)
+        } else {
+            None
+        };
+    }
+    if matches!(k, "pointer_type_declarator" | "pointer_declarator") {
+        let inner = d.field("declarator")?;
+        let count = cpp_typedef_declarator_pointer_count_if_named(&inner, alias)?;
+        return Some(count + 1);
+    }
+    None
 }
 
 fn cpp_find_type_alias_target_in_scope<D: Doc>(
@@ -2570,6 +2790,29 @@ fn cpp_find_field_in_named_class<D: Doc>(
             if nt.trim() == class_name {
                 if let Some(body) = node.field("body") {
                     cpp_walk_field_declarations(&body, field_name, out);
+                }
+            }
+        }
+    }
+    // P1-c: 無名 typedef struct（`typedef struct { long x; } POINT;`）の body を直接検索。
+    // タグ付き typedef struct は既存のタグ名経路（cpp_type_alias_target_from_node → typedef 1段展開）
+    // に任せ、無名（type が name フィールド無しの struct/union specifier で body 持ち）の場合のみ
+    // このアームが働く。declarator の名前が class_name（エイリアス名）と一致したら body を走査。
+    // ポインタ typedef（`typedef struct {...} *P;`）も is_some で受理し、`p->x` を解決する。
+    if kind.as_ref() == "type_definition" {
+        if let Some(t) = node.field("type") {
+            if matches!(t.kind().as_ref(), "struct_specifier" | "union_specifier")
+                && t.field("name").is_none()
+            {
+                if let Some(body) = t.field("body") {
+                    for d in node.field_children("declarator") {
+                        if cpp_typedef_declarator_pointer_count_if_named(&d, class_name).is_some() {
+                            cpp_walk_field_declarations(&body, field_name, out);
+                            if out.is_some() {
+                                return;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4683,5 +4926,199 @@ void f() {
         // 従来はベース型 POINT を代用表示したが、bug7 で None になる。
         let src = "typedef struct tagPOINT { long x; } POINT;\nvoid f() { POINT pt; pt.unknownField; }\n";
         assert_eq!(infer_chain(src, "pt.unknownField"), None);
+    }
+
+    // ===== P1: typedef 拡張（ポインタ typedef / 複数宣言子 / 無名 typedef struct） =====
+
+    #[test]
+    fn cpp_pointer_typedef_resolves_member_in_source() {
+        // typedef CWinApp* AppPtr; の AppPtr a; a->GetMainWnd() → CWnd *（P1-a）。
+        // AppPtr → CWinApp *（typedef 1段展開）→ CWinApp::GetMainWnd → CWnd *。
+        let src = "class CWnd {};\nclass CWinApp { public: CWnd* GetMainWnd(); };\ntypedef CWinApp* AppPtr;\nvoid f() { AppPtr a; a->GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "a->GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn c_pointer_typedef_resolves_field_in_source() {
+        // 純 C: typedef struct Foo* PFOO; の PFOO p; p->x → int（P1-a）。
+        // PFOO → Foo * → struct Foo::x → int。C は C++ 推論経路に統合済み。
+        let src = "struct Foo { int x; };\ntypedef struct Foo* PFOO;\nvoid f() { PFOO p; p->x; }\n";
+        let hint = c_infer_capture_by_kind(src, "field_expression", "p->x", "CHAIN");
+        assert_eq!(hint.as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_pointer_typedef_resolves_member_via_header() {
+        // ヘッダ経由でポインタ typedef のメンバ型を解決（P1-a）。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_ptr_typedef_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "class CWnd {};\nclass CWinApp { public: CWnd* GetMainWnd(); };\ntypedef CWinApp* AppPtr;\n",
+        )
+        .expect("write app.h");
+        let src = "#include <app.h>\nvoid f() { AppPtr a; a->GetMainWnd(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "a->GetMainWnd()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWnd *"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_anon_typedef_struct_field_in_source() {
+        // typedef struct { long x; } POINT; の pt.x → long（P1-c、無名 struct の直接 body 検索）。
+        let src = "typedef struct { long x; long y; } POINT;\nvoid f() { POINT pt; pt.x; }\n";
+        assert_eq!(infer_chain(src, "pt.x").as_deref(), Some("long"));
+    }
+
+    #[test]
+    fn cpp_anon_typedef_struct_method_in_source() {
+        // typedef struct { int Foo(); } S; の s.Foo() → int（P1-c、メソッド版）。
+        let src = "typedef struct { int Foo(); } S;\nvoid f() { S s; s.Foo(); }\n";
+        assert_eq!(infer_chain(src, "s.Foo()").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_anon_typedef_struct_field_via_header() {
+        // ヘッダ経由で無名 typedef struct のフィールド型を解決（P1-c）。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_anon_typedef_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "typedef struct { long x; long y; } POINT;\n",
+        )
+        .expect("write app.h");
+        let src = "#include <app.h>\nvoid f() { POINT pt; pt.x; }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "pt.x")
+            .expect("match field");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("long"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_typedef_multiple_declarators_resolve() {
+        // typedef int A, *PA; の A → int、PA → int *（P1-b、複数宣言子）。
+        let src = "typedef int A, *PA;\n";
+        assert_eq!(cpp_alias_target(src, "A").as_deref(), Some("int"));
+        assert_eq!(cpp_alias_target(src, "PA").as_deref(), Some("int *"));
+    }
+
+    #[test]
+    fn cpp_typedef_pointer_to_named_struct_field() {
+        // typedef struct Foo* PFOO; の PFOO p; p->x → int（P1-a + 既存タグ経路）。
+        let src = "struct Foo { int x; };\ntypedef struct Foo* PFOO;\nvoid f() { PFOO p; p->x; }\n";
+        assert_eq!(infer_chain(src, "p->x").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_typedef_function_pointer_is_none() {
+        // 関数ポインタ typedef typedef int (*FN)(void); は None（レシーバになり得ない、P1 negative）。
+        let src = "typedef int (*FN)(void);\n";
+        assert_eq!(cpp_alias_target(src, "FN"), None);
+    }
+
+    // ===== P2: クラス外定義（out-of-class definition）の戻り値型 =====
+
+    #[test]
+    fn cpp_out_of_class_definition_only_resolves() {
+        // ヘッダにプロトタイプが無く .cpp 内のクラス外定義のみから解決（P2）。
+        // CWnd* CMyApp::GetMainWnd() { ... } → a.GetMainWnd() は CWnd *。
+        let src = "class CWnd {};\nclass CMyApp {};\nCWnd* CMyApp::GetMainWnd() { return 0; }\nvoid f() { CMyApp a; a.GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "a.GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_in_class_prototype_and_out_of_class_definition_both_resolve() {
+        // ヘッダのプロトタイプ宣言と .cpp のクラス外定義が両方あるケース。
+        // in-class プロトタイプ経路が先に解決し、out-of-class と同値になる（P2）。
+        let src = "class CWnd {};\nclass CMyApp { public: CWnd* GetMainWnd(); };\nCWnd* CMyApp::GetMainWnd() { return 0; }\nvoid f() { CMyApp a; a.GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "a.GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_out_of_class_definition_wrong_class_no_false_match() {
+        // negative: COther::GetMainWnd があっても CMyApp のメソッドとして誤マッチしない（P2）。
+        // 戻り値型解決は失敗し、未解決表示の CMyApp.GetMainWnd ラベルに倒れる（CWnd * にならない）。
+        let src = "class CWnd {};\nclass CMyApp {};\nclass COther {};\nCWnd* COther::GetMainWnd() { return 0; }\nvoid f() { CMyApp a; a.GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "a.GetMainWnd()").as_deref(), Some("CMyApp.GetMainWnd"));
+    }
+
+    #[test]
+    fn cpp_out_of_class_definition_in_namespace_one_level() {
+        // namespace 1 段内の ns::CMyApp::Foo 形。out-of-class 定義の qualified_identifier が
+        // ns::CMyApp::GetMainWnd で class セグメント CMyApp に解決（P2）。
+        let src = "class CWnd {};\nnamespace ns { class CMyApp {}; }\nCWnd* ns::CMyApp::GetMainWnd() { return 0; }\nvoid f() { ns::CMyApp a; a.GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "a.GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_out_of_class_definition_class_in_header_resolves() {
+        // クラス宣言がヘッダ、クラス外定義が .cpp にある MFC 典型ケース（P2）。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_out_of_class_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "class CWnd {};\nclass CMyApp {};\n",
+        )
+        .expect("write app.h");
+        let src = "#include <app.h>\nCWnd* CMyApp::GetMainWnd() { return 0; }\nvoid f() { CMyApp a; a.GetMainWnd(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "a.GetMainWnd()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWnd *"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
