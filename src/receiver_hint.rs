@@ -815,8 +815,15 @@ fn cpp_find_class_bases_recursive<D: Doc>(
     ) {
         if let Some(n) = node.field("name") {
             if n.text().trim() == class_name {
-                *out = Some(cpp_class_bases_from_specifier(node));
-                return;
+                // 前方宣言（`class CDerB;` のような body 無しの class_specifier）はスキップして
+                // 走査を継続する。最初の名前一致で空リストを確定させると、定義の base_class_clause
+                // が失われて継承解決が全滅する（fix2.md 問題1）。base_class_clause の有無ではなく
+                // body の有無で判定するのは、基底無しクラスの定義 `class CFoo { ... };` を空リストと
+                // して正しく確定させるため。cpp_find_field_in_named_class と同じ body 必須パターン。
+                if node.field("body").is_some() {
+                    *out = Some(cpp_class_bases_from_specifier(node));
+                    return;
+                }
             }
         }
     }
@@ -5549,6 +5556,96 @@ void f() {
             hits_after_second > hits_after_first,
             "second call must hit the member cache (base traversal result cached under derived key)"
         );
+    }
+
+    #[test]
+    fn cpp_inheritance_forward_decl_in_header_before_def() {
+        // ヘッダ内の前方宣言が定義より先にあっても基底リストを定義から解決（fix2.md 問題1 Case B）。
+        // 従来は前方宣言 `class CDerB;` で空リストが確定し CBaseB に届かなかった。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_inherit_fwd_hdr_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "class CDerB;\nclass CWndB { public: int FooB(); };\nclass CBaseB { public: CWndB* GetWndB(); };\nclass CDerB : public CBaseB { public: int m_b; };\n",
+        )
+        .expect("write app.h");
+        let src = "#include <app.h>\nvoid f() { CDerB b; b.GetWndB(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "b.GetWndB()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWndB *"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_inheritance_forward_decl_in_source_with_header_def() {
+        // ソース側前方宣言が先に探索されても基底リストをヘッダ定義から解決（fix2.md 問題1 Case C）。
+        // 従来は source の `class CDerC;` で空リストが確定キャッシュされ header に届かなかった。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_inherit_fwd_src_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "class CWndC { public: int FooC(); };\nclass CBaseC { public: CWndC* GetWndC(); };\nclass CDerC : public CBaseC { public: int m_c; };\n",
+        )
+        .expect("write app.h");
+        // ソースに前方宣言を置き、source TU が先に探索される状況を再現。
+        let src = "#include <app.h>\nclass CDerC;\nvoid f() { CDerC c; c.GetWndC(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "c.GetWndC()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWndC *"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_inheritance_baseless_class_empty_list_no_spurious_match() {
+        // 基底無しクラス `class CFoo { ... };` は空リストとして確定し、前方宣言スキップ後に
+        // 走査継続で別クラスに誤マッチしない（fix2.md 問題1）。前方宣言＋基底無し定義が並ぶ状況で
+        // CFoo の基底リストが空 Vec（= Some("") キャッシュ）になり、派生クラスの未知メンバが
+        // 継承関係に無い CBar のメンバに誤解決されないこと。
+        let src = "class CFoo;\nclass CFoo { public: int m_x; };\nclass CBar { public: int m_y; };\nclass CDer : public CFoo { };\nvoid f() { CDer d; d.m_x; d.m_y; }\n";
+        let ctx = ctx_no_cache(src);
+        // CFoo は基底無し → 空リスト（None ではなく空 Vec）。body 有り定義で確定する。
+        let bases = cpp_class_bases_for_sources(&ctx, "CFoo");
+        assert!(bases.is_empty(), "CFoo must resolve to empty base list, got {:?}", bases);
+        // m_x は CFoo のフィールド → 継承遡りで解決（基底無しクラスが正しく基底として扱われる）。
+        assert_eq!(infer_chain(src, "d.m_x").as_deref(), Some("int"));
+        // m_y は CDer/CFoo いずれにも無い → None。CBar は継承関係に無いので誤マッチしない。
+        assert_eq!(infer_chain(src, "d.m_y"), None);
     }
 
     // ===== P4: レシーバ式の拡張（parenthesized/pointer/cast/subscript） =====
