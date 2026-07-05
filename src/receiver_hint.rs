@@ -1649,6 +1649,10 @@ fn cpp_lookup_member_with_bases(
     depth: usize,
 ) -> Option<String> {
     if depth > CPP_INHERIT_MAX_DEPTH {
+        // 既知の境界（fix2.md 問題4）: この None は末尾の store_member で (path, kind, class,
+        // member) の負キャッシュとして記録される。そのため同ジョブ内で同じクラスをより浅い深さ
+        // から引き直しても負キャッシュが返る。CPP_INHERIT_MAX_DEPTH(=8) 超の継承でのみ顕在化し
+        // 実害はほぼ無いため修正せず、本コメントで境界を明示するに留める。
         return None;
     }
     // メンバキャッシュ（負キャッシュ2層）。外側 None=キャッシュミス、内側 None=探索済み未発見。
