@@ -487,22 +487,6 @@ fn cpp_field_type_for_class_in_sources(
     cpp_lookup_member_in_sources(ctx, CppLookupKind::Field, class_name, field_name)
 }
 
-#[allow(dead_code)] // bug1 修正で cpp_declarator_is_function_named に統一したが汎用ヘルパとして保持
-fn cpp_declarator_has_method_name<D: Doc>(decl: &Node<'_, D>, method_name: &str) -> bool {
-    let mut found = false;
-    cpp_for_each_descendant(decl, &mut |d| {
-        if matches!(
-            d.kind().as_ref(),
-            "identifier" | "field_identifier" | "destructor_name"
-        ) {
-            if d.text().trim() == method_name {
-                found = true;
-            }
-        }
-    });
-    found
-}
-
 fn cpp_find_method_return_in_named_class<D: Doc>(
     node: &Node<'_, D>,
     class_name: &str,
