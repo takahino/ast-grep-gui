@@ -259,8 +259,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
         );
     }
 
-    ui.horizontal(|ui| {
-        if app.search_mode == SearchMode::YamlRule {
+    if app.search_mode == SearchMode::YamlRule {
+        ui.horizontal(|ui| {
             ui.label(t.yaml_config_path_label())
                 .on_hover_text(t.yaml_config_path_tooltip());
             ui.add(
@@ -277,6 +277,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                         path.to_string_lossy().to_string();
                 }
             }
+        });
+        ui.horizontal(|ui| {
             ui.label(t.yaml_rule_file_label())
                 .on_hover_text(t.yaml_rule_file_tooltip());
             ui.add(
@@ -292,6 +294,8 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     app.yaml_rule_options.rule_file = path.to_string_lossy().to_string();
                 }
             }
+        });
+        ui.horizontal(|ui| {
             ui.label(t.yaml_rule_filter_label())
                 .on_hover_text(t.yaml_rule_filter_tooltip());
             ui.add(
@@ -299,19 +303,23 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     .desired_width(140.0)
                     .hint_text(t.yaml_rule_filter_hint()),
             );
-            ui.vertical(|ui| {
-                ui.label(t.yaml_rule_text_label())
-                    .on_hover_text(t.yaml_rule_text_tooltip());
-                ui.add_sized(
-                    [ui.available_width().max(400.0), 120.0],
-                    egui::TextEdit::multiline(&mut app.yaml_rule_options.rule_text)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(6)
-                        .hint_text(t.yaml_rule_text_hint())
-                        .font(egui::TextStyle::Monospace),
-                );
-            });
-        } else {
+        });
+        ui.horizontal(|ui| {
+            ui.label(t.yaml_rule_text_label())
+                .on_hover_text(t.yaml_rule_text_tooltip());
+            ui.add_sized(
+                [ui.available_width().max(400.0), 120.0],
+                egui::TextEdit::multiline(&mut app.yaml_rule_options.rule_text)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(6)
+                    .hint_text(t.yaml_rule_text_hint())
+                    .font(egui::TextStyle::Monospace),
+            );
+        });
+    }
+
+    ui.horizontal(|ui| {
+        if app.search_mode != SearchMode::YamlRule {
         let (pattern_label_tooltip, pattern_hint) = match app.search_mode {
             SearchMode::AstGrep => (t.pattern_label_tooltip_ast(), t.pattern_hint_ast()),
             SearchMode::TokenSearch => (t.pattern_label_tooltip_token(), t.pattern_hint_token()),
