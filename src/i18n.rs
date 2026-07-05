@@ -1808,17 +1808,18 @@ impl Tr {
         }
     }
 
-    /// C: マクロ限定3パターンの自動解析と設定ルールの誘導文言。
+    /// C: マクロ限定4パターンの自動解析と設定ルールの誘導文言。
     pub fn type_hint_config_macros_auto_hint(self) -> &'static str {
         match self.0 {
             UiLanguage::Japanese => {
                 "キャスト形式 #define M(x) ((TYPE)(x))、別名形式 #define theApp (*AfxGetApp())、\
-                単純識別子別名 #define A B の 3 パターンは自動解析します。\
+                単純識別子別名 #define A B、転送形式 #define M() Fn() の 4 パターンは自動解析します。\
                 それ以外のマクロはここで戻り値型を設定してください（設定ルールが自動解析より優先）。"
             }
             UiLanguage::English => {
-                "Three patterns are auto-analyzed: cast form #define M(x) ((TYPE)(x)), \
-                alias form #define theApp (*AfxGetApp()), and simple identifier alias #define A B. \
+                "Four patterns are auto-analyzed: cast form #define M(x) ((TYPE)(x)), \
+                alias form #define theApp (*AfxGetApp()), simple identifier alias #define A B, \
+                and forwarding form #define M() Fn(). \
                 For other macros, configure the return type here (config rules take precedence over auto-analysis)."
             }
         }

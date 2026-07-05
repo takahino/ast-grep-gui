@@ -1099,6 +1099,13 @@ fn cpp_resolve_macro_def(
                 cpp_global_var_type_for_sources(ctx, target)
             }
         }
+        CppMacroDef::FreeFnCallAlias(fn_name) => {
+            // P5: M() → FN() の転送。FN() の戻り値型をそのまま採用（deref しないのが
+            // DerefFreeFnCall との違い）。呼び出し形（GETAPP()->... is_call=true）と
+            // 値形（theApp2. is_call=false）の両方で有効。キャッシュキーは既存
+            // MacroCall/MacroValue をそのまま使用（cpp_macro_return_for_sources 経由）。
+            cpp_free_function_return_for_sources(ctx, fn_name)
+        }
     }
 }
 
@@ -1341,6 +1348,10 @@ enum CppMacroDef {
     DerefFreeFnCall(String),
     /// `#define A B` — 単純識別子別名。`target` の型に 1 段展開する。
     IdentAlias(String),
+    /// `#define M() FN()` / `#define M FN()` — フリー関数への転送形式（P5）。
+    /// 本体が `IDENT()`（引数なし呼び出し）に全体一致。`M(...)`/`M` の型は `FN()` の
+    /// 戻り値型（DerefFreeFnCall と違い deref しない）。呼び出し形・値形の両方で有効。
+    FreeFnCallAlias(String),
 }
 
 /// `CWinApp*` → `CWinApp *` のように識別子部とポインタ/参照修飾の間に空白を挟む。
@@ -1378,18 +1389,31 @@ fn is_cpp_identifier(s: &str) -> bool {
     chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// マクロ本体を3パターンに分類する。それ以外は `None`（対応しない側に倒す）。
+/// マクロ本体を4パターンに分類する。それ以外は `None`（対応しない側に倒す）。
 fn cpp_classify_macro_body(body: &str, is_function_like: bool) -> Option<CppMacroDef> {
     let b = body.trim();
     if is_function_like {
         // パターン1: キャスト形式 ((TYPE)(...))
-        let inner = b.strip_prefix("((")?.strip_suffix("))")?;
-        let sep = inner.find(")(")?;
-        let ty = inner[..sep].trim();
-        if ty.is_empty() || !ty.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false) {
-            return None;
+        if let Some(inner) = b.strip_prefix("((").and_then(|r| r.strip_suffix("))")) {
+            if let Some(sep) = inner.find(")(") {
+                let ty = inner[..sep].trim();
+                if !ty.is_empty()
+                    && ty.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+                {
+                    return Some(CppMacroDef::CastReturn(cpp_normalize_type_string(ty)));
+                }
+            }
         }
-        return Some(CppMacroDef::CastReturn(cpp_normalize_type_string(ty)));
+        // パターン4: 転送形式 IDENT()（引数なし呼び出しへの全体一致）。キャスト形式失敗後に試す。
+        // #define GETAPP() AfxGetApp() → GETAPP() の戻り値型は AfxGetApp() の戻り値型（deref しない）。
+        // 転送先が引数を取る形（#define GETAPP() AfxGetAppEx(0)）は () 全体一致のみのため対象外。
+        if let Some(fn_name) = b.strip_suffix("()") {
+            let fn_name = fn_name.trim();
+            if is_cpp_identifier(fn_name) {
+                return Some(CppMacroDef::FreeFnCallAlias(fn_name.to_string()));
+            }
+        }
+        return None;
     }
     // パターン2: (*FN())
     if let Some(rest) = b.strip_prefix("(*").and_then(|r| r.strip_suffix(')')) {
@@ -1404,6 +1428,14 @@ fn cpp_classify_macro_body(body: &str, is_function_like: bool) -> Option<CppMacr
     // パターン3: 単純識別子別名（本体が単一識別子のみ）。
     if is_cpp_identifier(b) {
         return Some(CppMacroDef::IdentAlias(b.to_string()));
+    }
+    // パターン4（オブジェクト形式）: 転送形式 IDENT()。
+    // #define theApp2 AfxGetApp() → theApp2 の型は AfxGetApp() の戻り値型。
+    if let Some(fn_name) = b.strip_suffix("()") {
+        let fn_name = fn_name.trim();
+        if is_cpp_identifier(fn_name) {
+            return Some(CppMacroDef::FreeFnCallAlias(fn_name.to_string()));
+        }
     }
     None
 }
@@ -5578,5 +5610,150 @@ void f() {
         // 戻り値型解決は失敗するが、キャスト型 CMyApp はラベルのベースとして採用される。
         let src = "class CMyApp {};\nvoid f() { void* ptr; ((CMyApp*)ptr)->Foo(); }\n";
         assert_eq!(infer_chain(src, "((CMyApp*)ptr)->Foo()").as_deref(), Some("CMyApp.Foo"));
+    }
+
+    // ===== P5: マクロ転送形式 FreeFnCallAlias =====
+
+    #[test]
+    fn cpp_scan_defines_freefn_call_alias_function_like() {
+        // 関数形式転送 #define GETAPP() AfxGetApp() → FreeFnCallAlias("AfxGetApp")（P5）。
+        let src = "#define GETAPP() AfxGetApp()\n";
+        let defines = cpp_scan_defines(src);
+        match defines.get("GETAPP") {
+            Some(CppMacroDef::FreeFnCallAlias(n)) => assert_eq!(n, "AfxGetApp"),
+            other => panic!("expected FreeFnCallAlias, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cpp_scan_defines_freefn_call_alias_object_like() {
+        // オブジェクト形式転送 #define theApp2 AfxGetApp() → FreeFnCallAlias("AfxGetApp")（P5）。
+        let src = "#define theApp2 AfxGetApp()\n";
+        let defines = cpp_scan_defines(src);
+        match defines.get("theApp2") {
+            Some(CppMacroDef::FreeFnCallAlias(n)) => assert_eq!(n, "AfxGetApp"),
+            other => panic!("expected FreeFnCallAlias, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cpp_macro_freefn_call_alias_resolves_call_form_in_source() {
+        // #define GETAPP() AfxGetApp() → GETAPP() の戻り値型は AfxGetApp() の CWinApp *（P5）。
+        // DerefFreeFnCall と違い deref しない。呼び出し形（is_call=true）。
+        let src = "class CWinApp {};\nCWinApp* AfxGetApp();\n#define GETAPP() AfxGetApp()\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "GETAPP", true);
+        assert_eq!(ty.as_deref(), Some("CWinApp *"));
+    }
+
+    #[test]
+    fn cpp_macro_freefn_call_alias_resolves_value_form_in_source() {
+        // #define theApp2 AfxGetApp() → theApp2 の型は AfxGetApp() の CWinApp *（P5）。
+        // 値形（is_call=false）でも有効。
+        let src = "class CWinApp {};\nCWinApp* AfxGetApp();\n#define theApp2 AfxGetApp()\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "theApp2", false);
+        assert_eq!(ty.as_deref(), Some("CWinApp *"));
+    }
+
+    #[test]
+    fn cpp_chain_freefn_call_alias_call_form_continues() {
+        // GETAPP()->GetMainWnd(): 転送マクロ GETAPP() → AfxGetApp() → CWinApp* →
+        // GetMainWnd の戻り値型 CWnd *（P5、チェイン継続）。
+        let src = "class CWnd {};\nclass CWinApp { public: CWnd* GetMainWnd(); };\nCWinApp* AfxGetApp();\n#define GETAPP() AfxGetApp()\nvoid f() { GETAPP()->GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "GETAPP()->GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_chain_freefn_call_alias_value_form_continues() {
+        // theApp2.GetMainWnd(): オブジェクト形式転送マクロ theApp2 → AfxGetApp() →
+        // CWinApp* → GetMainWnd の戻り値型 CWnd *（P5、値形チェイン）。
+        let src = "class CWnd {};\nclass CWinApp { public: CWnd* GetMainWnd(); };\nCWinApp* AfxGetApp();\n#define theApp2 AfxGetApp()\nvoid f() { theApp2.GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "theApp2.GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_macro_freefn_call_alias_via_header() {
+        // ヘッダ経由で転送マクロを解決（P5）。afx.h に #define GETAPP() AfxGetApp() と
+        // プロトタイプを置き、.cpp から #include で解決。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_macro_forward_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/afx.h"),
+            "class CWinApp {};\nCWinApp* AfxGetApp();\n#define GETAPP() AfxGetApp()\n",
+        )
+        .expect("write afx.h");
+        let src = "#include <afx.h>\nvoid f() { GETAPP(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let ty = cpp_macro_return_for_sources(&ctx, "GETAPP", true);
+        assert_eq!(ty.as_deref(), Some("CWinApp *"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_macro_freefn_call_alias_config_rule_priority() {
+        // 設定ルールが転送形式マクロの自動解析より優先される（P5）。
+        // GETAPP に設定ルールで「CString* を返す」を登録 → 自動解析（CWinApp*）より優先。
+        let config = TypeHintConfig::from_file(TypeHintConfigFile::new(CppTypeHintRules {
+            macros: vec![CppCallableRule {
+                name: "GETAPP".into(),
+                arity: Some(0),
+                params: vec![],
+                returns: "CString*".into(),
+                enabled: true,
+            }],
+            ..sample_type_hint_config().cpp
+        }));
+        let src = "class CWinApp {};\nCWinApp* AfxGetApp();\n#define GETAPP() AfxGetApp()\nvoid f() { GETAPP(); }\n";
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: None,
+            type_hint_config: Some(&config),
+        };
+        // cpp_macro_return_for_sources は自動解析経路（設定ルール不問）。
+        // 設定ルール優先は cpp_config_call_return 経由で確認。
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| {
+                m.get_node().kind().as_ref() == "call_expression"
+                    && m.get_node().text().trim() == "GETAPP()"
+            })
+            .expect("match GETAPP()");
+        let ty = cpp_config_call_return(m.get_node(), &ctx);
+        assert_eq!(ty.as_deref(), Some("CString*"));
+    }
+
+    #[test]
+    fn cpp_macro_freefn_call_alias_arg_taking_target_is_none() {
+        // negative: 転送先が引数を取る形 #define GETAPP() AfxGetAppEx(0) は None（P5）。
+        // IDENT() 全体一致のみ対象のため。
+        let src = "class CWinApp {};\nCWinApp* AfxGetAppEx(int);\n#define GETAPP() AfxGetAppEx(0)\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "GETAPP", true);
+        assert_eq!(ty, None);
+    }
+
+    #[test]
+    fn cpp_macro_transparent_check_pattern_is_none() {
+        // negative: 透過形式 #define CHECK(x) (x) は None（P5、キャッシュ汚染リスクで見送り）。
+        let src = "#define CHECK(x) (x)\n";
+        let ctx = ctx_no_cache(src);
+        let ty = cpp_macro_return_for_sources(&ctx, "CHECK", true);
+        assert_eq!(ty, None);
     }
 }
