@@ -220,91 +220,26 @@ fn append_labeled_value_markdown(s: &mut String, label: &str, value: &str) {
     }
 }
 
-fn append_yaml_rule_conditions(t: Tr, cond: &SearchConditions, s: &mut String, markdown: bool) {
-    for (label, value) in yaml_rule_condition_entries(t, cond) {
-        if markdown {
-            append_labeled_value_markdown(s, &label, &value);
-        } else {
-            append_labeled_value_plain(s, &label, &value);
-        }
-    }
-}
-
-fn append_yaml_rule_conditions_html(
+fn append_html_condition_entry(
     out: &mut String,
-    t: Tr,
-    cond: &SearchConditions,
+    label: &str,
+    value: &str,
     escape: &impl Fn(&str) -> String,
+    wrap_code: bool,
 ) {
-    for (label, value) in yaml_rule_condition_entries(t, cond) {
-        out.push_str(&format!("<dt>{}</dt><dd>", escape(&label)));
-        if value.contains('\n') {
-            out.push_str("<pre><code>");
-            out.push_str(&escape(&value));
-            out.push_str("</code></pre>");
-        } else {
-            out.push_str(&escape(&value));
-        }
-        out.push_str("</dd>\n");
+    out.push_str(&format!("<dt>{}</dt><dd>", escape(label)));
+    if value.contains('\n') {
+        out.push_str("<pre><code>");
+        out.push_str(&escape(value));
+        out.push_str("</code></pre>");
+    } else if wrap_code {
+        out.push_str("<code>");
+        out.push_str(&escape(value));
+        out.push_str("</code>");
+    } else {
+        out.push_str(&escape(value));
     }
-}
-
-/// XLSX stats シート用の検索条件行（統計ブロックの下）
-fn search_condition_entries_for_xlsx(
-    t: Tr,
-    cond: &SearchConditions,
-    lang: UiLanguage,
-) -> Vec<(String, String)> {
-    let mut rows = vec![
-        (t.export_cond_root().to_string(), cond.search_dir.clone()),
-        (t.export_cond_pattern().to_string(), cond.pattern.clone()),
-        (
-            t.export_cond_lang().to_string(),
-            cond.selected_lang.combo_label(lang).to_string(),
-        ),
-        (
-            t.export_cond_context_lines().to_string(),
-            cond.context_lines.to_string(),
-        ),
-        (
-            t.export_cond_file_filter().to_string(),
-            file_filter_display(t, cond).into_owned(),
-        ),
-        (
-            t.export_cond_file_encoding().to_string(),
-            cond.file_encoding_preference.display_label(lang).to_string(),
-        ),
-        (
-            t.export_cond_max_file_mb().to_string(),
-            cond.max_file_size_mb.to_string(),
-        ),
-        (
-            t.export_cond_max_search_hits().to_string(),
-            cond.max_search_hits.to_string(),
-        ),
-        (
-            t.export_cond_skip_dirs().to_string(),
-            cond.skip_dirs.clone(),
-        ),
-        (
-            t.export_cond_cpp_include_dirs().to_string(),
-            cond.cpp_include_dirs.clone(),
-        ),
-        (
-            t.export_cond_type_hints_enabled().to_string(),
-            t.export_bool_yes_no(cond.type_hints_enabled).to_string(),
-        ),
-        (
-            t.export_cond_search_mode().to_string(),
-            search_mode_label(t, cond.search_mode).to_string(),
-        ),
-        (
-            t.export_cond_plain_text_options().to_string(),
-            plain_text_options_export_value(t, cond),
-        ),
-    ];
-    rows.extend(yaml_rule_condition_entries(t, cond));
-    rows
+    out.push_str("</dd>\n");
 }
 
 fn write_xlsx_condition_rows(
@@ -367,77 +302,93 @@ pub fn file_filter_display<'a>(t: Tr, cond: &'a SearchConditions) -> std::borrow
     }
 }
 
+pub fn pattern_export_value(t: Tr, cond: &SearchConditions) -> String {
+    match cond.search_mode {
+        SearchMode::YamlRule => t.export_pattern_not_applicable().to_string(),
+        _ => cond.pattern.clone(),
+    }
+}
+
+/// コピー / エクスポート / レポート UI 共通の検索条件行（label, value）
+pub fn search_condition_entries(
+    t: Tr,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> Vec<(String, String)> {
+    let mut rows = vec![
+        (t.export_cond_root().to_string(), cond.search_dir.clone()),
+        (
+            t.export_cond_search_mode().to_string(),
+            search_mode_label(t, cond.search_mode).to_string(),
+        ),
+    ];
+    rows.extend(yaml_rule_condition_entries(t, cond));
+    rows.push((
+        t.export_cond_pattern().to_string(),
+        pattern_export_value(t, cond),
+    ));
+    rows.extend([
+        (
+            t.export_cond_lang().to_string(),
+            cond.selected_lang.combo_label(lang).to_string(),
+        ),
+        (
+            t.export_cond_context_lines().to_string(),
+            cond.context_lines.to_string(),
+        ),
+        (
+            t.export_cond_file_filter().to_string(),
+            file_filter_display(t, cond).into_owned(),
+        ),
+        (
+            t.export_cond_file_encoding().to_string(),
+            cond.file_encoding_preference.display_label(lang).to_string(),
+        ),
+        (
+            t.export_cond_max_file_mb().to_string(),
+            cond.max_file_size_mb.to_string(),
+        ),
+        (
+            t.export_cond_max_search_hits().to_string(),
+            cond.max_search_hits.to_string(),
+        ),
+        (
+            t.export_cond_skip_dirs().to_string(),
+            cond.skip_dirs.clone(),
+        ),
+        (
+            t.export_cond_cpp_include_dirs().to_string(),
+            cond.cpp_include_dirs.clone(),
+        ),
+        (
+            t.export_cond_type_hints_enabled().to_string(),
+            t.export_bool_yes_no(cond.type_hints_enabled).to_string(),
+        ),
+        (
+            t.export_cond_plain_text_options().to_string(),
+            plain_text_options_export_value(t, cond),
+        ),
+    ]);
+    rows
+}
+
+/// XLSX stats シート用の検索条件行（統計ブロックの下）
+fn search_condition_entries_for_xlsx(
+    t: Tr,
+    cond: &SearchConditions,
+    lang: UiLanguage,
+) -> Vec<(String, String)> {
+    search_condition_entries(t, cond, lang)
+}
+
 /// プレーンテキスト・コンソール向けの検索条件ブロック
 fn format_search_conditions_plain(t: Tr, cond: &SearchConditions, lang: UiLanguage) -> String {
     let mut s = String::new();
     s.push_str(t.export_conditions_title());
     s.push('\n');
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_root(),
-        cond.search_dir
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_pattern(),
-        cond.pattern
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_lang(),
-        cond.selected_lang.combo_label(lang)
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_context_lines(),
-        cond.context_lines
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_file_filter(),
-        file_filter_display(t, cond)
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_file_encoding(),
-        cond.file_encoding_preference.display_label(lang)
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_max_file_mb(),
-        cond.max_file_size_mb
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_max_search_hits(),
-        cond.max_search_hits
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_skip_dirs(),
-        cond.skip_dirs
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_cpp_include_dirs(),
-        cond.cpp_include_dirs
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_type_hints_enabled(),
-        t.export_bool_yes_no(cond.type_hints_enabled)
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_search_mode(),
-        search_mode_label(t, cond.search_mode)
-    ));
-    s.push_str(&format!(
-        "- {}: {}\n",
-        t.export_cond_plain_text_options(),
-        plain_text_options_export_value(t, cond)
-    ));
-    append_yaml_rule_conditions(t, cond, &mut s, false);
+    for (label, value) in search_condition_entries(t, cond, lang) {
+        append_labeled_value_plain(&mut s, &label, &value);
+    }
     s.push('\n');
     s
 }
@@ -452,72 +403,9 @@ pub fn format_search_conditions_markdown(
     s.push_str("## ");
     s.push_str(t.export_conditions_title());
     s.push_str("\n\n");
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_root(),
-        cond.search_dir
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_pattern(),
-        cond.pattern
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_lang(),
-        cond.selected_lang.combo_label(lang)
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_context_lines(),
-        cond.context_lines
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_file_filter(),
-        file_filter_display(t, cond)
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_file_encoding(),
-        cond.file_encoding_preference.display_label(lang)
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_max_file_mb(),
-        cond.max_file_size_mb
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_max_search_hits(),
-        cond.max_search_hits
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_skip_dirs(),
-        cond.skip_dirs
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_cpp_include_dirs(),
-        cond.cpp_include_dirs
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_type_hints_enabled(),
-        t.export_bool_yes_no(cond.type_hints_enabled)
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_search_mode(),
-        search_mode_label(t, cond.search_mode)
-    ));
-    s.push_str(&format!(
-        "- **{}**: {}\n",
-        t.export_cond_plain_text_options(),
-        plain_text_options_export_value(t, cond)
-    ));
-    append_yaml_rule_conditions(t, cond, &mut s, true);
+    for (label, value) in search_condition_entries(t, cond, lang) {
+        append_labeled_value_markdown(&mut s, &label, &value);
+    }
     s.push('\n');
     s
 }
@@ -850,72 +738,13 @@ fn html_conditions_and_stats_fragment(
     out.push_str("<h2 class=\"cond\">");
     out.push_str(t.export_html_conditions_heading());
     out.push_str("</h2>\n<dl class=\"conditions\">\n");
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_root()),
-        escape(&cond.search_dir)
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd><code>{}</code></dd>\n",
-        escape(t.export_cond_pattern()),
-        escape(&cond.pattern)
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_lang()),
-        escape(&cond.selected_lang.combo_label(lang))
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_context_lines()),
-        cond.context_lines
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_file_filter()),
-        escape(file_filter_display(t, cond).as_ref())
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_file_encoding()),
-        escape(cond.file_encoding_preference.display_label(lang))
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_max_file_mb()),
-        cond.max_file_size_mb
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_max_search_hits()),
-        cond.max_search_hits
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_skip_dirs()),
-        escape(&cond.skip_dirs)
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_cpp_include_dirs()),
-        escape(&cond.cpp_include_dirs)
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_type_hints_enabled()),
-        escape(t.export_bool_yes_no(cond.type_hints_enabled))
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_search_mode()),
-        escape(search_mode_label(t, cond.search_mode))
-    ));
-    out.push_str(&format!(
-        "<dt>{}</dt><dd>{}</dd>\n",
-        escape(t.export_cond_plain_text_options()),
-        escape(&plain_text_options_export_value(t, cond))
-    ));
-    append_yaml_rule_conditions_html(&mut out, t, cond, &escape);
+    let pattern_label = t.export_cond_pattern();
+    for (label, value) in search_condition_entries(t, cond, lang) {
+        let wrap_code = label == pattern_label
+            && !value.contains('\n')
+            && cond.search_mode != SearchMode::YamlRule;
+        append_html_condition_entry(&mut out, &label, &value, &escape, wrap_code);
+    }
     out.push_str("</dl>\n");
     out.push_str(&t.export_html_stats(
         stats.total_matches,
@@ -1399,6 +1228,16 @@ pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     let mut clipboard = arboard::Clipboard::new()?;
     clipboard.set_text(text)?;
     Ok(())
+}
+
+/// クリップボード貼り付け用: タブをスペース4つに置換（Excel 列分割回避）
+pub fn tabs_to_spaces_for_paste(text: &str) -> String {
+    text.replace('\t', "    ")
+}
+
+/// タブをスペースに置換してからクリップボードにコピーする
+pub fn copy_to_clipboard_for_paste(text: &str) -> anyhow::Result<()> {
+    copy_to_clipboard(&tabs_to_spaces_for_paste(text))
 }
 
 // ─── ファイル書き出し ─────────────────────────────────────────────────────
@@ -2376,6 +2215,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tabs_to_spaces_for_paste_replaces_tab_with_four_spaces() {
+        assert_eq!(tabs_to_spaces_for_paste("a\tb"), "a    b");
+        assert_eq!(tabs_to_spaces_for_paste("\t\t"), "        ");
+    }
+
+    #[test]
+    fn tabs_to_spaces_for_paste_leaves_text_without_tabs_unchanged() {
+        let s = "hello\nworld";
+        assert_eq!(tabs_to_spaces_for_paste(s), s);
+    }
+
+    #[test]
     fn truncate_for_excel_short_string_unchanged() {
         let s = "hello world";
         assert_eq!(truncate_for_excel(s), s);
@@ -2417,6 +2268,80 @@ mod tests {
     fn markdown_table_sep_zero_columns() {
         // vec!["---"; 0].join("|") is "", so the result is "||\n"
         assert_eq!(markdown_table_sep(0), "||\n");
+    }
+
+    #[test]
+    fn yaml_rule_pattern_shows_not_applicable_in_plain_export() {
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::i18n::{Tr, UiLanguage};
+        use crate::lang::SupportedLanguage;
+        use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, YamlRuleOptions};
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+
+        let cond = SearchConditions {
+            search_dir: "/tmp".into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: "$RECV.$METHOD($$$ARGS)".into(),
+            selected_lang: SupportedLanguage::Auto,
+            context_lines: 2,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::Auto,
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::YamlRule,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_file: "rules/test.yml".into(),
+                ..Default::default()
+            },
+        };
+        let text = format_search_conditions_plain(Tr(UiLanguage::English), &cond, UiLanguage::English);
+        assert!(text.contains("rules/test.yml"));
+        assert!(text.contains("(not used in YAML rule mode)"));
+        assert!(!text.contains("$RECV.$METHOD($$$ARGS)"));
+    }
+
+    #[test]
+    fn ast_grep_export_omits_yaml_rule_fields() {
+        use crate::file_encoding::FileEncodingPreference;
+        use crate::i18n::{Tr, UiLanguage};
+        use crate::lang::SupportedLanguage;
+        use crate::search::{PlainTextSearchOptions, SearchConditions, SearchMode, YamlRuleOptions};
+        use crate::search_target::{RemoteTargetConfig, SearchTargetMode};
+
+        let cond = SearchConditions {
+            search_dir: "/tmp".into(),
+            search_target_mode: SearchTargetMode::Directory,
+            remote_target: RemoteTargetConfig::default(),
+            pattern: "fn $NAME".into(),
+            selected_lang: SupportedLanguage::Rust,
+            context_lines: 2,
+            file_filter: String::new(),
+            file_encoding_preference: FileEncodingPreference::Auto,
+            max_file_size_mb: 10,
+            max_search_hits: 1000,
+            skip_dirs: String::new(),
+            search_mode: SearchMode::AstGrep,
+            plain_text_options: PlainTextSearchOptions::default(),
+            cpp_include_dirs: String::new(),
+            type_hints_enabled: false,
+            yaml_rule_options: YamlRuleOptions {
+                rule_file: "rules/ignored.yml".into(),
+                ..Default::default()
+            },
+        };
+        let entries = search_condition_entries(Tr(UiLanguage::English), &cond, UiLanguage::English);
+        let joined = entries
+            .iter()
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(joined.contains("fn $NAME"));
+        assert!(!joined.contains("rules/ignored.yml"));
     }
 
     #[test]

@@ -580,10 +580,6 @@ impl AstGrepApp {
             .unwrap_or_else(|| self.build_search_conditions_from_ui())
     }
 
-    fn snapshot_search_conditions_for_export(&mut self) {
-        self.last_search_conditions = Some(self.build_search_conditions_from_ui());
-    }
-
     fn persisted_state(&self) -> PersistedAppState {
         PersistedAppState {
             search_dir: self.search_dir.clone(),
@@ -672,7 +668,6 @@ impl AstGrepApp {
     }
 
     fn clear_results_state_for_new_search(&mut self) {
-        self.last_search_conditions = None;
         self.results.clear();
         self.file_source_cache.clear();
         self.results_generation = self.results_generation.wrapping_add(1);
@@ -770,15 +765,62 @@ impl AstGrepApp {
             return;
         };
 
-        if job_id == SINGLE_SEARCH_JOB_ID {
-            self.snapshot_search_conditions_for_export();
-        }
-
         let job = if job_id == SINGLE_SEARCH_JOB_ID {
             None
         } else {
             self.batch_jobs.iter().find(|j| j.id == job_id)
         };
+
+        let pattern = job
+            .map(|j| j.pattern.clone())
+            .unwrap_or_else(|| self.pattern.clone());
+        let selected_lang = job.map(|j| j.selected_lang).unwrap_or(self.selected_lang);
+        let search_mode = job.map(|j| j.search_mode).unwrap_or(self.search_mode);
+        let plain_text_options = job
+            .map(|j| j.plain_text_options)
+            .unwrap_or(self.plain_text_options);
+        let yaml_rule_options = job
+            .map(|j| j.yaml_rule_options.clone())
+            .unwrap_or_else(|| self.yaml_rule_options.clone());
+        let context_lines = job.map(|j| j.context_lines).unwrap_or(self.context_lines);
+        let file_filter = job
+            .map(|j| j.file_filter.clone())
+            .unwrap_or_else(|| self.file_filter.clone());
+        let file_encoding_preference = job
+            .map(|j| j.file_encoding_preference)
+            .unwrap_or(self.file_encoding_preference);
+        let max_file_size_mb = job.map(|j| j.max_file_size_mb).unwrap_or(self.max_file_size_mb);
+        let max_search_hits = job.map(|j| j.max_search_hits).unwrap_or(self.max_search_hits);
+        let skip_dirs = job
+            .map(|j| j.skip_dirs.clone())
+            .unwrap_or_else(|| self.skip_dirs.clone());
+        let cpp_include_dirs = job
+            .map(|j| j.cpp_include_dirs.clone())
+            .unwrap_or_else(|| self.cpp_include_dirs.clone());
+        let type_hints_enabled = job
+            .map(|j| j.type_hints_enabled)
+            .unwrap_or(self.type_hints_enabled);
+
+        if job_id == SINGLE_SEARCH_JOB_ID {
+            self.last_search_conditions = Some(SearchConditions {
+                search_dir: self.effective_search_dir_display(),
+                search_target_mode: self.search_target_mode,
+                remote_target: self.remote_target.clone(),
+                pattern: pattern.clone(),
+                selected_lang,
+                context_lines,
+                file_filter: file_filter.clone(),
+                file_encoding_preference,
+                max_file_size_mb,
+                max_search_hits,
+                skip_dirs: skip_dirs.clone(),
+                search_mode,
+                plain_text_options,
+                cpp_include_dirs: cpp_include_dirs.clone(),
+                type_hints_enabled,
+                yaml_rule_options: yaml_rule_options.clone(),
+            });
+        }
 
         let (tx, rx) = search_message_channel();
         self.result_rx = Some(rx);
@@ -786,31 +828,19 @@ impl AstGrepApp {
 
         spawn_search(
             search_dir.to_string(),
-            job.map(|j| j.pattern.clone())
-                .unwrap_or_else(|| self.pattern.clone()),
-            job.map(|j| j.selected_lang)
-                .unwrap_or(self.selected_lang),
-            job.map(|j| j.search_mode).unwrap_or(self.search_mode),
-            job.map(|j| j.plain_text_options)
-                .unwrap_or(self.plain_text_options),
-            job.map(|j| j.yaml_rule_options.clone())
-                .unwrap_or_else(|| self.yaml_rule_options.clone()),
-            job.map(|j| j.context_lines)
-                .unwrap_or(self.context_lines),
-            job.map(|j| j.file_filter.clone())
-                .unwrap_or_else(|| self.file_filter.clone()),
-            job.map(|j| j.file_encoding_preference)
-                .unwrap_or(self.file_encoding_preference),
-            job.map(|j| j.max_file_size_mb * 1024 * 1024)
-                .unwrap_or(self.max_file_size_mb * 1024 * 1024),
-            job.map(|j| j.max_search_hits)
-                .unwrap_or(self.max_search_hits),
-            job.map(|j| j.skip_dirs.clone())
-                .unwrap_or_else(|| self.skip_dirs.clone()),
-            job.map(|j| j.cpp_include_dirs.clone())
-                .unwrap_or_else(|| self.cpp_include_dirs.clone()),
-            job.map(|j| j.type_hints_enabled)
-                .unwrap_or(self.type_hints_enabled),
+            pattern,
+            selected_lang,
+            search_mode,
+            plain_text_options,
+            yaml_rule_options,
+            context_lines,
+            file_filter,
+            file_encoding_preference,
+            max_file_size_mb * 1024 * 1024,
+            max_search_hits,
+            skip_dirs,
+            cpp_include_dirs,
+            type_hints_enabled,
             self.type_hint_config_arc(),
             self.ui_lang(),
             job_id,

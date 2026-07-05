@@ -2,7 +2,8 @@ use egui::Ui;
 
 use crate::app::{AstGrepApp, RewritePhase, SearchState, ViewMode};
 use crate::export::{
-    batch_report_to_text, copy_to_clipboard, export_batch_html_to_file, export_batch_json_to_file,
+    batch_report_to_text, copy_to_clipboard, copy_to_clipboard_for_paste, export_batch_html_to_file,
+    export_batch_json_to_file,
     export_batch_markdown_to_file, export_batch_text_to_file, export_batch_xlsx_to_file,
     export_html_to_file, export_json_to_file, export_markdown_to_file, export_text_to_file,
     export_xlsx_to_file, results_to_text_for_mode, ResultsExportLayout,
@@ -184,6 +185,18 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
                     }
                 }
                 if ui
+                    .button(t.copy_results_for_paste())
+                    .on_hover_text(t.copy_batch_report_for_paste_tooltip())
+                    .clicked()
+                {
+                    if let Some(ref report) = app.batch_report {
+                        let text = batch_report_to_text(report, ui_lang);
+                        if let Err(e) = copy_to_clipboard_for_paste(&text) {
+                            eprintln!("{} {e}", t.err_clipboard());
+                        }
+                    }
+                }
+                if ui
                     .button(t.copy_results())
                     .on_hover_text(t.copy_batch_report_tooltip())
                     .clicked()
@@ -319,6 +332,25 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
             }
 
             ui.separator();
+
+            // Tab→空白でコピー（Excel 貼り付け向け）
+            if ui
+                .add_enabled(has_results, egui::Button::new(t.copy_results_for_paste()))
+                .on_hover_text(t.copy_results_for_paste_tooltip())
+                .clicked()
+            {
+                let text = results_to_text_for_mode(
+                    &app.results,
+                    &app.stats,
+                    &app.search_conditions_for_export(),
+                    app.search_mode,
+                    ui_lang,
+                    export_layout,
+                );
+                if let Err(e) = copy_to_clipboard_for_paste(&text) {
+                    eprintln!("{} {e}", t.err_clipboard());
+                }
+            }
 
             // クリップボードコピー
             if ui

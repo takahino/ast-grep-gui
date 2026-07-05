@@ -2188,6 +2188,24 @@ impl Tr {
             UiLanguage::English => "Copy results to clipboard",
         }
     }
+    pub fn copy_results_for_paste(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "Tab→空白",
+            UiLanguage::English => "Tab→Space",
+        }
+    }
+    pub fn copy_results_for_paste_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "タブをスペースに置換してコピー（Excel への貼り付け向け）",
+            UiLanguage::English => "Copy with tabs replaced by spaces (for pasting into Excel)",
+        }
+    }
+    pub fn copy_batch_report_for_paste_tooltip(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "バッチレポートをタブ置換してコピー（Excel 向け）",
+            UiLanguage::English => "Copy batch report with tabs replaced (for Excel)",
+        }
+    }
 
     // ─── rewrite (AST) ─────────────────────────────────────────────────
 
@@ -3158,6 +3176,12 @@ impl Tr {
         match self.0 {
             UiLanguage::Japanese => "（文字列モード以外では該当なし）",
             UiLanguage::English => "(n/a except in Text mode)",
+        }
+    }
+    pub fn export_pattern_not_applicable(self) -> &'static str {
+        match self.0 {
+            UiLanguage::Japanese => "（YAML rule モードでは未使用）",
+            UiLanguage::English => "(not used in YAML rule mode)",
         }
     }
 

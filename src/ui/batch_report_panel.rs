@@ -4,7 +4,7 @@ use egui::Ui;
 
 use crate::app::AstGrepApp;
 use crate::batch::BatchRunResult;
-use crate::export::{file_filter_display, plain_text_options_export_value};
+use crate::export::search_condition_entries;
 use crate::search::SearchConditions;
 use crate::ui::scroll_keyboard;
 
@@ -83,60 +83,7 @@ pub fn show(app: &mut AstGrepApp, ui: &mut Ui) {
 fn show_conditions(ui: &mut Ui, app: &AstGrepApp, c: &SearchConditions) {
     let t = app.tr();
     let lang = app.ui_lang();
-    ui.label(format!("{}: {}", t.export_cond_root(), c.search_dir));
-    ui.label(format!("{}: {}", t.export_cond_pattern(), c.pattern));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_lang(),
-        c.selected_lang.combo_label(lang)
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_context_lines(),
-        c.context_lines
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_file_filter(),
-        file_filter_display(t, c)
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_file_encoding(),
-        c.file_encoding_preference.display_label(lang)
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_max_file_mb(),
-        c.max_file_size_mb
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_max_search_hits(),
-        c.max_search_hits
-    ));
-    ui.label(format!("{}: {}", t.export_cond_skip_dirs(), c.skip_dirs));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_cpp_include_dirs(),
-        c.cpp_include_dirs
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_type_hints_enabled(),
-        t.export_bool_yes_no(c.type_hints_enabled)
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_search_mode(),
-        crate::export::search_mode_label_for_export(t, c.search_mode)
-    ));
-    ui.label(format!(
-        "{}: {}",
-        t.export_cond_plain_text_options(),
-        plain_text_options_export_value(t, c)
-    ));
-    for (label, value) in crate::export::yaml_rule_condition_entries(t, c) {
+    for (label, value) in search_condition_entries(t, c, lang) {
         if value.contains('\n') {
             ui.label(format!("{label}:"));
             ui.monospace(value);
