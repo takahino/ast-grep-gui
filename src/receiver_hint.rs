@@ -86,6 +86,10 @@ enum CppLookupKind {
     MacroCall,
     /// マクロ値形（is_call=false）の解決結果。
     MacroValue,
+    /// クラスの基底クラス名リスト（P3）。class_name=派生クラス名、member_name=""。
+    /// 値は基底名を `;` で連結した文字列（C++ クラス名に `;` は現れないため安全）。
+    /// 空文字列＝基底無し、None＝未探索。負キャッシュ2層にそのまま相乗りする。
+    BaseClasses,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -739,6 +743,101 @@ fn cpp_lookup_in_translation_unit<D: Doc>(
         }
         // マクロは AST の translation_unit からは解決しない（#define は事前スキャン経由）。
         CppLookupKind::MacroCall | CppLookupKind::MacroValue => None,
+        // P3: クラスの基底リストを `;` 連結文字列で返す（空 Vec は None＝負キャッシュ）。
+        CppLookupKind::BaseClasses => cpp_find_class_bases_in_tree(root, class_name),
+    }
+}
+
+// ===== P3: 継承（基底クラス遡り、AST 自動解析） =====
+
+/// class_specifier / struct_specifier の base_class_clause から基底クラス名を抽出する（P3）。
+/// base_class_clause は fields 無し・children のみ。子のうち:
+/// - type_identifier → テキストそのまま
+/// - qualified_identifier → cpp_simplify_type_name で最終 `::` セグメントに還元
+/// - template_type → field("name") のテキスト（CArray<CString, CString&> → CArray）
+/// access_specifier / attribute_declaration / virtual キーワード（無名ノード）はスキップ。
+fn cpp_class_bases_from_specifier<D: Doc>(node: &Node<'_, D>) -> Vec<String> {
+    let mut bases = Vec::new();
+    for c in node.children() {
+        if c.kind().as_ref() != "base_class_clause" {
+            continue;
+        }
+        for b in c.children() {
+            let k = b.kind();
+            let k = k.as_ref();
+            if k == "type_identifier" {
+                let t = b.text().trim().to_string();
+                if !t.is_empty() {
+                    bases.push(t);
+                }
+            } else if k == "qualified_identifier" {
+                let t = cpp_simplify_type_name(b.text().trim());
+                if !t.is_empty() {
+                    bases.push(t);
+                }
+            } else if k == "template_type" {
+                if let Some(name) = b.field("name") {
+                    let t = name.text().trim().to_string();
+                    if !t.is_empty() {
+                        bases.push(t);
+                    }
+                }
+            }
+            // access_specifier / attribute_declaration / その他は無視
+        }
+    }
+    bases
+}
+
+/// translation_unit 全体から class_name のクラス定義を探し、基底リストを `;` 連結文字列で返す（P3）。
+/// cpp_find_field_in_named_class と同じ全子孫再帰。見つからなければ None（負キャッシュ用）。
+/// 空の基底リスト（基底無し）は空文字列 "" を返し、None とは区別する。
+fn cpp_find_class_bases_in_tree<D: Doc>(
+    root: &Node<'_, D>,
+    class_name: &str,
+) -> Option<String> {
+    let mut out: Option<Vec<String>> = None;
+    cpp_find_class_bases_recursive(root, class_name, &mut out);
+    out.map(|bases| bases.join(";"))
+}
+
+fn cpp_find_class_bases_recursive<D: Doc>(
+    node: &Node<'_, D>,
+    class_name: &str,
+    out: &mut Option<Vec<String>>,
+) {
+    if out.is_some() {
+        return;
+    }
+    if matches!(
+        node.kind().as_ref(),
+        "class_specifier" | "struct_specifier"
+    ) {
+        if let Some(n) = node.field("name") {
+            if n.text().trim() == class_name {
+                *out = Some(cpp_class_bases_from_specifier(node));
+                return;
+            }
+        }
+    }
+    for c in node.children() {
+        cpp_find_class_bases_recursive(&c, class_name, out);
+        if out.is_some() {
+            return;
+        }
+    }
+}
+
+/// 現ソース + インクルードヘッダから class_name の基底クラス名リストを解決する（P3）。
+/// cpp_lookup_member_in_sources(BaseClasses, ...) の薄いラッパ。結果を `;` で split して返す。
+fn cpp_class_bases_for_sources(ctx: &RecvHintContext<'_>, class_name: &str) -> Vec<String> {
+    match cpp_lookup_member_in_sources(ctx, CppLookupKind::BaseClasses, class_name, "") {
+        Some(joined) => joined
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect(),
+        None => Vec::new(),
     }
 }
 
@@ -1481,13 +1580,33 @@ fn cpp_lookup_member_direct(
 
 /// 現ソース + インクルードヘッダから kind のメンバ型を解決する（設定ルール適用後の共通ドライバ）。
 /// 設定ルール（type_hint_config）は呼び出し元で先に試すため、ここはキャッシュ→ソース→ヘッダの経路のみ。
-/// Field/Method 解決失敗時のみ、クラス名を typedef/using で 1 段展開して再試行する（B-3）。
+/// Field/Method は typedef 1 段展開再試行（B-3）→ 基底クラス遡り（P3）の順で最後の手段を試す。
+/// 継承遡りは内部関数 `cpp_lookup_member_with_bases` に分離し、visited でダイヤモンド・循環を防止する。
 fn cpp_lookup_member_in_sources(
     ctx: &RecvHintContext<'_>,
     kind: CppLookupKind,
     class_name: &str,
     member_name: &str,
 ) -> Option<String> {
+    let mut visited = HashSet::new();
+    cpp_lookup_member_with_bases(ctx, kind, class_name, member_name, &mut visited, 0)
+}
+
+/// `cpp_lookup_member_in_sources` の本体。visited は現在の遡りパス中のクラス名
+/// （cpp_simplify_type_name 適用後）の集合。挿入失敗（既訪問）なら基底遡りを止める。
+/// depth は遡り深さ（派生クラス=0）。CPP_INHERIT_MAX_DEPTH 超で打ち切り。
+fn cpp_lookup_member_with_bases(
+    ctx: &RecvHintContext<'_>,
+    kind: CppLookupKind,
+    class_name: &str,
+    member_name: &str,
+    visited: &mut HashSet<String>,
+    depth: usize,
+) -> Option<String> {
+    if depth > CPP_INHERIT_MAX_DEPTH {
+        return None;
+    }
+    // メンバキャッシュ（負キャッシュ2層）。外側 None=キャッシュミス、内側 None=探索済み未発見。
     if let Some(cache) = ctx.job_cache {
         if let Some(cached) =
             cache.lookup_member(ctx.file_path, kind, class_name, member_name, true)
@@ -1512,6 +1631,33 @@ fn cpp_lookup_member_in_sources(
             let real_class = cpp_simplify_type_name(&real);
             if !real_class.is_empty() && real_class != class_name {
                 result = cpp_lookup_member_direct(ctx, kind, &real_class, member_name);
+            }
+        }
+    }
+
+    // P3: Field/Method の解決失敗時（typedef 展開の後）に基底クラスへ遡る。
+    // visited に cpp_simplify_type_name 適用後のクラス名を入れ、挿入成功（未訪問）のときだけ
+    // 基底を展開する。ダイヤモンド・循環継承を両方防ぐ。多重継承は base_class_clause 記載順、
+    // 最初に解決した型を採用。派生側同名メンバは direct で見つかっていれば既に打ち切り済み。
+    if result.is_none()
+        && matches!(kind, CppLookupKind::Field | CppLookupKind::Method)
+        && !class_name.is_empty()
+    {
+        let simplified = cpp_simplify_type_name(class_name);
+        if !simplified.is_empty() && visited.insert(simplified) {
+            let bases = cpp_class_bases_for_sources(ctx, class_name);
+            for base in bases {
+                if let Some(ty) = cpp_lookup_member_with_bases(
+                    ctx,
+                    kind,
+                    &base,
+                    member_name,
+                    visited,
+                    depth + 1,
+                ) {
+                    result = Some(ty);
+                    break;
+                }
             }
         }
     }
@@ -2950,6 +3096,9 @@ fn cpp_resolve_include_file(
 
 const CPP_INCLUDE_MAX_DEPTH: usize = 8;
 const CPP_INCLUDE_MAX_FILE_BYTES: usize = 512 * 1024;
+/// 継承遡りの深さ上限（P3）。MFC は CView → CWnd → CCmdTarget → CObject の 4〜5 段が
+/// 実用最深。8 で余裕を持たせる。visited による循環防止と併用。
+const CPP_INHERIT_MAX_DEPTH: usize = 8;
 
 fn cpp_field_from_included_headers<D: Doc>(
     ctx: &RecvHintContext<'_>,
@@ -5120,5 +5269,127 @@ void f() {
         let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("CWnd *"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ===== P3: 継承（基底クラス遡り、AST 自動解析） =====
+
+    #[test]
+    fn cpp_inheritance_one_level_field() {
+        // 1 段継承: Derived の m_x は Base から → int（P3）。
+        let src = "class Base { public: int m_x; };\nclass Derived : public Base { };\nvoid f() { Derived d; d.m_x; }\n";
+        assert_eq!(infer_chain(src, "d.m_x").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_inheritance_one_level_method() {
+        // 1 段継承のメソッド戻り値: Derived::GetMainWnd は Base から → CWnd *（P3）。
+        let src = "class CWnd {};\nclass Base { public: CWnd* GetMainWnd(); };\nclass Derived : public Base { };\nvoid f() { Derived d; d.GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "d.GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_inheritance_three_levels() {
+        // 多段継承（3 段遡り）: C → B → A の m_x → int（P3）。
+        let src = "class A { public: int m_x; };\nclass B : public A { };\nclass C : public B { };\nvoid f() { C c; c.m_x; }\n";
+        assert_eq!(infer_chain(src, "c.m_x").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_inheritance_multiple_inheritance_second_base() {
+        // 多重継承: 第1基底 Base1 に無く第2基底 Base2 に有る m_y → int（P3）。
+        let src = "class Base1 { };\nclass Base2 { public: int m_y; };\nclass Derived : public Base1, public Base2 { };\nvoid f() { Derived d; d.m_y; }\n";
+        assert_eq!(infer_chain(src, "d.m_y").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_inheritance_diamond_resolves_without_hang() {
+        // ダイヤモンド継承: D → B,C; B,C → A。visited で A への2回目遡りを防止しつつ int を解決（P3）。
+        let src = "class A { public: int m_x; };\nclass B : public A { };\nclass C : public A { };\nclass D : public B, public C { };\nvoid f() { D d; d.m_x; }\n";
+        assert_eq!(infer_chain(src, "d.m_x").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_inheritance_cycle_no_hang() {
+        // 循環継承（不正コード）: A : B, B : A。visited でハングせず None（P3）。
+        let src = "class A : public B { };\nclass B : public A { };\nvoid f() { A a; a.m_x; }\n";
+        assert_eq!(infer_chain(src, "a.m_x"), None);
+    }
+
+    #[test]
+    fn cpp_inheritance_base_in_header_resolves() {
+        // 基底クラスが別ヘッダ（MFC 典型ケース）: CBase が app.h、CDerived が .cpp（P3）。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_inherit_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(
+            base.join("inc/app.h"),
+            "class CBase { public: int m_x; };\n",
+        )
+        .expect("write app.h");
+        let src = "#include <app.h>\nclass CDerived : public CBase { };\nvoid f() { CDerived d; d.m_x; }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "d.m_x")
+            .expect("match field");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("int"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_inheritance_template_base_name() {
+        // テンプレート基底 public CArray<int, int> → 基底名 CArray として扱う（P3）。
+        let src = "class CArray { public: int GetSize(); };\nclass CMyArray : public CArray<int, int> { };\nvoid f() { CMyArray a; a.GetSize(); }\n";
+        assert_eq!(infer_chain(src, "a.GetSize()").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_inheritance_derived_overrides_base() {
+        // 派生側に同名メンバがある場合は派生側優先（オーバーライド）。Base::m_x=int、Derived::m_x=long → long（P3）。
+        let src = "class Base { public: int m_x; };\nclass Derived : public Base { public: long m_x; };\nvoid f() { Derived d; d.m_x; }\n";
+        assert_eq!(infer_chain(src, "d.m_x").as_deref(), Some("long"));
+    }
+
+    #[test]
+    fn cpp_inheritance_resolution_cached_with_job_cache() {
+        // RecvHintJobCache 経由で継承解決結果と BaseClasses 負キャッシュが効くことを検証（P3）。
+        // 2 回目の同一 (class, member) 解決はメンバキャッシュヒットになり再走査しない。
+        let src = "class Base { public: int m_x; };\nclass Derived : public Base { };\n";
+        let cache = RecvHintJobCache::new();
+        let ctx = RecvHintContext {
+            file_path: std::path::Path::new("test.cpp"),
+            source: src,
+            cpp_include_dirs: &[],
+            job_cache: Some(&cache),
+            type_hint_config: None,
+        };
+        assert_eq!(
+            cpp_field_type_for_class_in_sources(&ctx, "Derived", "m_x").as_deref(),
+            Some("int")
+        );
+        let hits_after_first = cache.profile().lookup_cache_hits.load(Ordering::Relaxed);
+        assert_eq!(
+            cpp_field_type_for_class_in_sources(&ctx, "Derived", "m_x").as_deref(),
+            Some("int")
+        );
+        let hits_after_second = cache.profile().lookup_cache_hits.load(Ordering::Relaxed);
+        assert!(
+            hits_after_second > hits_after_first,
+            "second call must hit the member cache (base traversal result cached under derived key)"
+        );
     }
 }
