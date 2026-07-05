@@ -2102,6 +2102,8 @@ pub struct CppIncludePathDiagnostics {
 }
 
 /// ツールバー「インクルードパス診断」キャッシュキー（同一なら再計算しない）
+/// `search_dir` は相対 `-I` 解決基準なのでキーに含める（A-3）。検索フォルダ欄の
+/// 書き換えで相対インクルードの解決基準が変わったときに診断を再計算するため。
 pub fn cpp_include_diagnostic_cache_key(
     results_generation: u64,
     cpp_include_dirs: &str,
@@ -2109,10 +2111,12 @@ pub fn cpp_include_diagnostic_cache_key(
     type_hints_enabled: bool,
     result_files: usize,
     total_matches: usize,
+    search_dir: &str,
 ) -> (u64, u64, u64, usize, usize) {
     let mut ha = DefaultHasher::new();
     cpp_include_dirs.hash(&mut ha);
     type_hints_enabled.hash(&mut ha);
+    search_dir.hash(&mut ha);
     let mut hb = DefaultHasher::new();
     pattern.hash(&mut hb);
     (

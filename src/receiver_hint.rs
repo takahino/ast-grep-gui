@@ -82,6 +82,10 @@ enum CppLookupKind {
     FreeFunction,
     GlobalVar,
     TypeAlias,
+    /// マクロ呼び出し形（is_call=true）の解決結果。キャッシュキーで呼び出し/値を区別。
+    MacroCall,
+    /// マクロ値形（is_call=false）の解決結果。
+    MacroValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -205,16 +209,28 @@ impl RecvHintJobCache {
         }
 
         let start = Instant::now();
-        let len = fs::metadata(path).ok()?.len();
+        // 読み込み失敗（存在しない・権限不足・バイナリ判定等）も負キャッシュする。
+        // 同一ジョブ内で読めないヘッダを N 回参照しても再読み込みを繰り返さないため。
+        let len = match fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(_) => {
+                self.store_header_text(&key, None);
+                return None;
+            }
+        };
         if len > CPP_INCLUDE_MAX_FILE_BYTES as u64 {
             self.store_header_text(&key, None);
             return None;
         }
         // ヘッダは本体と別エンコーディング（Shift_JIS / UTF-16 / BOM 付き）であり得るため
         // Auto 判定で読む。検索本体と同じ file_encoding::read_text_file 経路で非対称を解消。
-        let text = read_text_file(path, FileEncodingPreference::Auto)
-            .ok()?
-            .text;
+        let text = match read_text_file(path, FileEncodingPreference::Auto) {
+            Ok(t) => t.text,
+            Err(_) => {
+                self.store_header_text(&key, None);
+                return None;
+            }
+        };
         self.profile.header_reads.fetch_add(1, Ordering::Relaxed);
         self.profile.header_read_nanos.fetch_add(
             start.elapsed().as_nanos() as u64,
@@ -471,6 +487,7 @@ fn cpp_field_type_for_class_in_sources(
     cpp_lookup_member_in_sources(ctx, CppLookupKind::Field, class_name, field_name)
 }
 
+#[allow(dead_code)] // bug1 修正で cpp_declarator_is_function_named に統一したが汎用ヘルパとして保持
 fn cpp_declarator_has_method_name<D: Doc>(decl: &Node<'_, D>, method_name: &str) -> bool {
     let mut found = false;
     cpp_for_each_descendant(decl, &mut |d| {
@@ -504,17 +521,18 @@ fn cpp_find_method_return_in_named_class<D: Doc>(
             if n.text().trim() == class_name {
                 if let Some(body) = node.field("body") {
                     for c in body.children() {
-                        if c.kind().as_ref() != "function_definition" {
-                            continue;
-                        }
-                        let Some(decl) = c.field("declarator") else {
-                            continue;
+                        // クラス body 内のメソッドはインライン定義（function_definition）と
+                        // プロトタイプ宣言（field_declaration）の両方があり得る。どちらも
+                        // 既存の合成ヘルパ（spec + declarator ops）で戻り値型を作る。
+                        // function_definition 経路は従来 type フィールドのみでポインタ修飾を
+                        // 落としていたが cpp_function_definition_return で `CWnd*` → `CWnd *` に回復。
+                        let ty = match c.kind().as_ref() {
+                            "function_definition" => cpp_function_definition_return(&c, method_name),
+                            "field_declaration" => cpp_function_declaration_return(&c, method_name),
+                            _ => None,
                         };
-                        if !cpp_declarator_has_method_name(&decl, method_name) {
-                            continue;
-                        }
-                        if let Some(ty) = c.field("type") {
-                            *out = Some(ty.text().trim().to_string());
+                        if let Some(ty) = ty {
+                            *out = Some(ty);
                             return;
                         }
                     }
@@ -562,6 +580,8 @@ fn cpp_lookup_in_translation_unit<D: Doc>(
         CppLookupKind::TypeAlias => {
             cpp_type_alias_target_in_translation_unit(root, member_name)
         }
+        // マクロは AST の translation_unit からは解決しない（#define は事前スキャン経由）。
+        CppLookupKind::MacroCall | CppLookupKind::MacroValue => None,
     }
 }
 
@@ -884,7 +904,32 @@ fn cpp_search_macro_in_headers(
 
 /// 現ソース → インクルードヘッダの順でマクロ name の型を解決する（C）。
 /// `is_call` が真なら呼び出し形（キャストマクロ等）、偽なら値形（別名マクロ等）。
+/// （識別子, is_call）の最終結果は `RecvHintJobCache` に負キャッシュ込みで載るため、
+/// 同一未解決識別子が N 回マッチしてもインクルードグラフを再走査しない。
 fn cpp_macro_return_for_sources(
+    ctx: &RecvHintContext<'_>,
+    name: &str,
+    is_call: bool,
+) -> Option<String> {
+    let kind = if is_call {
+        CppLookupKind::MacroCall
+    } else {
+        CppLookupKind::MacroValue
+    };
+    if let Some(cache) = ctx.job_cache {
+        if let Some(cached) = cache.lookup_member(ctx.file_path, kind, "", name, true) {
+            return cached;
+        }
+    }
+    let result = cpp_macro_return_for_sources_uncached(ctx, name, is_call);
+    if let Some(cache) = ctx.job_cache {
+        cache.store_member(ctx.file_path, kind, "", name, true, result.clone());
+    }
+    result
+}
+
+/// `cpp_macro_return_for_sources` のキャッシュ前の実体。
+fn cpp_macro_return_for_sources_uncached(
     ctx: &RecvHintContext<'_>,
     name: &str,
     is_call: bool,
@@ -930,6 +975,16 @@ fn cpp_type_alias_target_from_node<D: Doc>(
         return None;
     }
     let target = node.field("type")?;
+    // typedef struct tagPOINT { ... } POINT; のように target が struct/union/enum/class
+    // specifier のときはテキスト全体（本体含む）ではなくタグ名（tagPOINT）を返す。
+    // タグ名なら cpp_find_field_in_named_class が struct tagPOINT の body を直接探せる。
+    // 無名（name フィールド無し）はタグが取れないため None（別途対応）。
+    if matches!(
+        target.kind().as_ref(),
+        "struct_specifier" | "union_specifier" | "enum_specifier" | "class_specifier"
+    ) {
+        return target.field("name").map(|n| n.text().trim().to_string());
+    }
     let target_text = target.text().trim().to_string();
     if target_text.is_empty() {
         None
@@ -2157,6 +2212,10 @@ fn cpp_type_of_direct_receiver_expr<D: Doc>(
                         if let Some(ty) = cpp_free_function_return_for_sources(ctx, &name) {
                             return Some(ty);
                         }
+                        // C: マクロ限定解析（キャスト形式 #define M(x) ((TYPE)(x)) 等）。D-1 と同じ優先順位。
+                        if let Some(ty) = cpp_macro_return_for_sources(ctx, &name, true) {
+                            return Some(ty);
+                        }
                     }
                 }
                 return cpp_hint(node, ctx);
@@ -2208,7 +2267,10 @@ fn cpp_for_each_descendant<D: Doc, F: FnMut(&Node<'_, D>)>(node: &Node<'_, D>, f
 fn cpp_declarator_matches_name<D: Doc>(d: &Node<'_, D>, name: &str) -> bool {
     let kind = d.kind();
     let k = kind.as_ref();
-    if k == "identifier" {
+    // クラス本体内のメソッド名は field_identifier で現れる（データメンバと同じ）ため
+    // identifier と並べて名前ノードとして扱う。これにより cpp_function_definition_return /
+    // cpp_function_declaration_return がクラス本体メソッドでも名前一致する。
+    if matches!(k, "identifier" | "field_identifier") {
         return d.text().trim() == name;
     }
     if let Some(inner) = d.field("declarator") {
@@ -2684,6 +2746,13 @@ fn cpp_hint<D: Doc>(recv: &Node<'_, D>, ctx: Option<&RecvHintContext<'_>>) -> Op
             }
         }
     }
+    // field_expression（`pt.x` 等）の捕捉: フィールド型解決に失敗した残ケースのみここに到達する
+    // （解決可能なフィールドアクセスは chain_expression_result_type で既に処理済み）。
+    // ベース識別子 `pt` の型（例: POINT）を代用表示すると「pt.x の型 = POINT」の誤解を招くため、
+    // 未解決は None で返し format_stored_unknown_hint 経由の ? 表示に倒す。
+    if k == "field_expression" {
+        return None;
+    }
     let t = cpp_recv_base_name(recv);
     if t == "this" {
         return cpp_class_name(recv);
@@ -2796,6 +2865,10 @@ fn cpp_expr_type_label_for_config<D: Doc>(
             if matches!(func.kind().as_ref(), "identifier" | "qualified_identifier") {
                 let name = func.text().trim().to_string();
                 if let Some(ty) = cpp_free_function_return_for_sources(ctx, &name) {
+                    return Some(ty);
+                }
+                // C: マクロ限定解析（キャスト形式等）。D-1/D-2 と同じ優先順位で揃える。
+                if let Some(ty) = cpp_macro_return_for_sources(ctx, &name, true) {
                     return Some(ty);
                 }
             }
@@ -4089,8 +4162,8 @@ void f() {
     fn cpp_chain_resolves_free_function_return_in_source() {
         // AfxGetApp()->GetCount() のチェイン起点 AfxGetApp() の戻り値型を
         // ソース内のフリー関数宣言から解決し、GetCount の戻り値型 int まで届くか。
-        // （メソッド戻り値は既存経路がクラス本体内の function_definition から取るため本体付きで定義）
-        let src = "class CWinApp { public: int GetCount() { return 0; } };\nCWinApp* AfxGetApp();\nvoid f() { AfxGetApp()->GetCount(); }\n";
+        // GetCount はプロトタイプ宣言（field_declaration）。bug1 修正で本体付き定義でなくても解決する。
+        let src = "class CWinApp { public: int GetCount(); };\nCWinApp* AfxGetApp();\nvoid f() { AfxGetApp()->GetCount(); }\n";
         let ctx = RecvHintContext {
             file_path: std::path::Path::new("test.cpp"),
             source: src,
@@ -4118,7 +4191,7 @@ void f() {
         std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
         std::fs::write(
             base.join("inc/afx.h"),
-            "class CWinApp { public: int GetCount() { return 0; } };\nCWinApp* AfxGetApp();\n",
+            "class CWinApp { public: int GetCount(); };\nCWinApp* AfxGetApp();\n",
         )
         .expect("write afx.h");
         let src = "#include <afx.h>\nvoid f() { AfxGetApp()->GetCount(); }\n";
@@ -4420,5 +4493,211 @@ void f() {
         let ctx = c_ctx(src);
         let hint = infer_recv_type(SupportedLanguage::C, recv, Some(&ctx));
         assert_eq!(hint.as_deref(), Some("struct Foo"));
+    }
+
+    // ===== fix.md レビュー指摘の回帰テスト（bug1〜bug7） =====
+
+    fn infer_chain(src: &str, text: &str) -> Option<String> {
+        let ctx = ctx_no_cache(src);
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == text)
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx))
+    }
+
+    #[test]
+    fn cpp_method_prototype_return_in_source() {
+        // クラス本体内のプロトタイプ宣言（field_declaration）からメソッド戻り値型を解決（bug1）。
+        let src = "class Foo { public: int Bar(); };\nvoid f() { Foo o; o.Bar(); }\n";
+        assert_eq!(infer_chain(src, "o.Bar()").as_deref(), Some("int"));
+    }
+
+    #[test]
+    fn cpp_method_prototype_pointer_return_in_source() {
+        // ポインタ戻り値プロトタイプ CWnd* GetMainWnd(); → CWnd *（ポインタ修飾の回復、bug1）。
+        let src = "class CWnd {};\nclass CWinApp { public: CWnd* GetMainWnd(); };\nvoid f() { CWinApp a; a.GetMainWnd(); }\n";
+        assert_eq!(infer_chain(src, "a.GetMainWnd()").as_deref(), Some("CWnd *"));
+    }
+
+    #[test]
+    fn cpp_method_prototype_return_via_header() {
+        // ヘッダ経由でプロトタイプ宣言のみのメソッド戻り値型を解決（bug1）。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_method_proto_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(base.join("inc/foo.h"), "class Foo { public: int Bar(); };\n").expect("write foo.h");
+        let src = "#include <foo.h>\nvoid f() { Foo o; o.Bar(); }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "o.Bar()")
+            .expect("match chain");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("int"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_typedef_struct_tag_field_in_source() {
+        // typedef struct tagPOINT { ... } POINT; の pt.x → long（bug2）。
+        let src = "typedef struct tagPOINT { long x; long y; } POINT;\nvoid f() { POINT pt; pt.x; }\n";
+        assert_eq!(infer_chain(src, "pt.x").as_deref(), Some("long"));
+    }
+
+    #[test]
+    fn cpp_typedef_struct_tag_field_via_header() {
+        // ヘッダ経由で typedef struct タグ付きのフィールド型を解決（bug2）。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_typedef_struct_header_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(base.join("inc/app.h"), "typedef struct tagPOINT { long x; long y; } POINT;\n").expect("write app.h");
+        let src = "#include <app.h>\nvoid f() { POINT pt; pt.x; }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: None,
+            type_hint_config: None,
+        };
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$CHAIN", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| m.get_node().text().trim() == "pt.x")
+            .expect("match field");
+        let cap = m.get_env().get_match("CHAIN").expect("CHAIN");
+        let hint = infer_capture_type(SupportedLanguage::Cpp, "CHAIN", cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("long"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_macro_resolution_is_cached_per_identifier() {
+        // 未解決マクロ識別子の解決結果（負キャッシュ）が RecvHintJobCache に載り、
+        // 2 回目はインクルードグラフを再走査しない（bug3）。
+        let base = std::env::temp_dir().join("ast_grep_gui_cpp_macro_cache_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("inc")).expect("mkdir inc");
+        std::fs::write(base.join("inc/a.h"), "// no NOPE define here\n").expect("write a.h");
+        let src = "#include <a.h>\nvoid f() { NOPE; }\n";
+        let test_cpp = base.join("test.cpp");
+        std::fs::write(&test_cpp, src).expect("write test.cpp");
+        let extra = vec![base.join("inc")];
+
+        let cache = RecvHintJobCache::new();
+        let ctx = RecvHintContext {
+            file_path: test_cpp.as_path(),
+            source: src,
+            cpp_include_dirs: &extra,
+            job_cache: Some(&cache),
+            type_hint_config: None,
+        };
+        assert_eq!(cpp_macro_return_for_sources(&ctx, "NOPE", true), None);
+        let reads_after_first = cache.profile().header_reads.load(Ordering::Relaxed);
+        let hits_after_first = cache.profile().lookup_cache_hits.load(Ordering::Relaxed);
+        assert!(reads_after_first >= 1, "first call should read the header");
+
+        assert_eq!(cpp_macro_return_for_sources(&ctx, "NOPE", true), None);
+        let reads_after_second = cache.profile().header_reads.load(Ordering::Relaxed);
+        let hits_after_second = cache.profile().lookup_cache_hits.load(Ordering::Relaxed);
+        assert_eq!(
+            reads_after_second, reads_after_first,
+            "second call must not re-read headers (negative cache)"
+        );
+        assert!(
+            hits_after_second > hits_after_first,
+            "second call must hit the member cache"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cpp_include_diagnostic_cache_key_includes_search_dir() {
+        // search_dir が異なれば診断キャッシュキーも異なる（bug4）。
+        use crate::search::cpp_include_diagnostic_cache_key;
+        let k1 = cpp_include_diagnostic_cache_key(1, "inc", "pat", true, 10, 20, "C:/proj");
+        let k2 = cpp_include_diagnostic_cache_key(1, "inc", "pat", true, 10, 20, "C:/other");
+        assert_ne!(k1, k2, "different search_dir must yield different cache keys");
+        let k3 = cpp_include_diagnostic_cache_key(1, "inc", "pat", true, 10, 20, "C:/proj");
+        assert_eq!(k1, k3, "same search_dir must yield same cache key");
+    }
+
+    #[test]
+    fn cpp_recv_label_resolves_cast_macro_start() {
+        // GETAPP()->Foo() のレシーバラベル。GETAPP はキャストマクロで CWinApp* を返す（bug5: D-2）。
+        let src = "class CWinApp { public: void Foo(); };\n#define GETAPP() ((CWinApp*)(0))\nvoid f() { GETAPP()->Foo(); }\n";
+        let ctx = ctx_no_cache(src);
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("$RECV", SupportLang::Cpp).unwrap();
+        let m = grep
+            .root()
+            .find_all(&pat)
+            .find(|m| {
+                m.get_node().kind().as_ref() == "call_expression"
+                    && m.get_node().text().trim() == "GETAPP()->Foo()"
+            })
+            .expect("match GETAPP()->Foo()");
+        let cap = m.get_env().get_match("RECV").expect("RECV");
+        let hint = infer_recv_type(SupportedLanguage::Cpp, cap, Some(&ctx));
+        assert_eq!(hint.as_deref(), Some("CWinApp.Foo"));
+    }
+
+    #[test]
+    fn cpp_arg_label_resolves_cast_macro_start() {
+        // SomeFunc(GETAPP()) の引数型ラベル。GETAPP はキャストマクロで CWinApp* を返す（bug5: D-3）。
+        let src = "class CWinApp {};\n#define GETAPP() ((CWinApp*)(0))\nvoid SomeFunc(CWinApp* p);\nvoid f() { SomeFunc(GETAPP()); }\n";
+        let ctx = ctx_no_cache(src);
+        let grep = SupportLang::Cpp.ast_grep(src);
+        let pat = Pattern::try_new("SomeFunc($ARG)", SupportLang::Cpp).unwrap();
+        let m = grep.root().find_all(&pat).next().expect("match");
+        let arg = m.get_env().get_match("ARG").expect("ARG");
+        let label = cpp_expr_type_label_for_config(arg, &ctx);
+        assert_eq!(label.as_deref(), Some("CWinApp *"));
+    }
+
+    #[test]
+    fn load_header_text_caches_missing_header() {
+        // 存在しないヘッダパスの読み込み失敗も負キャッシュされ、2 回目はキャッシュヒット（bug6）。
+        let cache = RecvHintJobCache::new();
+        let p = std::path::Path::new("definitely_nonexistent_header_xyz.h");
+        assert_eq!(cache.load_header_text(p), None);
+        let hits_after_first = cache.profile().header_cache_hits.load(Ordering::Relaxed);
+        assert_eq!(cache.load_header_text(p), None);
+        let hits_after_second = cache.profile().header_cache_hits.load(Ordering::Relaxed);
+        assert!(
+            hits_after_second > hits_after_first,
+            "second call must hit the header_text cache"
+        );
+    }
+
+    #[test]
+    fn cpp_field_expression_unresolved_returns_none() {
+        // フィールド型が未解決の field_expression 捕捉は ? 表示へ倒す（bug7）。
+        // ベース変数 pt の型 POINT は取れるが unknownField は POINT に無いため未解決。
+        // 従来はベース型 POINT を代用表示したが、bug7 で None になる。
+        let src = "typedef struct tagPOINT { long x; } POINT;\nvoid f() { POINT pt; pt.unknownField; }\n";
+        assert_eq!(infer_chain(src, "pt.unknownField"), None);
     }
 }
